@@ -1876,10 +1876,6 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              stability across a server restart"), and what a future
 #              `resume_agents_on_restore = false` restore would produce too
 #              (a plain shell, never an agent).
-#   live     - `agent get` succeeds and reports a real agent_status whose Pi
-#              process is not proven to have returned to an idle shell. A
-#              non-Pi idle or blocked agent is still a genuine registered
-#              agent, never a restored husk or close-and-replace candidate.
 #   unknown  - anything else: an unparseable/unexpected response from either
 #              call, or a `pane get` success whose own echoed pane_id does not
 #              round-trip (guards against misreading a herdr response shape
@@ -1908,7 +1904,7 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     working|idle|done|blocked)
       case "$agent" in
         pi|pi-signed)
-          if fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id" >/dev/null; then
+          if fm_backend_herdr_pane_idle_shell_pid "$session" "$pane_id" >/dev/null; then
             printf 'no-agent'
           else
             printf 'live'

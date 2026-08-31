@@ -662,6 +662,43 @@ EOF
   pass "fm_backend_herdr_create_task: closes and replaces a same-labeled tab whose pane is alive but hosts no registered agent (a restored plain shell)"
 }
 
+test_create_task_closes_and_replaces_pi_idle_shell_husk() {
+  local dir log resp fb out tab pane
+  dir="$TMP_ROOT/pi-idle-shell-husk"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-pi-shell","workspace_id":"w1"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/3.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t3"},"root_pane":{"pane_id":"w1:p3"}}}\n' > "$resp/5.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t3","label":"fm-pi-shell","workspace_id":"w1"}]}}\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_idle_shell_pid() { printf "42\n"; }; fm_backend_herdr_create_task fmtest:w1 fm-pi-shell /tmp/proj' "$ROOT" ) \
+    || fail "create_task should replace a Pi registration left over a proved idle shell"
+  read -r tab pane <<EOF
+$out
+EOF
+  [ "$tab" = "w1:t3" ] && [ "$pane" = "w1:p3" ] || fail "create_task should return the replacement Pi shell tab and pane, got '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "create_task did not close the Pi idle-shell husk"
+  pass "fm_backend_herdr_create_task: replaces a registered Pi pane only after its idle shell is proved"
+}
+
+test_create_task_refuses_live_pi_agent() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/pi-live"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-pi-live","workspace_id":"w1"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/3.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_idle_shell_pid() { return 1; }; fm_backend_herdr_create_task fmtest:w1 fm-pi-live /tmp/proj' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task must refuse a registered Pi agent that is not proved idle-shell-only"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not replace a live Pi agent"
+  pass "fm_backend_herdr_create_task: keeps a registered Pi pane unless the idle-shell proof succeeds"
+}
+
 test_create_task_closes_all_duplicate_husks_after_replacement() {
   local dir log resp fb out tab pane create_line close_p2_line close_p3_line
   dir="$TMP_ROOT/husk-multiple"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4457,6 +4494,8 @@ test_prune_refuses_a_working_agent_pane_defense_in_depth
 test_create_task_refuses_duplicate_label
 test_create_task_refuses_duplicate_label_when_agent_live
 test_create_task_refuses_when_any_duplicate_label_is_live
+test_create_task_closes_and_replaces_pi_idle_shell_husk
+test_create_task_refuses_live_pi_agent
 test_create_task_closes_and_replaces_dead_pane_husk
 test_create_task_closes_and_replaces_no_agent_husk
 test_create_task_closes_all_duplicate_husks_after_replacement
