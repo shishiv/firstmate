@@ -1,0 +1,2 @@
+ok - fm_backend_herdr_create_task: replaces a registered Pi pane only after its idle shell is proved
+ok - fm_backend_herdr_create_task: keeps a registered Pi pane unless the idle-shell proof succeeds
