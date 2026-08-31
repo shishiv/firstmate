@@ -1876,10 +1876,10 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              stability across a server restart"), and what a future
 #              `resume_agents_on_restore = false` restore would produce too
 #              (a plain shell, never an agent).
-#   live     - `agent get` succeeds and reports a real agent_status (working,
-#              idle, done, or blocked - any registered value). An idle or
-#              blocked agent is still a genuine, still-registered agent, not
-#              a restored husk, so it is never a close-and-replace candidate.
+#   live     - `agent get` succeeds and reports a real agent_status whose Pi
+#              process is not proven to have returned to an idle shell. A
+#              non-Pi idle or blocked agent is still a genuine registered
+#              agent, never a restored husk or close-and-replace candidate.
 #   unknown  - anything else: an unparseable/unexpected response from either
 #              call, or a `pane get` success whose own echoed pane_id does not
 #              round-trip (guards against misreading a herdr response shape
@@ -1887,7 +1887,7 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              refusal here, never toward closing - this is the conservative
 #              backstop the husk check depends on.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code presence status
+  local session=$1 pane_id=$2 out code presence status agent
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
   if [ "$presence" != present ]; then
     case "$presence" in
@@ -1903,8 +1903,20 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     return 0
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
+  agent=$(printf '%s' "$out" | jq -r '.result.agent.agent // empty' 2>/dev/null)
   case "$status" in
-    working|idle|done|blocked) printf 'live' ;;
+    working|idle|done|blocked)
+      case "$agent" in
+        pi|pi-signed)
+          if fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id" >/dev/null; then
+            printf 'no-agent'
+          else
+            printf 'live'
+          fi
+          ;;
+        *) printf 'live' ;;
+      esac
+      ;;
     *) printf 'unknown' ;;
   esac
 }
