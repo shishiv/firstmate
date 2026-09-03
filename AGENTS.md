@@ -236,6 +236,7 @@ Each secondmate reconciles work already in its own home and then idles; recovery
 If away mode is present, load `/afk` and let its daemon own supervision rather than arming another cycle.
 Surface only captain-relevant decisions, review-ready PRs, failures, and credential needs; otherwise resume the emitted supervision protocol silently.
 A restart must be a non-event because durable state and live backend inventory, not conversation memory, are authoritative.
+Load `forensics` when the captain asks for a post-mortem of a failed Firstmate task or session, or when an unexpected terminal outcome needs a preserved-evidence cause chain; use `diagnose-crash` instead when an operating-system core dump is the primary evidence.
 
 ## 6. Project and knowledge management
 
