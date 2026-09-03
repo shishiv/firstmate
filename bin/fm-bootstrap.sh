@@ -153,6 +153,8 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+SECONDMATE_RESPAWN_RETRY_MAX=2
+# ponytail: two retries keep startup bounded; manual recovery owns persistent contention.
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh disable=SC1091
@@ -257,6 +259,76 @@ secondmate_note_respawned() {  # <id>
   SECONDMATE_RESPAWNED_IDS="$SECONDMATE_RESPAWNED_IDS $1"
   [ -n "${FM_BOOTSTRAP_PARALLEL_DIR:-}" ] || return 0
   printf '%s\n' "$1" > "$FM_BOOTSTRAP_PARALLEL_DIR/respawned.$1"
+}
+
+# A fresh secondmate spawn cannot wait on a forced teardown's task-set lock.
+# This marker hands the exact contention to the next bounded startup sweep
+# without releasing or bypassing the lock.
+secondmate_respawn_retry_path() {  # <id>
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  printf '%s/.%s.secondmate-respawn-retry\n' "$STATE" "$1"
+}
+
+secondmate_respawn_retry_attempts() {  # <id>
+  local path value
+  path=$(secondmate_respawn_retry_path "$1") || { printf '0\n'; return 0; }
+  value=$(sed -n 's/^attempts=\([0-9][0-9]*\)$/\1/p' "$path" 2>/dev/null | tail -1 || true)
+  case "$value" in ''|*[!0-9]*) printf '0\n' ;; *) printf '%s\n' "$value" ;; esac
+}
+
+secondmate_respawn_retry_clear() {  # <id>
+  local path
+  path=$(secondmate_respawn_retry_path "$1") || return 0
+  rm -f -- "$path" 2>/dev/null || true
+}
+
+secondmate_respawn_retry_record() {  # <id>
+  local id=$1 path attempts next tmp
+  path=$(secondmate_respawn_retry_path "$id") || return 1
+  attempts=$(secondmate_respawn_retry_attempts "$id")
+  [ "$attempts" -lt "$SECONDMATE_RESPAWN_RETRY_MAX" ] || return 2
+  next=$((attempts + 1))
+  tmp=$(mktemp "$STATE/.$id.secondmate-respawn-retry.XXXXXX") || return 1
+  if ! {
+    printf 'v1\n'
+    printf 'id=%s\n' "$id"
+    printf 'attempts=%s\n' "$next"
+    printf 'max_attempts=%s\n' "$SECONDMATE_RESPAWN_RETRY_MAX"
+    printf 'reason=task-set-lock\n'
+    printf 'next=next-startup-network-sweep\n'
+  } > "$tmp" || ! mv -f -- "$tmp" "$path"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  return 0
+}
+
+secondmate_respawn_retry_exhausted() {  # <id>
+  [ "$(secondmate_respawn_retry_attempts "$1")" -ge "$SECONDMATE_RESPAWN_RETRY_MAX" ]
+}
+
+secondmate_task_set_lock_contention() {  # <spawn-output>
+  printf '%s\n' "$1" | grep -Fq "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks);"
+}
+
+secondmate_respawn_lock_handoff() {  # <id>
+  local id=$1 attempts rc
+  if secondmate_respawn_retry_record "$id"; then
+    attempts=$(secondmate_respawn_retry_attempts "$id")
+    echo "SECONDMATE_LIVENESS: secondmate $id: respawn deferred after task-set lock; durable retry $attempts/$SECONDMATE_RESPAWN_RETRY_MAX is scheduled for the next startup/network sweep"
+    return 0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 2 ]; then
+    attempts=$(secondmate_respawn_retry_attempts "$id")
+    echo "SECONDMATE_LIVENESS: secondmate $id: respawn retry exhausted at $attempts/$SECONDMATE_RESPAWN_RETRY_MAX after task-set lock; manual recovery is required"
+    return 0
+  fi
+  echo "SECONDMATE_LIVENESS: secondmate $id: respawn deferred after task-set lock, but durable retry could not be recorded"
+  return 0
 }
 
 fleet_sync_origin_backed_project_count() {
@@ -751,6 +823,7 @@ secondmate_liveness_one() {  # <meta> <id>
     agent_state=$(printf '%s\n' "$out" | tail -1)
     case "$agent_state" in
       alive)
+        secondmate_respawn_retry_clear "$id"
         if route_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>/dev/null); then
           remote_rc=0
         else
@@ -773,10 +846,18 @@ secondmate_liveness_one() {  # <meta> <id>
         ;;
       dead|missing)
         cause="remote endpoint $agent_state on its configured host"
+        if secondmate_respawn_retry_exhausted "$id"; then
+          secondmate_respawn_lock_handoff "$id"
+          return 0
+        fi
         if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
           secondmate_note_respawned "$id"
+          secondmate_respawn_retry_clear "$id"
           report_relaunch "$id" "$cause" "host=$remote_host"
+        elif secondmate_task_set_lock_contention "$out"; then
+          secondmate_respawn_lock_handoff "$id"
         else
+          secondmate_respawn_retry_clear "$id"
           echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed after $cause: $(first_line "$out")"
         fi
         ;;
@@ -799,6 +880,7 @@ secondmate_liveness_one() {  # <meta> <id>
   esac
   case "$agent_state" in
     alive)
+      secondmate_respawn_retry_clear "$id"
       if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ]; then
         echo "BOOTSTRAP_INFO: secondmate $id already live (backend=$backend)"
       fi
@@ -810,10 +892,18 @@ secondmate_liveness_one() {  # <meta> <id>
       else
         cause="recorded endpoint confidently missing"
       fi
+      if secondmate_respawn_retry_exhausted "$id"; then
+        secondmate_respawn_lock_handoff "$id"
+        return 0
+      fi
       if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
         secondmate_note_respawned "$id"
+        secondmate_respawn_retry_clear "$id"
         report_relaunch "$id" "$cause" "backend=$backend"
+      elif secondmate_task_set_lock_contention "$out"; then
+        secondmate_respawn_lock_handoff "$id"
       else
+        secondmate_respawn_retry_clear "$id"
         echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed after $cause: $(first_line "$out")"
       fi
       ;;

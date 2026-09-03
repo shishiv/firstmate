@@ -95,6 +95,37 @@ test_stale_pool_base_refreshes_before_branching() {
   pass "a stale pooled worktree refreshes to current origin/main before a crew branch is created"
 }
 
+test_task_base_identity_uses_fetched_base_not_local_main() {
+  local rec id out status current meta brief
+  id='pool-task-base-identity-r12'
+  rec=$(make_case task-base-identity "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should publish the fetched task base identity"
+  current=$(git -C "$POOL_DIR" rev-parse origin/main)
+  [ "$(git -C "$PROJECT_DIR" rev-parse main)" != "$current" ] \
+    || fail "fixture did not leave the pooled task base different from local main"
+  meta="$HOME_DIR/state/$id.meta"
+  brief="$HOME_DIR/data/$id/launch-brief.md"
+  assert_grep "base_branch=main" "$meta" \
+    "task metadata did not publish the resolved base branch"
+  assert_grep "base_commit=$current" "$meta" \
+    "task metadata did not publish the exact fetched base commit"
+  assert_present "$brief" "spawn did not publish the generated launch brief"
+  assert_grep "This task was launched from exact base commit $current on remote branch main." "$brief" \
+    "launch brief did not consume the exact task base identity"
+  assert_grep "Never rebase onto a bare branch name" "$brief" \
+    "launch brief did not forbid ambiguous pooled branch refs"
+  if grep -Fq "rebase onto it so the eventual merge stays a fast-forward" "$brief"; then
+    fail "launch brief retained the ambiguous bare-main rebase instruction"
+  fi
+  assert_contains "$out" "base=main@$current" \
+    "spawn output did not report the exact task base identity"
+  pass "a task launch publishes and consumes one exact base identity when local main differs"
+}
+
 test_non_main_default_branch_refreshes_before_branching() {
   local rec id out status current branch_head
   id='pool-current-trunk-r2'
@@ -424,6 +455,7 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
 }
 
 test_stale_pool_base_refreshes_before_branching
+test_task_base_identity_uses_fetched_base_not_local_main
 test_non_main_default_branch_refreshes_before_branching
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work

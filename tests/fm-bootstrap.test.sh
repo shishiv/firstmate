@@ -960,6 +960,105 @@ SH
   pass "bootstrap: every deferred mutating sweep rechecks fleet-lock ownership"
 }
 
+make_liveness_handoff_case() {
+  local case_dir=$1 fakebin fake_root
+  mkdir -p "$case_dir/home/config" "$case_dir/home/projects" "$case_dir/home/state" \
+    "$case_dir/home/data" "$case_dir/fake-root/bin"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  git init -q -b main "$case_dir/fake-root"
+  printf 'test bootstrap root\n' > "$case_dir/fake-root/README.md"
+  git -C "$case_dir/fake-root" add README.md
+  git -C "$case_dir/fake-root" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm seed
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = list-windows ]; then
+  printf '%s\n' "can't find session: firstmate" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  cat > "$case_dir/fake-root/bin/fm-spawn.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${FM_FAKE_RESPAWN_MODE:-success}" >> "${FM_FAKE_RESPAWN_LOG:?}"
+case "${FM_FAKE_RESPAWN_MODE:-success}" in
+  success)
+    printf 'spawned mate-a\n'
+    exit 0
+    ;;
+  lock)
+    printf '%s\n' "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task mate-a rather than racing it"
+    exit 1
+    ;;
+esac
+exit 1
+SH
+  chmod +x "$case_dir/fake-root/bin/fm-spawn.sh"
+  fm_write_secondmate_meta "$case_dir/home/state/mate-a.meta" "$case_dir/home" \
+    'firstmate:fm-mate-a' alpha pi
+  printf '%s\n' "$fakebin|$case_dir/fake-root|$case_dir/home"
+}
+
+run_liveness_handoff_case() {
+  local fakebin=$1 fake_root=$2 home=$3 mode=$4 log=$5
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$fake_root" \
+    FM_BOOTSTRAP_NETWORK=only FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ \
+    FM_FAKE_RESPAWN_MODE="$mode" FM_FAKE_RESPAWN_LOG="$log" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_INHERITABLE_CONFIG='' \
+    "$ROOT/bin/fm-bootstrap.sh" 2>&1
+}
+
+test_secondmate_liveness_respawn_without_lock_clears_retry() {
+  local case_dir fakebin fake_root home log out marker rec
+  case_dir="$TMP_ROOT/secondmate-liveness-no-lock"
+  rec=$(make_liveness_handoff_case "$case_dir")
+  IFS='|' read -r fakebin fake_root home <<< "$rec"
+  log="$case_dir/respawn.log"
+  out=$(run_liveness_handoff_case "$fakebin" "$fake_root" "$home" success "$log")
+  marker="$home/state/.mate-a.secondmate-respawn-retry"
+  [ "$(cat "$log")" = success ] || fail "no-lock liveness did not invoke the respawn path exactly once"
+  assert_absent "$marker" "a successful no-lock respawn left a retry marker"
+  assert_not_contains "$out" "task-set lock" "a no-lock respawn was misclassified as contention"
+  pass "secondmate liveness respawns normally without a task-set lock"
+}
+
+test_secondmate_liveness_task_set_lock_records_bounded_handoff() {
+  local case_dir fakebin fake_root home log out marker rec
+  case_dir="$TMP_ROOT/secondmate-liveness-lock"
+  rec=$(make_liveness_handoff_case "$case_dir")
+  IFS='|' read -r fakebin fake_root home <<< "$rec"
+  log="$case_dir/respawn.log"
+  marker="$home/state/.mate-a.secondmate-respawn-retry"
+
+  out=$(run_liveness_handoff_case "$fakebin" "$fake_root" "$home" lock "$log")
+  assert_contains "$out" "respawn deferred after task-set lock" \
+    "task-set-lock contention was not surfaced as a deferred handoff"
+  assert_present "$marker" "task-set-lock contention did not create a durable retry marker"
+  assert_grep 'attempts=1' "$marker" "first contention did not record attempt one"
+
+  out=$(run_liveness_handoff_case "$fakebin" "$fake_root" "$home" success "$log")
+  [ "$(wc -l < "$log" | tr -d ' ')" = 2 ] \
+    || fail "a cleared task-set lock did not receive exactly one bounded retry"
+  assert_absent "$marker" "successful bounded retry did not clear its handoff marker"
+  assert_not_contains "$out" "retry exhausted" "successful handoff was reported as exhausted"
+
+  rec=$(make_liveness_handoff_case "$case_dir/exhausted")
+  IFS='|' read -r fakebin fake_root home <<< "$rec"
+  log="$case_dir/exhausted/respawn.log"
+  marker="$home/state/.mate-a.secondmate-respawn-retry"
+  run_liveness_handoff_case "$fakebin" "$fake_root" "$home" lock "$log" >/dev/null
+  run_liveness_handoff_case "$fakebin" "$fake_root" "$home" lock "$log" >/dev/null
+  out=$(run_liveness_handoff_case "$fakebin" "$fake_root" "$home" success "$log")
+  [ "$(wc -l < "$log" | tr -d ' ')" = 2 ] \
+    || fail "retry ceiling did not stop repeated task-set-lock respawns"
+  assert_contains "$out" "retry exhausted at 2/2" \
+    "retry ceiling did not explain the bounded handoff outcome"
+  assert_present "$marker" "exhausted contention marker disappeared before manual recovery"
+  pass "secondmate liveness records, retries, and bounds task-set-lock contention"
+}
+
 # The verdict costs three subprocesses, so a caller that already has it can hand
 # it over - but only one hop, and never onward into a spawned agent's
 # environment, where it could outlive a tasks-axi upgrade.
@@ -1172,6 +1271,8 @@ test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
+test_secondmate_liveness_respawn_without_lock_clears_retry
+test_secondmate_liveness_task_set_lock_records_bounded_handoff
 test_network_phases_record_per_step_elapsed_times
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info

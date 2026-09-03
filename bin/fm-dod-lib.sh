@@ -146,6 +146,18 @@ The Definition of done's rule that `--intent` must be self-sufficient still gove
 EOF
 }
 
+fm_brief_task_base_overlay() {  # <branch> <commit>
+  local branch=$1 commit=$2
+  cat <<EOF
+
+# Task base identity
+This task was launched from exact base commit $commit on remote branch $branch.
+Use that commit as the task's base identity when checking ancestry or rebasing.
+Never rebase onto a bare branch name such as main or origin/main, or onto another pooled-worktree ref.
+If the primary advances, stop and request an exact replacement base commit from firstmate.
+EOF
+}
+
 # Accept the current two-subsection contract only when both bodies have content;
 # briefs predating that contract remain valid when their # Task body has content.
 fm_brief_task_content_valid() {  # <file>
@@ -193,7 +205,8 @@ EOF
 Delivery contract: mode=local-only
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$id\`. Do NOT push, do NOT open a PR, do NOT merge.
-Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+Keep your branch a clean fast-forward from the exact task base identity in the launch instructions.
+If the primary advances, stop and request an exact replacement base commit from firstmate; never rebase onto a bare branch name or pooled-worktree ref.
 When it is implemented and committed, append \`done: ready in branch fm/$id\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF

@@ -14,8 +14,9 @@
 #   scaffolded before that line existed warns once and launches on the flag. A
 #   ship or scout spawn also refuses leftover `{TASK}` / `{FIRSTMATE_SPEC}`
 #   placeholders, an empty Task, or an incomplete pair of Task subsections.
-#   For a no-mistakes ship, spawn renders `launch-brief.md` with the current
-#   `--intent` contract and the extracted captain intent. A legacy mixed Task is
+#   For a fresh ship or scout spawn, spawn renders `launch-brief.md` after the
+#   worktree base is freshened. A no-mistakes ship also receives the current
+#   `--intent` contract and extracted captain intent. A legacy mixed Task is
 #   accepted there only under bin/fm-dod-lib.sh's provenance-marking rules;
 #   unmarked legacy Tasks stop for migration rather than becoming intent. That
 #   library owns the parsing and intent rules. When the explicit mode carries
@@ -144,6 +145,9 @@
 #   git worktree root distinct from the primary project checkout.
 #   Before a fresh ship or scout worker starts, its clean task worktree fetches
 #   origin, resolves the current remote default branch, and resets to its tip.
+#   The resolved branch and exact commit are recorded as base_branch/base_commit
+#   and copied into launch-brief.md, so later worker ancestry checks use one
+#   published identity rather than a pooled worktree's bare main ref.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
 #   refuses the spawn rather than risking a PR based on stale history.
 #   A slot whose only deviation is a stale submodule gitlink is refused by that
@@ -166,7 +170,7 @@
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
-#     __BRIEF__    absolute path to data/<task-id>/brief.md
+#     __BRIEF__    absolute path to the generated task launch brief
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
@@ -217,7 +221,7 @@
 # items), on a config/backlog-backend=manual home, and in a home that keeps no
 # data/backlog.md. An automatic-backend home with a backlog but no compatible
 # tasks-axi refuses before creating any lifecycle state.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path> [base=<branch>@<commit>]
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
@@ -755,6 +759,10 @@ SPAWN_META_PUBLISH_STARTED=0
 SPAWN_FRESH_COMMIT_PENDING=0
 SPAWN_TASK_SET_LOCK=
 SPAWN_TASK_SET_LOCK_HELD=0
+SPAWN_BASE_BRANCH=
+SPAWN_BASE_COMMIT=
+SOURCE_BRIEF=
+CAPTAIN_INTENT=
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -863,6 +871,8 @@ spawn_abort_cleanup() {
             echo "tasktmp=${TASK_TMP:-}"
             echo "model=${MODEL:-default}"
             echo "effort=${EFFORT:-default}"
+            [ -z "${SPAWN_BASE_BRANCH:-}" ] || echo "base_branch=$SPAWN_BASE_BRANCH"
+            [ -z "${SPAWN_BASE_COMMIT:-}" ] || echo "base_commit=$SPAWN_BASE_COMMIT"
             echo "backend=orca"
             echo "orca_worktree_id=$ORCA_WORKTREE_ID"
             [ -z "${ORCA_TERMINAL:-}" ] || echo "terminal=$ORCA_TERMINAL"
@@ -1166,6 +1176,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
+  SPAWN_BASE_BRANCH=$(fm_meta_get "$RELAUNCH_META" base_branch)
+  SPAWN_BASE_COMMIT=$(fm_meta_get "$RELAUNCH_META" base_commit)
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
@@ -1867,6 +1879,7 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
     echo "error: $BRIEF must contain nonempty ## Captain's intent and ## Firstmate spec subsections (or a nonempty legacy # Task body) before spawn" >&2
     exit 1
   fi
+  SOURCE_BRIEF=$BRIEF
   if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
     if fm_brief_task_heading_present "$BRIEF" "## Captain's intent"; then
       CAPTAIN_INTENT=$(fm_brief_task_heading_body "$BRIEF" "## Captain's intent")
@@ -1877,18 +1890,6 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
         echo "error: legacy mixed # Task brief has no provenance-marked captain words for no-mistakes --intent; add Captain: lines or migrate to ## Captain's intent and ## Firstmate spec" >&2
         exit 1
       fi
-    fi
-    SOURCE_BRIEF=$BRIEF
-    BRIEF="$DATA/$ID/launch-brief.md"
-    BRIEF_TMP="$DATA/$ID/.launch-brief.md.${BASHPID:-$$}"
-    {
-      cat "$SOURCE_BRIEF"
-      fm_brief_intent_overlay "$CAPTAIN_INTENT"
-    } > "$BRIEF_TMP" || { rm -f -- "$BRIEF_TMP"; echo "error: could not render current intent contract for $SOURCE_BRIEF" >&2; exit 1; }
-    if ! mv "$BRIEF_TMP" "$BRIEF"; then
-      rm -f -- "$BRIEF_TMP"
-      echo "error: could not publish current intent contract for $SOURCE_BRIEF" >&2
-      exit 1
     fi
   fi
 fi
@@ -1926,9 +1927,6 @@ if [ "$KIND" = ship ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
 fi
-
-BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
-BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
@@ -2019,7 +2017,12 @@ EOF
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
+  # The exact fetched branch and commit become the task's base identity. The
+  # launch brief consumes these values instead of asking a worker to resolve a
+  # bare pooled-worktree branch later.
   local worktree=$1 default target expected actual status
+  SPAWN_BASE_BRANCH=
+  SPAWN_BASE_COMMIT=
   if ! git -C "$worktree" fetch --quiet origin; then
     echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
@@ -2062,6 +2065,8 @@ freshen_spawn_worktree_base() {  # <worktree>
     echo "error: pooled worktree '$worktree' is at '${actual:-unknown}', not current '$target' ('$expected'); refusing to launch" >&2
     return 1
   fi
+  SPAWN_BASE_BRANCH=$default
+  SPAWN_BASE_COMMIT=$expected
 }
 
 herdr_projection_meta_field_exact() {  # <meta> <key>
@@ -2598,6 +2603,30 @@ fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
+if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
+  if [ -n "$SPAWN_BASE_BRANCH" ] && [ -n "$SPAWN_BASE_COMMIT" ]; then
+    BRIEF="$DATA/$ID/launch-brief.md"
+    BRIEF_TMP="$DATA/$ID/.launch-brief.md.${BASHPID:-$$}"
+    {
+      cat "$SOURCE_BRIEF"
+      if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
+        fm_brief_intent_overlay "$CAPTAIN_INTENT"
+      fi
+      fm_brief_task_base_overlay "$SPAWN_BASE_BRANCH" "$SPAWN_BASE_COMMIT"
+    } > "$BRIEF_TMP" || {
+      rm -f -- "$BRIEF_TMP"
+      echo "error: could not render task base instructions for $SOURCE_BRIEF" >&2
+      exit 1
+    }
+    if ! mv "$BRIEF_TMP" "$BRIEF"; then
+      rm -f -- "$BRIEF_TMP"
+      echo "error: could not publish task base instructions for $SOURCE_BRIEF" >&2
+      exit 1
+    fi
+  fi
+fi
+BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
+BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 
 # Pre-register Claude's workspace trust for the worktree, at the first point the
 # worktree is known and before any per-task state is created below. The dialog
@@ -3038,7 +3067,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort base_branch base_commit busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3056,6 +3085,8 @@ preserve_relaunch_meta() {
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  [ -z "$SPAWN_BASE_BRANCH" ] || echo "base_branch=$SPAWN_BASE_BRANCH"
+  [ -z "$SPAWN_BASE_COMMIT" ] || echo "base_commit=$SPAWN_BASE_COMMIT"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
@@ -3343,4 +3374,6 @@ fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+SPAWN_BASE_SUMMARY=
+[ -z "$SPAWN_BASE_COMMIT" ] || SPAWN_BASE_SUMMARY=" base=${SPAWN_BASE_BRANCH:-unknown}@$SPAWN_BASE_COMMIT"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_BASE_SUMMARY"
