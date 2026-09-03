@@ -7,12 +7,12 @@
 # The packet is written to stdout only.
 # It reports evidence and leads, never a cause or verdict.
 # Source bodies that may contain captain-private data are represented by
-# structural fields and bounded SHA-256 or cksum samples instead of raw text.
+# structural fields and bounded SHA-256 samples instead of raw text.
 # Missing or malformed sources are recorded and do not stop the remaining read.
 #
 # Bounds may be lowered for constrained runs and tests:
 #   FM_FORENSICS_MAX_BYTES          total stdout bytes (default 65536)
-#   FM_FORENSICS_SOURCE_BYTES       bytes sampled from one source (default 16384)
+#   FM_FORENSICS_SOURCE_BYTES       base sample bytes (default 16384; JSONL tails use 4x)
 #   FM_FORENSICS_SOURCE_LINES       records emitted per source (default 40)
 #   FM_FORENSICS_SCAN_LINES         trailing JSONL records scanned (default 2000)
 #   FM_FORENSICS_COMMAND_TIMEOUT    seconds per external probe (default 5)
@@ -35,6 +35,10 @@ SOURCE_LINES=${FM_FORENSICS_SOURCE_LINES:-40}
 SCAN_LINES=${FM_FORENSICS_SCAN_LINES:-2000}
 COMMAND_TIMEOUT=${FM_FORENSICS_COMMAND_TIMEOUT:-5}
 
+# shellcheck source=bin/fm-pr-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-pr-lib.sh"
+
 usage() {
   local rc=${1:-2}
   if [ "$rc" -eq 0 ]; then
@@ -54,7 +58,7 @@ EOF
 
 positive_integer() {
   case "$2" in
-    ''|*[!0-9]*|0)
+    ''|*[!0-9]*|0|0[0-9]*)
       printf 'fm-forensics-collect: %s must be a positive integer\n' "$1" >&2
       exit 2
       ;;
@@ -66,6 +70,12 @@ positive_integer FM_FORENSICS_SOURCE_BYTES "$SOURCE_BYTES"
 positive_integer FM_FORENSICS_SOURCE_LINES "$SOURCE_LINES"
 positive_integer FM_FORENSICS_SCAN_LINES "$SCAN_LINES"
 positive_integer FM_FORENSICS_COMMAND_TIMEOUT "$COMMAND_TIMEOUT"
+[ "${#MAX_BYTES}" -le 10 ] && [ "${#SOURCE_BYTES}" -le 10 ] \
+  && [ "${#SOURCE_LINES}" -le 10 ] && [ "${#SCAN_LINES}" -le 10 ] \
+  && [ "${#COMMAND_TIMEOUT}" -le 10 ] || {
+  echo "fm-forensics-collect: a requested bound exceeds the collector ceiling" >&2
+  exit 2
+}
 [ "$MAX_BYTES" -ge 512 ] || {
   echo "fm-forensics-collect: FM_FORENSICS_MAX_BYTES must be at least 512" >&2
   exit 2
@@ -76,14 +86,12 @@ positive_integer FM_FORENSICS_COMMAND_TIMEOUT "$COMMAND_TIMEOUT"
   echo "fm-forensics-collect: a requested bound exceeds the collector ceiling" >&2
   exit 2
 }
+JSONL_BYTES=$((SOURCE_BYTES * 4))
 
 [ "$#" -eq 1 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac
 ID=$1
-case "$ID" in
-  ''|*[!A-Za-z0-9._-]*) usage ;;
-esac
-[ "${#ID}" -le 128 ] || usage
+fm_task_id_creation_valid "$ID" || usage
 
 umask 077
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-forensics.XXXXXX") || {
@@ -107,9 +115,12 @@ if command -v sha256sum >/dev/null 2>&1; then
 elif command -v shasum >/dev/null 2>&1; then
   HASH_ALGORITHM=sha256
   digest_stream() { shasum -a 256 | awk '{ print $1 }'; }
+elif command -v openssl >/dev/null 2>&1; then
+  HASH_ALGORITHM=sha256
+  digest_stream() { openssl dgst -sha256 | awk '{ print $NF }'; }
 else
-  HASH_ALGORITHM='cksum'
-  digest_stream() { cksum | awk '{ print $1 ":" $2 }'; }
+  echo "fm-forensics-collect: SHA-256 tool required (sha256sum, shasum, or openssl)" >&2
+  exit 1
 fi
 
 emit() { printf '%s\n' "$*" >> "$PACKET"; }
@@ -129,7 +140,7 @@ sample_digest() {
 text_digest() { printf '%s' "$1" | digest_stream; }
 
 bounded_tail() {
-  LC_ALL=C tail -n "$SOURCE_LINES" "$1" 2>/dev/null | LC_ALL=C head -c "$SOURCE_BYTES"
+  LC_ALL=C tail -c "$SOURCE_BYTES" "$1" 2>/dev/null | LC_ALL=C tail -n "$SOURCE_LINES"
 }
 
 meta_value() {
@@ -150,11 +161,24 @@ append_duplicate_lead() {
   [ "$duplicates" -eq 0 ] || emit "- [lead] repeated $label: duplicate_digests=$duplicates"
 }
 
+session_row_is_error() {
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s\n' "$1" | jq -e '
+      any(.. | objects;
+        .isError? == true or .is_error? == true
+        or .type? == "error" or .status? == "error" or .kind? == "error")
+    ' >/dev/null 2>&1
+  else
+    printf '%s\n' "$1" | LC_ALL=C grep -Eq \
+      '"(isError|is_error)"[[:space:]]*:[[:space:]]*true|"(type|status|kind)"[[:space:]]*:[[:space:]]*"error"'
+  fi
+}
+
 emit "schema: fm-forensics-packet.v1"
 emit "task: $ID"
 emit "classification: evidence leads only; no causal conclusion"
 emit "redaction: private bodies and path values excluded; samples represented by $HASH_ALGORITHM digests"
-emit "bounds: total_bytes=$MAX_BYTES source_bytes=$SOURCE_BYTES source_records=$SOURCE_LINES scan_lines=$SCAN_LINES command_timeout_seconds=$COMMAND_TIMEOUT"
+emit "bounds: total_bytes=$MAX_BYTES source_bytes=$SOURCE_BYTES jsonl_bytes=$JSONL_BYTES source_records=$SOURCE_LINES scan_lines=$SCAN_LINES command_timeout_seconds=$COMMAND_TIMEOUT"
 
 META="$STATE/$ID.meta"
 META_SAMPLE="$TMP_ROOT/meta"
@@ -163,12 +187,20 @@ KIND=
 HARNESS=
 HARNESS_FAMILY=unknown
 WORKTREE=
+META_TRUNCATED=0
 
 emit ""
 emit "## Task identity"
-if [ -f "$META" ] && [ ! -L "$META" ]; then
+if [ -f "$META" ] && [ -r "$META" ] && [ ! -L "$META" ]; then
   LC_ALL=C head -c "$SOURCE_BYTES" "$META" > "$META_SAMPLE" 2>/dev/null || :
-  emit "- meta: present bytes=$(file_bytes "$META") sample_${HASH_ALGORITHM}=$(sample_digest "$META")"
+  meta_bytes=$(file_bytes "$META")
+  case "$meta_bytes" in
+    ''|*[!0-9]*) META_TRUNCATED=1 ;;
+    *) [ "$meta_bytes" -le "$SOURCE_BYTES" ] || META_TRUNCATED=1 ;;
+  esac
+  emit "- meta: present bytes=$meta_bytes sample_${HASH_ALGORITHM}=$(sample_digest "$META") truncated=$([ "$META_TRUNCATED" -eq 1 ] && printf true || printf false)"
+  [ "$META_TRUNCATED" -eq 0 ] || emit "- [lead] task metadata exceeds the trusted parse bound"
+  if [ "$META_TRUNCATED" -eq 0 ]; then
   for key in endpoint_task_id harness kind mode yolo backend model effort spawn_gen busy_gen terminal; do
     count=$(meta_count "$key" "$META_SAMPLE")
     if [ "$count" -gt 1 ]; then
@@ -230,6 +262,7 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
   else
     emit "- [lead] project identity missing or ambiguous"
   fi
+  fi
 else
   emit "- [lead] task metadata missing, unreadable, or symbolic-link backed"
 fi
@@ -237,7 +270,7 @@ fi
 # Run the canonical current-state reader against bounded scratch copies.
 # Any pull-source cache or mistaken helper write therefore lands in scratch.
 for path in "$STATE/$ID".*; do
-  [ -f "$path" ] && [ ! -L "$path" ] || continue
+  [ -f "$path" ] && [ -r "$path" ] && [ ! -L "$path" ] || continue
   case "$path" in
     "$STATUS") bounded_tail "$path" > "$SHADOW_STATE/${path##*/}" ;;
     *) LC_ALL=C head -c "$SOURCE_BYTES" "$path" > "$SHADOW_STATE/${path##*/}" 2>/dev/null || : ;;
@@ -282,7 +315,7 @@ fi
 emit ""
 emit "## Endpoint identity"
 ENDPOINT_OUT="$TMP_ROOT/endpoint"
-if [ -f "$META" ] && [ ! -L "$META" ]; then
+if [ -f "$META" ] && [ -r "$META" ] && [ ! -L "$META" ] && [ "$META_TRUNCATED" -eq 0 ]; then
   # shellcheck disable=SC2016
   if fm_run_timed "$COMMAND_TIMEOUT" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
       FM_ROOT_OVERRIDE="$FM_ROOT" bash -c \
@@ -297,6 +330,8 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
       emit "- [lead] endpoint identity invalid or incomplete: exit=$rc diagnostic_${HASH_ALGORITHM}=$(sample_digest "$ENDPOINT_OUT")"
     fi
   fi
+elif [ "$META_TRUNCATED" -eq 1 ]; then
+  emit "- unavailable: task metadata exceeds the trusted parse bound"
 else
   emit "- unavailable: task metadata is absent"
 fi
@@ -305,7 +340,7 @@ emit ""
 emit "## Event history"
 STATUS_HASHES="$TMP_ROOT/status-hashes"
 : > "$STATUS_HASHES"
-if [ -f "$STATUS" ] && [ ! -L "$STATUS" ]; then
+if [ -f "$STATUS" ] && [ -r "$STATUS" ] && [ ! -L "$STATUS" ]; then
   STATUS_SAMPLE="$TMP_ROOT/status-sample"
   bounded_tail "$STATUS" > "$STATUS_SAMPLE"
   emit "- status: present bytes=$(file_bytes "$STATUS") sample=${SOURCE_LINES}_line_tail"
@@ -331,15 +366,20 @@ fi
 
 emit ""
 emit "## Backlog"
-if [ -f "$BACKLOG" ] && [ ! -L "$BACKLOG" ]; then
+if [ -f "$BACKLOG" ] && [ -r "$BACKLOG" ] && [ ! -L "$BACKLOG" ]; then
   BACKLOG_MATCHES="$TMP_ROOT/backlog-matches"
   BACKLOG_COUNT="$TMP_ROOT/backlog-count"
-  LC_ALL=C head -c "$((SOURCE_BYTES * 8))" "$BACKLOG" 2>/dev/null | LC_ALL=C awk \
+  # shellcheck disable=SC2016
+  if fm_run_timed "$COMMAND_TIMEOUT" env LC_ALL=C awk \
     -v id="$ID" -v cap="$SOURCE_LINES" -v count_file="$BACKLOG_COUNT" '
       /^## In flight/ { section="in-flight" }
       /^## Queued/ { section="queued" }
       /^## Done/ { section="done" }
-      index($0, id) {
+      /^- \[[ x]\] / {
+        task=$0
+        sub(/^- \[[ x]\] /, "", task)
+        sub(/[[:space:]].*$/, "", task)
+        if (task != id) next
         count++
         if (shown < cap) {
           mark="other"
@@ -350,19 +390,25 @@ if [ -f "$BACKLOG" ] && [ ! -L "$BACKLOG" ]; then
         }
       }
       END { print count + 0 > count_file }
-    ' > "$BACKLOG_MATCHES"
-  backlog_count=$(cat "$BACKLOG_COUNT" 2>/dev/null || printf 0)
-  emit "- backlog: present bytes=$(file_bytes "$BACKLOG") task_matches_in_bounded_scan=$backlog_count"
-  BACKLOG_HASHES="$TMP_ROOT/backlog-hashes"
-  : > "$BACKLOG_HASHES"
+    ' "$BACKLOG" > "$BACKLOG_MATCHES"; then
+    backlog_count=$(cat "$BACKLOG_COUNT" 2>/dev/null || printf 0)
+    backlog_scan=complete
+  else
+    backlog_count=unknown
+    backlog_scan=timed-out
+  fi
+  emit "- backlog: present bytes=$(file_bytes "$BACKLOG") scan=$backlog_scan task_matches=$backlog_count"
   while IFS=$'\t' read -r line_no section mark body; do
     [ -n "$line_no" ] || continue
     digest=$(text_digest "$body")
-    printf '%s\n' "$digest" >> "$BACKLOG_HASHES"
     emit "- row sample_line=$line_no section=$(safe_atom "${section:-unknown}") marker=$(safe_atom "$mark") record_${HASH_ALGORITHM}=$digest"
   done < "$BACKLOG_MATCHES"
-  [ "$backlog_count" -gt 0 ] || emit "- [lead] task has no backlog row in the bounded scan"
-  [ "$backlog_count" -le 1 ] || emit "- [lead] repeated backlog identity: matching_rows=$backlog_count"
+  if [ "$backlog_scan" = complete ]; then
+    [ "$backlog_count" -gt 0 ] || emit "- [lead] task has no backlog row"
+    [ "$backlog_count" -le 1 ] || emit "- [lead] repeated backlog identity: matching_rows=$backlog_count"
+  else
+    emit "- [lead] backlog scan exceeded the command bound"
+  fi
 else
   emit "- [lead] backlog missing, unreadable, or symbolic-link backed"
 fi
@@ -373,12 +419,31 @@ INBOX="$STATE/$ID.inbox"
 INBOX_LIST="$TMP_ROOT/inbox-list"
 INBOX_HASHES="$TMP_ROOT/inbox-hashes"
 : > "$INBOX_HASHES"
-if [ -d "$INBOX" ] && [ ! -L "$INBOX" ]; then
-  find "$INBOX" -maxdepth 2 -type f -name '*.msg' -print 2>/dev/null \
-    | LC_ALL=C sort | tail -n "$SOURCE_LINES" > "$INBOX_LIST"
+if [ -d "$INBOX" ] && [ -r "$INBOX" ] && [ -x "$INBOX" ] && [ ! -L "$INBOX" ]; then
+  INBOX_CANDIDATES="$TMP_ROOT/inbox-candidates"
+  : > "$INBOX_CANDIDATES"
+  for record in "$INBOX"/*.msg; do
+    [ -f "$record" ] && [ ! -L "$record" ] || continue
+    printf '%s\n' "$record" >> "$INBOX_CANDIDATES"
+  done
+  LC_ALL=C awk -F/ '{ n=$NF; sub(/\.msg$/, "", n); if (n ~ /^[0-9]+$/) print n "\t" $0 }' "$INBOX_CANDIDATES" \
+    | LC_ALL=C sort -k1,1n | tail -n "$SOURCE_LINES" | cut -f2- > "$INBOX_LIST"
+  pending_sampled=$(wc -l < "$INBOX_LIST" | tr -d ' ')
+  remaining=$((SOURCE_LINES - pending_sampled))
+  if [ "$remaining" -gt 0 ] && [ -d "$INBOX/handled" ] \
+      && [ -r "$INBOX/handled" ] && [ -x "$INBOX/handled" ] && [ ! -L "$INBOX/handled" ]; then
+    HANDLED_CANDIDATES="$TMP_ROOT/handled-candidates"
+    : > "$HANDLED_CANDIDATES"
+    for record in "$INBOX/handled"/*.msg; do
+      [ -f "$record" ] && [ ! -L "$record" ] || continue
+      printf '%s\n' "$record" >> "$HANDLED_CANDIDATES"
+    done
+    LC_ALL=C awk -F/ '{ n=$NF; sub(/\.msg$/, "", n); if (n ~ /^[0-9]+$/) print n "\t" $0 }' "$HANDLED_CANDIDATES" \
+      | LC_ALL=C sort -k1,1n | tail -n "$remaining" | cut -f2- >> "$INBOX_LIST"
+  fi
   inbox_count=0
   while IFS= read -r record; do
-    [ -f "$record" ] && [ ! -L "$record" ] || continue
+    [ -f "$record" ] && [ -r "$record" ] && [ ! -L "$record" ] || continue
     inbox_count=$((inbox_count + 1))
     case "$record" in "$INBOX/handled/"*) disposition=handled ;; *) disposition=pending ;; esac
     base=${record##*/}
@@ -398,7 +463,7 @@ if [ -d "$INBOX" ] && [ ! -L "$INBOX" ]; then
   emit "- sampled_records=$inbox_count"
   append_duplicate_lead "instruction body" "$INBOX_HASHES"
 else
-  emit "- availability: no instruction inbox"
+  emit "- availability: no readable instruction inbox"
 fi
 
 emit ""
@@ -407,13 +472,19 @@ PROCEVENT_DIR="$STATE/procevent-inbox"
 PROCEVENT_LIST="$TMP_ROOT/procevent-list"
 PROCEVENT_HASHES="$TMP_ROOT/procevent-hashes"
 : > "$PROCEVENT_HASHES"
-if [ -d "$PROCEVENT_DIR" ] && [ ! -L "$PROCEVENT_DIR" ]; then
-  find "$PROCEVENT_DIR" -maxdepth 1 -type f -name '*.result' -print 2>/dev/null \
-    | LC_ALL=C sort | tail -n "$SCAN_LINES" > "$PROCEVENT_LIST"
+if [ -d "$PROCEVENT_DIR" ] && [ -r "$PROCEVENT_DIR" ] \
+    && [ -x "$PROCEVENT_DIR" ] && [ ! -L "$PROCEVENT_DIR" ]; then
+  PROCEVENT_CANDIDATES="$TMP_ROOT/procevent-candidates"
+  : > "$PROCEVENT_CANDIDATES"
+  for result in "$PROCEVENT_DIR"/*.result; do
+    [ -f "$result" ] && [ ! -L "$result" ] || continue
+    printf '%s\n' "$result" >> "$PROCEVENT_CANDIDATES"
+  done
+  LC_ALL=C sort "$PROCEVENT_CANDIDATES" | tail -n "$SCAN_LINES" > "$PROCEVENT_LIST"
   scanned=0
   relevant=0
   while IFS= read -r result; do
-    [ -f "$result" ] && [ ! -L "$result" ] || continue
+    [ -f "$result" ] && [ -r "$result" ] && [ ! -L "$result" ] || continue
     scanned=$((scanned + 1))
     sample="$TMP_ROOT/procevent-sample-$scanned"
     LC_ALL=C head -c "$SOURCE_BYTES" "$result" > "$sample" 2>/dev/null || :
@@ -424,7 +495,10 @@ if [ -d "$PROCEVENT_DIR" ] && [ ! -L "$PROCEVENT_DIR" ]; then
     [ "$relevant" -lt "$SOURCE_LINES" ] || continue
     relevant=$((relevant + 1))
     stem=${result%.result}
-    adapter=$(head -n 1 "$stem.adapter" 2>/dev/null || true)
+    adapter=
+    if [ -f "$stem.adapter" ] && [ -r "$stem.adapter" ] && [ ! -L "$stem.adapter" ]; then
+      adapter=$(head -n 1 "$stem.adapter" 2>/dev/null || true)
+    fi
     case "$adapter" in
       lavish|quota|remote-reply) : ;;
       '') adapter=unknown ;;
@@ -432,12 +506,12 @@ if [ -d "$PROCEVENT_DIR" ] && [ ! -L "$PROCEVENT_DIR" ]; then
     esac
     digest=$(sample_digest "$sample")
     printf '%s\n' "$digest" >> "$PROCEVENT_HASHES"
-    emit "- result_index=$relevant source_id_${HASH_ALGORITHM}=$(text_digest "$base") adapter=$(safe_atom "${adapter:-unknown}") handled=$([ -f "$stem.handled" ] && printf true || printf false) bytes=$(file_bytes "$result") sample_${HASH_ALGORITHM}=$digest"
+    emit "- result_index=$relevant source_id_${HASH_ALGORITHM}=$(text_digest "$base") adapter=$(safe_atom "${adapter:-unknown}") handled=$([ -f "$stem.handled" ] && [ ! -L "$stem.handled" ] && printf true || printf false) bytes=$(file_bytes "$result") sample_${HASH_ALGORITHM}=$digest"
   done < "$PROCEVENT_LIST"
-  emit "- scanned_recent_results=$scanned related_results=$relevant"
+  emit "- scanned_result_candidates=$scanned related_results=$relevant"
   append_duplicate_lead "process-event result" "$PROCEVENT_HASHES"
 else
-  emit "- availability: no process-event result directory"
+  emit "- availability: no readable process-event result directory"
 fi
 
 emit ""
@@ -445,10 +519,10 @@ emit "## Supervision branch outcomes"
 BRANCH_STORE="$STATE/branch-outcomes.jsonl"
 BRANCH_HASHES="$TMP_ROOT/branch-hashes"
 : > "$BRANCH_HASHES"
-if [ -f "$BRANCH_STORE" ] && [ ! -L "$BRANCH_STORE" ]; then
+if [ -f "$BRANCH_STORE" ] && [ -r "$BRANCH_STORE" ] && [ ! -L "$BRANCH_STORE" ]; then
   BRANCH_SAMPLE="$TMP_ROOT/branch-sample"
-  LC_ALL=C tail -n "$SCAN_LINES" "$BRANCH_STORE" 2>/dev/null \
-    | LC_ALL=C head -c "$((SOURCE_BYTES * 4))" > "$BRANCH_SAMPLE"
+  LC_ALL=C tail -c "$JSONL_BYTES" "$BRANCH_STORE" 2>/dev/null \
+    | LC_ALL=C tail -n "$SCAN_LINES" > "$BRANCH_SAMPLE"
   matched=0
   while IFS= read -r row || [ -n "$row" ]; do
     [ "$matched" -lt "$SOURCE_LINES" ] || continue
@@ -473,45 +547,57 @@ if [ -f "$BRANCH_STORE" ] && [ ! -L "$BRANCH_STORE" ]; then
     printf '%s\n' "$digest" >> "$BRANCH_HASHES"
     emit "- outcome_index=$matched seq=$(safe_atom "$seq") epoch=$(safe_atom "$epoch") verdict=$(safe_atom "$verdict") silent=$(safe_atom "$silent") payload_${HASH_ALGORITHM}=$digest"
   done < "$BRANCH_SAMPLE"
-  emit "- matching_outcomes=$matched scanned_tail_lines=$SCAN_LINES"
+  emit "- matching_outcomes=$matched scan_line_limit=$SCAN_LINES sample_bytes_limit=$JSONL_BYTES"
   append_duplicate_lead "supervision outcome payload" "$BRANCH_HASHES"
 else
-  emit "- availability: no supervision branch outcome store"
+  emit "- availability: no readable supervision branch outcome store"
 fi
 
 emit ""
 emit "## Isolated-copy Git facts"
 if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
+  GIT_HOOKS="$TMP_ROOT/git-hooks"
+  mkdir -p "$GIT_HOOKS"
   GIT_TOP="$TMP_ROOT/git-top"
-  if fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git -C "$WORKTREE" rev-parse --show-toplevel > "$GIT_TOP" 2>/dev/null; then
+  if fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git \
+      -c core.fsmonitor=false -c core.hooksPath="$GIT_HOOKS" \
+      -C "$WORKTREE" rev-parse --show-toplevel > "$GIT_TOP" 2>/dev/null; then
     top=$(head -n 1 "$GIT_TOP")
     emit "- repository: present top_path_${HASH_ALGORITHM}=$(text_digest "$top")"
-    if head_oid=$(fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git -C "$WORKTREE" rev-parse --verify HEAD 2>/dev/null); then
+    if head_oid=$(fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git \
+        -c core.fsmonitor=false -c core.hooksPath="$GIT_HOOKS" \
+        -C "$WORKTREE" rev-parse --verify HEAD 2>/dev/null); then
       emit "- head: $(safe_atom "$head_oid")"
     else
       emit "- [lead] Git HEAD is unavailable"
     fi
-    if branch=$(fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git -C "$WORKTREE" symbolic-ref --short -q HEAD 2>/dev/null); then
+    if branch=$(fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git \
+        -c core.fsmonitor=false -c core.hooksPath="$GIT_HOOKS" \
+        -C "$WORKTREE" symbolic-ref --short -q HEAD 2>/dev/null); then
       emit "- branch_${HASH_ALGORITHM}: $(text_digest "$branch")"
     else
       emit "- branch: detached-or-unavailable"
     fi
-    GIT_STATUS="$TMP_ROOT/git-status"
     GIT_COUNTS="$TMP_ROOT/git-counts"
-    if fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git -C "$WORKTREE" \
-        status --porcelain=v1 --untracked-files=normal > "$GIT_STATUS" 2>/dev/null; then
-      LC_ALL=C awk '
-        /^\?\?/ { untracked++; next }
-        { tracked++ }
-        END { print "tracked=" tracked + 0 " untracked=" untracked + 0 }
-      ' "$GIT_STATUS" > "$GIT_COUNTS"
+    # shellcheck disable=SC2016
+    GIT_COUNTS_COMMAND='
+      set -o pipefail
+      GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath="$2" \
+        -C "$1" status --porcelain=v1 --untracked-files=normal --ignore-submodules=all |
+        LC_ALL=C awk '\''/^\?\?/ { untracked++; next }
+          { tracked++ }
+          END { print "tracked=" tracked + 0 " untracked=" untracked + 0 }'\''
+    '
+    if fm_run_timed "$COMMAND_TIMEOUT" bash -c "$GIT_COUNTS_COMMAND" _ "$WORKTREE" "$GIT_HOOKS" \
+        > "$GIT_COUNTS" 2>/dev/null; then
       emit "- working_copy: $(cat "$GIT_COUNTS")"
     else
       emit "- [lead] Git working-copy status failed or timed out"
     fi
     GIT_LOG="$TMP_ROOT/git-log"
-    if fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git -C "$WORKTREE" \
-        log -n "$SOURCE_LINES" --format='%H %ct' > "$GIT_LOG" 2>/dev/null; then
+    if fm_run_timed "$COMMAND_TIMEOUT" env GIT_OPTIONAL_LOCKS=0 git \
+        -c core.fsmonitor=false -c core.hooksPath="$GIT_HOOKS" \
+        -C "$WORKTREE" log -n "$SOURCE_LINES" --format='%H %ct' > "$GIT_LOG" 2>/dev/null; then
       while IFS= read -r commit_row; do
         [ -n "$commit_row" ] && emit "- commit: $(safe_atom "$commit_row")"
       done < "$GIT_LOG"
@@ -543,11 +629,14 @@ else
   MUSE_CACHE_COMMAND='
     . "$1"
     root=$(fm_busy_muse_binding_field "$2" "$3" sessions_root) || exit 1
+    workspace=$(fm_busy_muse_binding_field "$2" "$3" workspace_root) || exit 1
     binding=$(fm_busy_muse_binding_field "$2" "$3" binding_id) || exit 1
     cache_binding=$(fm_busy_muse_cache_field "$2" "$3" binding_id) || exit 1
     log=$(fm_busy_muse_cache_field "$2" "$3" session_log) || exit 1
     [ "$binding" = "$cache_binding" ] || exit 1
     fm_busy_muse_main_log_path_valid "$root" "$log" || exit 1
+    ! fm_busy_muse_binding_has_prior_log "$2" "$3" "$log" || exit 1
+    fm_busy_muse_matching_logs "$root" "$workspace" | grep -Fqx "$log" || exit 1
     printf "%s\n" "$log"
   '
   # shellcheck disable=SC2016
@@ -564,19 +653,18 @@ else
       > "$SESSION_OUT" 2>/dev/null; then
     SESSION_PATH=$(head -n 1 "$SESSION_OUT")
   fi
-  if [ -n "$SESSION_PATH" ] && [ -f "$SESSION_PATH" ] && [ ! -L "$SESSION_PATH" ]; then
+  if [ -n "$SESSION_PATH" ] && [ -f "$SESSION_PATH" ] \
+      && [ -r "$SESSION_PATH" ] && [ ! -L "$SESSION_PATH" ]; then
     SESSION_SAMPLE="$TMP_ROOT/session-sample"
-    LC_ALL=C tail -n "$SCAN_LINES" "$SESSION_PATH" 2>/dev/null \
-      | LC_ALL=C head -c "$((SOURCE_BYTES * 4))" > "$SESSION_SAMPLE"
+    LC_ALL=C tail -c "$JSONL_BYTES" "$SESSION_PATH" 2>/dev/null \
+      | LC_ALL=C tail -n "$SCAN_LINES" > "$SESSION_SAMPLE"
     SESSION_HASHES="$TMP_ROOT/session-hashes"
     : > "$SESSION_HASHES"
     errors=0
     sample_line=0
     while IFS= read -r row || [ -n "$row" ]; do
       sample_line=$((sample_line + 1))
-      printf '%s\n' "$row" | LC_ALL=C grep -Eq \
-        '"(isError|is_error)"[[:space:]]*:[[:space:]]*true|"(type|status|kind)"[[:space:]]*:[[:space:]]*"error"' \
-        || continue
+      session_row_is_error "$row" || continue
       errors=$((errors + 1))
       [ "$errors" -le "$SOURCE_LINES" ] || continue
       digest=$(text_digest "$row")

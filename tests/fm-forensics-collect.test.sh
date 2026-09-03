@@ -21,6 +21,13 @@ printf 'proof\n' > "$WORKTREE/proof.txt"
 git -C "$WORKTREE" add proof.txt
 git -C "$WORKTREE" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
   commit -qm "$SECRET commit subject"
+cat > "$WORKTREE/.git/hooks/fsmonitor-forensics-test" <<EOF
+#!/bin/sh
+touch '$HOME_FIXTURE/fsmonitor-hook-ran'
+printf '0\n'
+EOF
+chmod +x "$WORKTREE/.git/hooks/fsmonitor-forensics-test"
+git -C "$WORKTREE" config core.fsmonitor "$WORKTREE/.git/hooks/fsmonitor-forensics-test"
 
 cat > "$FAKEBIN/crew-state" <<'SH'
 #!/usr/bin/env bash
@@ -48,12 +55,17 @@ EOF
 
 {
   awk 'BEGIN { for (i = 1; i <= 5000; i++) print "working: bounded event " i }'
+  awk 'BEGIN {
+    for (j = 1; j <= 2048; j++) payload = payload "x"
+    for (i = 1; i <= 20; i++) print "working: " payload
+  }'
   printf 'blocked [key=secret-key]: %s\n' "$SECRET"
   printf 'blocked [key=secret-key]: %s\n' "$SECRET"
 } > "$HOME_FIXTURE/state/$ID.status"
 
 cat > "$HOME_FIXTURE/data/backlog.md" <<EOF
 ## In flight
+- [ ] $ID-extra - Mention $ID without sharing its identity (repo: fixture) (kind: ship)
 - [ ] $ID - Investigate $SECRET (repo: fixture) (kind: ship)
 - [ ] $ID - Investigate $SECRET (repo: fixture) (kind: ship)
 
@@ -137,6 +149,8 @@ cmp -s "$BEFORE.home" "$AFTER.home" \
   || fail "collector changed the Firstmate home"
 cmp -s "$BEFORE.worktree" "$AFTER.worktree" \
   || fail "collector changed the isolated copy"
+[ ! -e "$HOME_FIXTURE/fsmonitor-hook-ran" ] \
+  || fail "collector allowed Git status to execute the isolated copy's fsmonitor hook"
 
 OUT1_TEXT=$(cat "$OUT1")
 assert_contains "$OUT1_TEXT" 'schema: fm-forensics-packet.v1' "packet schema missing"
@@ -158,6 +172,7 @@ assert_contains "$OUT1_TEXT" '[lead] repeated process-event result' "repeated pr
 assert_contains "$OUT1_TEXT" '[lead] repeated supervision outcome payload' "repeated supervision outcome was not flagged"
 assert_contains "$OUT1_TEXT" '[lead] repeated session error record' "repeated session error was not flagged"
 assert_contains "$OUT1_TEXT" 'errors_in_bounded_tail=2' "session errors were not counted"
+assert_contains "$OUT1_TEXT" 'task_matches=2' "backlog matching accepted a partial task id"
 if grep -Fq "$SECRET" "$OUT1"; then
   fail "packet exposed captain-private or secret content"
 fi
@@ -167,6 +182,54 @@ FM_HOME="$HOME_FIXTURE" FM_ROOT_OVERRIDE="$ROOT" \
   "$COLLECTOR" "$ID" > "$OUT2"
 cmp -s "$OUT1" "$OUT2" || fail "repeated collection changed the packet or durable records"
 pass "forensics collector is repeatable, redacted, and side-effect free"
+
+cp "$HOME_FIXTURE/state/$ID.meta" "$TMP_ROOT/original-meta"
+{
+  cat "$TMP_ROOT/original-meta"
+  awk 'BEGIN { for (i = 1; i <= 20000; i++) printf "x"; print "" }'
+} > "$HOME_FIXTURE/state/$ID.meta"
+OVERSIZED_OUT="$TMP_ROOT/oversized-out"
+FM_HOME="$HOME_FIXTURE" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_FORENSICS_CREW_STATE_BIN="$FAKEBIN/crew-state" FM_FORENSICS_SOURCE_BYTES=1024 \
+  "$COLLECTOR" "$ID" > "$OVERSIZED_OUT"
+OVERSIZED_TEXT=$(cat "$OVERSIZED_OUT")
+assert_contains "$OVERSIZED_TEXT" '[lead] task metadata exceeds the trusted parse bound' \
+  "oversized metadata was trusted"
+assert_not_contains "$OVERSIZED_TEXT" 'metadata binding: valid' \
+  "truncated metadata produced a valid endpoint verdict"
+cp "$TMP_ROOT/original-meta" "$HOME_FIXTURE/state/$ID.meta"
+pass "forensics collector refuses identity claims from truncated metadata"
+
+sed 's/^kind=ship$/kind=secondmate/' "$TMP_ROOT/original-meta" \
+  > "$HOME_FIXTURE/state/$ID.meta"
+SECONDMATE_OUT="$TMP_ROOT/secondmate-out"
+FM_HOME="$HOME_FIXTURE" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_FORENSICS_CREW_STATE_BIN="$FAKEBIN/crew-state" \
+  "$COLLECTOR" "$ID" > "$SECONDMATE_OUT"
+SECONDMATE_TEXT=$(cat "$SECONDMATE_OUT")
+assert_contains "$SECONDMATE_TEXT" 'second-mate conversations are outside this collector' \
+  "second-mate session boundary was not reported"
+assert_not_contains "$SECONDMATE_TEXT" 'errors_in_bounded_tail=' \
+  "collector read a second-mate session log"
+cp "$TMP_ROOT/original-meta" "$HOME_FIXTURE/state/$ID.meta"
+pass "forensics collector excludes second-mate conversations"
+
+sed "s|^workspace_root=.*|workspace_root=$TMP_ROOT/unrelated-workspace|" \
+  "$HOME_FIXTURE/state/$ID.muse-session" > "$TMP_ROOT/unrelated-session-binding"
+mv "$TMP_ROOT/unrelated-session-binding" "$HOME_FIXTURE/state/$ID.muse-session"
+UNRELATED_SESSION_OUT="$TMP_ROOT/unrelated-session-out"
+FM_HOME="$HOME_FIXTURE" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_FORENSICS_CREW_STATE_BIN="$FAKEBIN/crew-state" \
+  "$COLLECTOR" "$ID" > "$UNRELATED_SESSION_OUT"
+UNRELATED_SESSION_TEXT=$(cat "$UNRELATED_SESSION_OUT")
+assert_contains "$UNRELATED_SESSION_TEXT" 'task-bound session log could not be resolved without guessing' \
+  "collector accepted a session log bound to another workspace"
+assert_not_contains "$UNRELATED_SESSION_TEXT" 'errors_in_bounded_tail=' \
+  "collector read a session log bound to another workspace"
+sed "s|^workspace_root=.*|workspace_root=$WORKTREE|" \
+  "$HOME_FIXTURE/state/$ID.muse-session" > "$TMP_ROOT/restored-session-binding"
+mv "$TMP_ROOT/restored-session-binding" "$HOME_FIXTURE/state/$ID.muse-session"
+pass "forensics collector rejects unrelated session logs"
 
 sed "s/^endpoint_task_id=.*/endpoint_task_id=another-task/" \
   "$HOME_FIXTURE/state/$ID.meta" > "$TMP_ROOT/stale-meta"
@@ -204,3 +267,9 @@ if grep -Fq "$SECRET" "$BOUNDED_OUT"; then
   fail "bounded packet exposed captain-private or secret content"
 fi
 pass "forensics collector bounds large inputs and total output"
+
+rc=0
+FM_HOME="$HOME_FIXTURE" FM_ROOT_OVERRIDE="$ROOT" \
+  "$COLLECTOR" ../outside >/dev/null 2>&1 || rc=$?
+expect_code 2 "$rc" "collector rejects a path-traversing task id"
+pass "forensics collector rejects task ids outside Firstmate's path-safe contract"

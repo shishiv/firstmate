@@ -68,6 +68,7 @@ Use the narrowest authoritative evidence first.
 
 For an ordinary direct report, the recorded worker session JSONL is the closest analogue to an activity log.
 Resolve it from the task's own endpoint or backend record, then inspect only the subject's session.
+Automatic collector extraction is limited to Muse and Cursor because those adapters publish task-bound durable transcript sidecars; every other worker tool reports session errors unavailable rather than guessing at an unrelated log.
 Search `toolResult` entries with `isError: true`, pair each result with its tool call and preceding assistant text, and follow the chain back to the first incorrect state assumption.
 Never read a second mate's conversation or any unrelated session file.
 
