@@ -248,8 +248,8 @@ test_version_check_refuses_old_protocol() {
 test_version_check_refuses_missing_herdr() {
   local dir out status
   dir="$TMP_ROOT/version-missing"; mkdir -p "$dir/empty-fakebin"
-  out=$( PATH="$dir/empty-fakebin:/usr/bin:/bin" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_version_check' "$ROOT" 2>&1 )
+  out=$( PATH="$dir/empty-fakebin" \
+    /bin/bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_version_check' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "version_check should refuse when herdr is not installed"
   assert_contains "$out" "not installed" "version_check did not report herdr as missing"
@@ -638,6 +638,41 @@ test_create_task_refuses_duplicate_label_when_agent_live() {
   assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create a replacement tab when the duplicate is live"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' "create_task must not close a live agent's pane"
   pass "fm_backend_herdr_create_task: a same-labeled tab with a live (even idle) registered agent still refuses exactly as before"
+}
+
+test_pi_agent_state_requires_bare_shell_proof() {
+  local out
+  out=$(ROOT="$ROOT" /bin/bash -c '
+    . "$ROOT/bin/backends/herdr.sh"
+    fm_backend_herdr_pane_presence_state() { printf present; }
+    probe() {
+      PROBE_AGENT=$1
+      PROBE_STATUS=$2
+      PROBE_SHELL=$3
+      fm_backend_herdr_cli() {
+        printf "{\"result\":{\"agent\":{\"agent\":\"%s\",\"agent_status\":\"%s\"}}}\n" "$PROBE_AGENT" "$PROBE_STATUS"
+      }
+      fm_backend_herdr_pane_idle_shell_sample() { [ "$PROBE_SHELL" = yes ]; }
+      fm_backend_herdr_agent_state "fmtest:w1:p1"
+    }
+    printf "%s %s %s %s" \
+      "$(probe pi idle no)" \
+      "$(probe pi working no)" \
+      "$(probe pi idle yes)" \
+      "$(probe claude idle yes)"
+    fm_backend_herdr_cli() {
+      printf "{\"result\":{\"agent\":{\"agent\":\"pi\",\"agent_status\":\"idle\"}}}\n"
+    }
+    fm_backend_herdr_pane_idle_shell_sample() { return 0; }
+    if fm_backend_herdr_agent_identity_raw fmtest w1:p1 >/dev/null; then
+      printf " unsafe"
+    else
+      printf " safe"
+    fi
+  ')
+  [ "$out" = "alive alive dead alive safe" ] \
+    || fail "Pi liveness must require a bare-shell proof, got '$out'"
+  pass "fm_backend_herdr_agent_state: Pi idle and working agents stay alive until an exact bare shell proves exit or injection"
 }
 
 test_create_task_refuses_when_any_duplicate_label_is_live() {
@@ -4510,6 +4545,7 @@ test_label_collision_startup_workspace_leaves_live_tab_alone
 test_prune_refuses_a_working_agent_pane_defense_in_depth
 test_create_task_refuses_duplicate_label
 test_create_task_refuses_duplicate_label_when_agent_live
+test_pi_agent_state_requires_bare_shell_proof
 test_create_task_refuses_when_any_duplicate_label_is_live
 test_create_task_closes_and_replaces_dead_pane_husk
 test_create_task_closes_and_replaces_no_agent_husk

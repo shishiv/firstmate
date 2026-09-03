@@ -600,6 +600,24 @@ Observed 2026-08-19:
 ok - live Herdr submit confirm: Claude Code (2.1.236 (Claude Code)) on herdr 0.8.0 reports empty for a landed idle steer
 ```
 
+### Pi exit registration
+
+Measured 2026-09-03 against Herdr 0.8.2 and Pi 0.84.4 in a guarded named lab.
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh tests/fm-control-pi-herdr-recovery.test.sh
+```
+
+Observed output:
+
+```text
+ok - fm-control relaunch: an exited Pi shell with a stale idle record is replaced in the same Herdr pane and worktree
+```
+
+A live Pi registration remained `alive` while idle, and an explicit Azure Pi turn also reported `working` with Pi as the foreground process.
+After normal `/quit`, Herdr retained the stale Pi idle registration over a proven bare shell, which the adapter classifies as `dead` and refuses as an injection target.
+The portable state matrix is in `tests/fm-backend-herdr.test.sh`.
+
 ### Prune and respawn
 
 The real label-collision reproduction is owned by:

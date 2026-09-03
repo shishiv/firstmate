@@ -20,13 +20,9 @@ cat > "$FAKEBIN/herdr" <<'SH'
 set -eu
 printf '%s\n' "$*" >> "$FM_FAKE_HERDR_LOG"
 state=$FM_FAKE_HERDR_STATE
-last=
-for arg in "$@"; do
-  previous=$last
-  last=$arg
-done
-[ "${previous:-}" = --session ] || { echo "fake herdr: missing trailing --session" >&2; exit 90; }
-session=$last
+[ "${1:-}" = --session ] && [ -n "${2:-}" ] || { echo "fake herdr: missing leading --session" >&2; exit 90; }
+session=$2
+shift 2
 default_socket=$(cat "$state/default-socket")
 lab_state=absent
 [ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
@@ -42,7 +38,7 @@ case "$1 ${2:-}" in
         '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
     fi
     ;;
-  "server --session")
+  "server " )
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
       "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY"
     fi
@@ -109,6 +105,8 @@ test_provision_run_and_guarded_teardown() {
   assert_present "$TRIPWIRES/$name.fleet-state.json" "provision did not record the fleet-state tripwire"
 
   run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null || fail "safe run command failed"
+  run_with_fake fm_herdr_lab_cli "$name" agent start pi --kind pi --pane w1:p2 -- --model test-model --thinking xhigh >/dev/null \
+    || fail "agent start with agent arguments failed"
   run_with_fake fm_herdr_lab_cli "$name" server >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "bare server start outside provision must be refused"
   status=0
@@ -139,21 +137,23 @@ test_provision_run_and_guarded_teardown() {
 
   while IFS= read -r line; do
     case "$line" in
-      *"--session $name") : ;;
-      *) fail "Herdr call lacks a trailing lab session: $line" ;;
+      "--session $name "*) : ;;
+      *) fail "Herdr call lacks a leading lab session: $line" ;;
     esac
   done < "$FAKE_LOG"
   line_count=$(wc -l < "$FAKE_LOG" | tr -d ' ')
-  stop_line=$(grep -n "^session stop $name --json --session $name$" "$FAKE_LOG" | cut -d: -f1)
-  delete_line=$(grep -n "^session delete $name --json --session $name$" "$FAKE_LOG" | cut -d: -f1)
+  stop_line=$(grep -n "^--session $name session stop $name --json$" "$FAKE_LOG" | cut -d: -f1)
+  delete_line=$(grep -n "^--session $name session delete $name --json$" "$FAKE_LOG" | cut -d: -f1)
   if [ -z "$stop_line" ] || [ -z "$delete_line" ] || [ "$line_count" -le "$delete_line" ]; then
     fail "teardown did not emit explicit stop/delete followed by the after tripwire"
   fi
-  sed -n "$((stop_line - 1))p" "$FAKE_LOG" | grep -F "session list --json --session $name" >/dev/null \
+  sed -n "$((stop_line - 1))p" "$FAKE_LOG" | grep -F -- "--session $name session list --json" >/dev/null \
     || fail "stop was not immediately preceded by a fresh refuse-default session list"
-  sed -n "$((delete_line - 1))p" "$FAKE_LOG" | grep -F "session list --json --session $name" >/dev/null \
+  sed -n "$((delete_line - 1))p" "$FAKE_LOG" | grep -F -- "--session $name session list --json" >/dev/null \
     || fail "delete was not immediately preceded by a fresh refuse-default session list"
-  pass "fm-herdr-lab: provisioning, scoped calls, guarded teardown, and fleet tripwire are deterministic"
+  grep -Fx -- "--session $name agent start pi --kind pi --pane w1:p2 -- --model test-model --thinking xhigh" "$FAKE_LOG" >/dev/null \
+    || fail "agent start did not keep the lab session out of agent arguments"
+  pass "fm-herdr-lab: provisioning, leading scoped calls, guarded teardown, and agent arguments are deterministic"
 }
 
 test_missing_tripwire_blocks_destruction() {

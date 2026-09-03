@@ -269,7 +269,8 @@ Create replaces only a confidently dead or no-agent husk, creates the replacemen
 This prevents closing the workspace's last tab before a replacement exists.
 
 The generic Herdr agent-liveness probe reuses the same classifier.
-A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
+A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered non-Pi agent becomes `alive`, and an unexpected read becomes `unreadable`.
+A Pi registration over a proven idle shell becomes `dead`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
 
 The session-start sweep uses this probe.
@@ -310,7 +311,7 @@ Never use ambient `herdr server stop` for Firstmate verification.
 An environment-only session selection can silently reach a different running server, and the ambient stop command has no explicit target.
 
 `bin/fm-herdr-lab.sh` is the sole supported lifecycle helper for isolated verification.
-It provisions only non-default names beginning with `fm-lab-`, appends an explicit `--session` to allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
+It provisions only non-default names beginning with `fm-lab-`, supplies an explicit `--session` before allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
 Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, or `default:true` identities.
 Its before/after tripwire requires the live default-session snapshot to remain byte-identical.
 
@@ -344,6 +345,7 @@ tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
+tests/fm-control-pi-herdr-recovery.test.sh
 ```
 
 Real Herdr tests use the named lab helper and default-session tripwire.

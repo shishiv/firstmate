@@ -20,7 +20,7 @@
 # from an environment this test composed.
 #
 # Safety (2026-07-02 incident, see tests/herdr-test-safety.sh): every lifecycle
-# operation goes through bin/fm-herdr-lab.sh, which appends the named session
+# operation goes through bin/fm-herdr-lab.sh, which supplies the named session
 # flag and verifies the default fleet session is unchanged after teardown.
 set -u
 
