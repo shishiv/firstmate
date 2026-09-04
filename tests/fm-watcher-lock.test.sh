@@ -357,6 +357,42 @@ test_lock_empty_pid_uses_minimum_grace() {
   pass "empty mid-acquire lock keeps a minimum grace"
 }
 
+test_lock_creation_failure_does_not_recurse_into_steal() {
+  local dir state lockdir create_rc calls out
+  dir=$(make_case lock-creation-failure)
+  state="$dir/state"
+  lockdir="$dir/missing/.contend.lock"
+  create_rc=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    rc=0
+    fm_lock_try_create "$2" || rc=$?
+    printf "%s\n" "$rc"
+  ' _ "$LIB" "$lockdir") || fail "lock creation failure probe failed"
+  [ "$create_rc" = 2 ] || fail "missing lock parent was not reported as a creation failure (rc=$create_rc)"
+
+  calls="$dir/calls"
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    lock=$2
+    calls=$3
+    fm_lock_try_create() {
+      printf "%s\n" "$1" >> "$calls"
+      FM_LOCK_OWNER_DIR=
+      [ "$1" = "$lock.steal.steal" ] && return 0
+      return 2
+    }
+    rc=0
+    fm_lock_try_acquire "$lock" || rc=$?
+    printf "rc=%s\n" "$rc"
+  ' _ "$LIB" "$lockdir" "$calls")
+  [ "$out" = 'rc=2' ] || fail "a creation failure entered stale recovery: $out"
+  [ "$(wc -l < "$calls" | tr -d '[:space:]')" -eq 1 ] \
+    || fail "lock creation failure attempted recursive steal paths: $(cat "$calls")"
+  [ "$(cat "$calls")" = "$lockdir" ] \
+    || fail "lock creation failure did not stop at the original path"
+  pass "lock creation failure does not enter recursive stale recovery"
+}
+
 test_lock_late_claim_loses_after_recreate() {
   local dir state lockdir out
   dir=$(make_case lock-late-claim)
@@ -1116,6 +1152,7 @@ test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
+test_lock_creation_failure_does_not_recurse_into_steal
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid

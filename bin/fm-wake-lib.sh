@@ -452,28 +452,36 @@ fm_lock_claim() {
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
-  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 1
+  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 2
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
   if ! fm_lock_prepare_owner "$ownerdir"; then
     fm_lock_discard_owner "$ownerdir"
-    return 1
+    return 2
   fi
-  if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
-    if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
-      FM_LOCK_OWNER_DIR=$ownerdir
-      return 0
-    fi
+  if ln -s "$ownerdir" "$lockdir" 2>/dev/null; then
     if fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
-      rm -f "$lockdir" 2>/dev/null || true
+      if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
+        FM_LOCK_OWNER_DIR=$ownerdir
+        return 0
+      fi
+      if fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
+        rm -f "$lockdir" 2>/dev/null || true
+      fi
+      fm_lock_discard_owner "$ownerdir"
+      return 1
     fi
+    fm_lock_remove_stray_owner_link "$lockdir" "$ownerdir"
   else
     fm_lock_remove_stray_owner_link "$lockdir" "$ownerdir"
   fi
   fm_lock_discard_owner "$ownerdir"
-  return 1
+  if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
+    return 1
+  fi
+  return 2
 }
 
 fm_lock_remove_path() {
@@ -829,14 +837,18 @@ fm_recovery_marker_reopen_announced() {
 }
 
 fm_lock_try_acquire() {
-  local lockdir=$1 pid steal cur rc steal_owner primary_owner
+  local lockdir=$1 pid steal cur rc steal_owner primary_owner nested nested_owner
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
 
-  if fm_lock_try_create "$lockdir"; then
-    return 0
-  fi
+  rc=0
+  fm_lock_try_create "$lockdir" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) ;;
+    *) return "$rc" ;;
+  esac
 
   # Compare against ${BASHPID:-$$} inline, never via a command substitution:
   # $() forks a subshell whose BASHPID is not this frame's pid.
@@ -867,12 +879,66 @@ fm_lock_try_acquire() {
   fi
 
   steal="$lockdir.steal"
-  if ! fm_lock_try_acquire "$steal"; then
+  rc=0
+  fm_lock_try_create "$steal" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    steal_owner=${FM_LOCK_OWNER_DIR:-}
+  elif [ "$rc" -ne 1 ]; then
+    return "$rc"
+  else
+    cur=$(cat "$steal/pid" 2>/dev/null || true)
+    if [ -n "$cur" ] && [ "$cur" = "${BASHPID:-$$}" ]; then
+      fm_lock_remove_path "$steal" || true
+      rc=0
+      fm_lock_try_create "$steal" || rc=$?
+      [ "$rc" -eq 0 ] || return "$rc"
+      steal_owner=${FM_LOCK_OWNER_DIR:-}
+    elif fm_pid_alive "$cur" || fm_lock_mid_acquire_is_fresh "$steal" "$cur"; then
+      FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+      FM_LOCK_OWNER_DIR=
+      return 1
+    else
+      nested="$steal.steal"
+      rc=0
+      fm_lock_try_create "$nested" || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        [ "$rc" -eq 1 ] || return "$rc"
+        FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+        FM_LOCK_OWNER_DIR=
+        return 1
+      fi
+      nested_owner=${FM_LOCK_OWNER_DIR:-}
+      primary_owner=
+      if [ -L "$steal" ]; then
+        primary_owner=$(fm_lock_link_owner "$steal" 2>/dev/null || true)
+      fi
+      cur=$(cat "$steal/pid" 2>/dev/null || true)
+      if ! fm_lock_recheck_stale_owner "$steal" "$primary_owner" "$cur"; then
+        fm_lock_release "$nested"
+        FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+        FM_LOCK_OWNER_DIR=
+        return 1
+      fi
+      fm_lock_remove_path "$steal" || true
+      rc=0
+      fm_lock_try_create "$steal" "$nested_owner" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        steal_owner=${FM_LOCK_OWNER_DIR:-}
+      fi
+      fm_lock_release "$nested"
+      if [ "$rc" -ne 0 ]; then
+        FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+        FM_LOCK_OWNER_DIR=
+        return "$rc"
+      fi
+    fi
+  fi
+
+  if [ -z "$steal_owner" ]; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
     return 1
   fi
-  steal_owner=${FM_LOCK_OWNER_DIR:-}
 
   cur=$(cat "$lockdir/pid" 2>/dev/null || true)
   if fm_pid_alive "$cur"; then
@@ -930,8 +996,12 @@ fm_lock_try_acquire() {
 }
 
 fm_lock_acquire_wait() {
-  local lockdir=$1
-  while ! fm_lock_try_acquire "$lockdir"; do
+  local lockdir=$1 rc
+  while :; do
+    rc=0
+    fm_lock_try_acquire "$lockdir" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$rc" -eq 1 ] || return "$rc"
     sleep 0.1
   done
 }
@@ -975,12 +1045,13 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
 # reconciliation refusal instead of wedging an unattended close.
 # Mutation-critical callers that can safely block keep fm_lock_acquire_wait.
 fm_lock_acquire_wait_bounded() {
-  local lockdir=$1 seconds=$2 caller_pid rc owner_pid
+  local lockdir=$1 seconds=$2 caller_pid rc owner_pid fallback_rc
   case "$seconds" in ''|*[!0-9]*|0) return 2 ;; esac
   _fm_wake_require_timeout || return 1
-  if fm_lock_try_acquire "$lockdir"; then
-    return 0
-  fi
+  rc=0
+  fm_lock_try_acquire "$lockdir" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 1 ] || return "$rc"
 
   caller_pid=${BASHPID:-$$}
   # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
@@ -1004,9 +1075,12 @@ fm_lock_acquire_wait_bounded() {
   # A deadline can kill the helper just after it acquired and before handoff.
   # Give ordinary stale-owner recovery one final non-blocking chance so that
   # helper cleanup cannot manufacture a false contention advisory.
-  if fm_lock_try_acquire "$lockdir"; then
+  fallback_rc=0
+  fm_lock_try_acquire "$lockdir" || fallback_rc=$?
+  if [ "$fallback_rc" -eq 0 ]; then
     return 0
   fi
+  [ "$fallback_rc" -eq 1 ] || return "$fallback_rc"
   if [ "$rc" -eq 124 ]; then
     owner_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
     case "$owner_pid" in
