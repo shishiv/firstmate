@@ -153,6 +153,9 @@ case "${1:-}" in
         fi
         printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}"
         exit 0 ;;
+      process-info)
+        printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":99999999,"foreground_process_group_id":99999999,"foreground_processes":[{"pid":99999999}]}}}\n' "${4:-}"
+        exit 0 ;;
     esac ;;
   agent)
     case "${2:-}" in
@@ -168,7 +171,24 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr"
+  # Model the process observation independently of the semantic registry.
+  # The kernel-backed probe itself is covered by fm-herdr-process-state.
+  cat > "$fb/python3" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  */herdr-process-snapshot.py)
+    if [ "${FM_FAKE_HERDR_HUSK:-0}" = 1 ]; then
+      printf '%s\n' '{"processes":[{"comm":"bash","argv":["bash"],"pid":99999999}],"shell_only":true}'
+    elif [ -n "${FM_FAKE_HERDR_AGENT_STATUS:-}" ]; then
+      printf '%s\n' '{"processes":[{"comm":"pi","argv":["pi"],"pid":99999999}],"shell_only":false}'
+    else
+      printf '%s\n' '{"error":"unreadable"}'
+    fi
+    exit 0 ;;
+esac
+SH
+  printf 'exec %q "$@"\n' "$(command -v python3)" >> "$fb/python3"
+  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr" "$fb/python3"
   printf '%s\n' "$fb"
 }
 
@@ -1496,8 +1516,8 @@ test_no_run_herdr_alive_with_failed_read_stays_live() {
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_TMUX_MISSING=1
-  # The 200-line scrollback read fails while the cheap pane get / agent get
-  # pair answers: the pane is present and its agent is working.
+  # The scrollback fails while pane/process observations still prove a live
+  # agent; its separate semantic record says that agent is working.
   FM_FAKE_HERDR_READ_FAIL=1
   FM_FAKE_HERDR_AGENT_STATUS=working
   local out; out=$(run_crew_state "$d" feat-herdr-alive)

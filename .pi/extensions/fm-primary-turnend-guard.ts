@@ -11,8 +11,7 @@ import {
 } from "./lib/fm-operational-input.ts";
 
 let guardFollowupActive = false;
-
-type LockOwnership = "owned" | "missing" | "other";
+let guardGeneration = 0;
 
 const extensionFile = fileURLToPath(import.meta.url);
 const extensionDir = dirname(extensionFile);
@@ -22,40 +21,14 @@ const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 const marker = `${state}/.pi-turnend-extension-loaded`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 
-function parentPid(pid: string): string {
-  const result = spawnSync("ps", ["-o", "ppid=", "-p", pid], { encoding: "utf8" });
-  if (result.status !== 0) return "";
-  return result.stdout.trim();
-}
-
-function pidAlive(pid: string): boolean {
-  try {
-    process.kill(Number(pid), 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function lockOwnership(): LockOwnership {
-  let lockPid = "";
-  try {
-    lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
-  } catch {
-    return "missing";
-  }
-  if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
-  let pid = String(process.pid);
-  for (let i = 0; i < 8; i += 1) {
-    if (pid === lockPid) return "owned";
-    pid = parentPid(pid);
-    if (!pid || pid === "1") break;
-  }
-  return pidAlive(lockPid) ? "other" : "missing";
-}
 
 function markLoaded(): void {
-  if (!existsSync(state) || lockOwnership() === "other") return;
+  if (!existsSync(state)) return;
+  try {
+    if (readFileSync(`${state}/.lock`, "utf8").trim() !== String(process.pid)) return;
+  } catch {
+    return;
+  }
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
 }
 
@@ -442,6 +415,7 @@ async function claimSessionstartMessage(
   if (generation.sessionId && currentSessionId && generation.sessionId !== currentSessionId) {
     return undefined;
   }
+  markLoaded();
   generation.delivered = true;
   return sessionstartMessage(generation, result);
 }
@@ -541,6 +515,8 @@ export default function (pi: ExtensionAPI) {
   registerSessionstartExitListener();
 
   pi.on?.("session_start", (event, ctx) => {
+    guardGeneration += 1;
+    guardFollowupActive = false;
     const reason = String((event as { reason?: unknown }).reason ?? "");
     const source = reason === "startup"
       ? startupRebuildSource(ctx) ?? "startup"
@@ -578,6 +554,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on?.("session_shutdown", async () => {
+    guardGeneration += 1;
     const generation = sessionstartGeneration;
     try {
       if (generation) await stopSessionstartGeneration(generation);
@@ -676,7 +653,31 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const result = await runGuard();
+    const owner = guardGeneration;
+    let result = await runGuard();
+    if (owner !== guardGeneration) return;
+    if (result.code === 2) {
+      // The watcher owns the handshake and its existing readiness budget.
+      // Loaded markers or a fresh beacon alone never satisfy this guard.
+      const observation: { settled?: Promise<boolean>; timeoutMs?: number } = {};
+      pi.events?.emit("fm-watch:observe-continuity", observation);
+      const { settled, timeoutMs } = observation;
+      if (settled && typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        await new Promise<void>((resolveWait) => {
+          const timer = setTimeout(resolveWait, timeoutMs);
+          void settled.then(() => {
+            clearTimeout(timer);
+            resolveWait();
+          }, () => {
+            clearTimeout(timer);
+            resolveWait();
+          });
+        });
+        if (owner !== guardGeneration) return;
+        result = await runGuard();
+      }
+    }
+    if (owner !== guardGeneration) return;
     if (result.code !== 2) return;
 
     guardFollowupActive = true;

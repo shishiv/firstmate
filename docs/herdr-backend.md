@@ -278,10 +278,12 @@ A restored same-labeled tab with a missing pane or no registered agent is a husk
 Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
 This prevents closing the workspace's last tab before a replacement exists.
 
-The generic Herdr agent-liveness probe reuses the same pane classifier, then applies one recovery-only exception.
-A structurally gone pane or a pane read from a session positively reported as having no running server becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and every other unexpected read becomes `unreadable`.
-The stopped-server exception does not widen husk detection or any close authority; those paths still refuse an unreadable pane.
-Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
+The generic Herdr agent-liveness probe reads the exact pane's kernel process tree independently of its semantic agent registration.
+`bin/backends/herdr.sh` owns the recovery verdict, with bounded process observations from `bin/backends/herdr-process-snapshot.py` and the shared harness vocabulary in `bin/fm-session-lock-lib.sh`.
+A missing pane or positively stopped server reads `missing`; a proven interactive shell chain, including a nested Treehouse shell, reads `dead`; positive harness process evidence reads `alive`.
+Unknown processes remain `ambiguous`, and failed or contradictory reads remain `unreadable` rather than licensing a relaunch.
+Retained `idle` registration alone proves neither presence nor absence.
+The husk, focus and destructive single-shell cleanup proofs remain separate and unchanged.
 
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
