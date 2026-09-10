@@ -92,6 +92,7 @@ type SessionGeneration = {
   cleanupTimer: ReturnType<typeof setTimeout> | null;
   retryFailures: number;
   restoring: boolean;
+  restorationFailed: boolean;
   seq: number;
   pendingActionables: PendingActionableClose[];
   cleanupFailure: string;
@@ -231,7 +232,12 @@ function lockOwnership(): LockOwnership {
 }
 
 function markLoaded(): void {
-  if (lockOwnership() === "other") return;
+  // An ancestor's ownership permits operations, not attesting its loaded code.
+  try {
+    if (readFileSync(`${state}/.lock`, "utf8").trim() !== String(process.pid)) return;
+  } catch {
+    return;
+  }
   mkdirSync(state, { recursive: true });
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
 }
@@ -418,6 +424,7 @@ function createGeneration(): SessionGeneration {
     cleanupTimer: null,
     retryFailures: 0,
     restoring: false,
+    restorationFailed: false,
     seq: 0,
     pendingActionables: [],
     cleanupFailure: "",
@@ -767,7 +774,9 @@ export default function (pi: ExtensionAPI) {
           // A new restoration supersedes whatever became of the previous
           // successor; only a failure during this delivery is retried after it.
           owner.deferredClose = null;
+          owner.restorationFailed = false;
           const restoration = await restoreAfterActionableClose(owner, pending.predecessorArmPid);
+          owner.restorationFailed = Boolean(restoration.failure);
           if (!generationIsLive(owner)) {
             settleClaim("failed");
             releaseClaim();
@@ -847,11 +856,11 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function waitForReadiness(armChild: ChildProcess): Promise<boolean> {
+  function waitForReadiness(armChild: ChildProcess, timeoutMs = armReadyTimeoutMs): Promise<boolean> {
     const readiness = armReadiness.get(armChild);
     if (!readiness) return Promise.resolve(false);
     return new Promise((resolveReady) => {
-      const timer = setTimeout(() => resolveReady(false), armReadyTimeoutMs);
+      const timer = setTimeout(() => resolveReady(false), timeoutMs);
       timer.unref();
       void readiness.then((ready) => {
         clearTimeout(timer);
@@ -969,6 +978,7 @@ export default function (pi: ExtensionAPI) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     owner.child = armChild;
+    owner.restorationFailed = false;
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -1089,6 +1099,33 @@ export default function (pi: ExtensionAPI) {
     if (loadFailure) surfaceFailure(owner, `${loadFailure}\n${result.message}`);
     return result;
   }
+
+  // Read-only handshake for the turn-end guard. It observes this owner's
+  // existing restoration only: no arm, retry, or process lifecycle is started.
+  // The consumer also bounds the promise and reruns the strict shell guard.
+  pi.events?.on("fm-watch:observe-continuity", (data: unknown) => {
+    if (!data || typeof data !== "object" || !Object.isExtensible(data)) return;
+    const request = data as { settled?: Promise<boolean>; timeoutMs?: number };
+    const owner = generation;
+    const restoring = (): boolean => generationIsLive(owner) &&
+      lockOwnership() === "owned" && !owner.restorationFailed &&
+      owner.retryFailures <= retryLimit && Boolean(owner.child || owner.retryTimer ||
+        (owner.restoring && owner.pendingActionables.some((item) => !item.delivered)));
+    if (!restoring()) return;
+    request.timeoutMs = armReadyTimeoutMs;
+    request.settled = (async () => {
+      const deadline = Date.now() + armReadyTimeoutMs;
+      while (Date.now() < deadline && restoring()) {
+        const child = owner.child;
+        if (child && !armRetired.has(child)) {
+          const ready = await waitForReadiness(child, Math.max(1, deadline - Date.now()));
+          if (ready && owner.child === child && restoring()) return true;
+        }
+        await new Promise<void>((resolveWait) => setTimeout(resolveWait, 20));
+      }
+      return false;
+    })();
+  });
 
   pi.on?.("before_agent_start", (event) => {
     consumeWake(generation, event.prompt);

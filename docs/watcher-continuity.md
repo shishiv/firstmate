@@ -46,6 +46,10 @@ Grok retains its tracked background-task notification protocol.
 No adapter starts a replacement with shell `&`.
 
 The turn-end guard remains the final backstop rather than the normal continuity mechanism and cooperates with the auto-arm in its `--claude` mode.
+Pi's final guard also observes a restoration already owned by the current watcher generation before repeating its strict process/identity/beacon check.
+The read-only handshake in `.pi/extensions/fm-primary-pi-watch.ts` shares the existing readiness budget; it never starts an arm or extends the beacon grace.
+No first arm, exhausted restoration, lost ownership and expired observation still leave the strict guard in force, and session replacement cancels the old guard's delivery.
+Pi extension build markers are written only by the exact session-lock PID, including after cold-start lock acquisition; a descendant cannot attest which code its parent loaded.
 
 ## Recovery episode acknowledgement
 

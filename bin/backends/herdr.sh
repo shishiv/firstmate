@@ -86,6 +86,12 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
+# Shared process vocabulary; semantic agent status is not a liveness proof.
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-session-lock-lib.sh"
+# shellcheck source=bin/fm-gemini-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-gemini-lib.sh"
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -2071,10 +2077,12 @@ fm_backend_herdr_server_running_state() {  # <session>
 }
 
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start
-# sweep as the tmux classifier. It reuses the husk classifier rather than
-# creating a second Herdr state machine: a structurally gone pane is `missing`,
-# a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
-# unexpected or failed API read is `unreadable`.
+# sweep as the tmux classifier. A structurally gone pane is `missing`; a
+# bounded, twice-observed interactive shell/wrapper chain is `dead`; positive
+# harness process evidence is `alive`. Unknown processes stay `ambiguous`,
+# and failed or inconsistent observations stay `unreadable`.
+# Semantic registration is intentionally not presence evidence: lifecycle
+# reporters can leave idle authority behind after the harness exits.
 #
 # One exception to that last case, and it is deliberately made HERE rather than
 # in the husk classifier: a read can fail because the recorded session's server
@@ -2090,19 +2098,45 @@ fm_backend_herdr_server_running_state() {  # <session>
 # whose state cannot itself be read, still yields `unreadable` here too: absence
 # is claimed only from positive evidence of it.
 fm_backend_herdr_agent_state() {  # <target>
-  local target=$1
+  local target=$1 presence info after snapshot comm argv0 pid args
   fm_backend_herdr_parse_target "$target" || { printf 'unreadable'; return 0; }
-  case "$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
-    dead) printf 'missing' ;;
-    no-agent) printf 'dead' ;;
-    live) printf 'alive' ;;
+  presence=$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  case "$presence" in
+    dead) printf 'missing'; return 0 ;;
+    present) ;;
     *)
       case "$(fm_backend_herdr_server_running_state "$FM_BACKEND_HERDR_SESSION")" in
         stopped) printf 'missing' ;;
         *) printf 'unreadable' ;;
       esac
-      ;;
+      return 0 ;;
   esac
+  info=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane process-info --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null) \
+    || { printf 'unreadable'; return 0; }
+  if ! printf '%s' "$info" | jq -e --arg pane "$FM_BACKEND_HERDR_PANE" \
+    '.result.process_info.pane_id == $pane' >/dev/null 2>&1; then
+    printf 'unreadable'; return 0
+  fi
+  snapshot=$(printf '%s' "$info" | python3 "$FM_BACKEND_HERDR_ROOT/bin/backends/herdr-process-snapshot.py") \
+    || { printf 'unreadable'; return 0; }
+  if ! printf '%s' "$snapshot" | jq -e '.processes | type == "array"' >/dev/null 2>&1; then
+    printf 'unreadable'; return 0
+  fi
+  while IFS=$'\t' read -r comm argv0 pid args; do
+    if [ "$(fm_harness_process_kind "$comm" "$argv0")" = agent ] \
+      || fm_gemini_pid_is_gemini "$pid" || fm_gemini_args_are_gemini "$args"; then
+      printf 'alive'; return 0
+    fi
+  done < <(printf '%s' "$snapshot" | jq -r '.processes[] | [.comm, (.argv[0] // ""), .pid, (.argv | join(" "))] | @tsv')
+  after=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane process-info --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null) \
+    || { printf 'unreadable'; return 0; }
+  if [ "$(printf '%s' "$info" | jq -cS '.result.process_info')" != "$(printf '%s' "$after" | jq -cS '.result.process_info')" ]; then
+    printf 'unreadable'
+  elif printf '%s' "$snapshot" | jq -e '.shell_only == true' >/dev/null; then
+    printf 'dead'
+  else
+    printf 'ambiguous'
+  fi
 }
 
 # Backward-compatible three-state view for callers that only need a yes/no

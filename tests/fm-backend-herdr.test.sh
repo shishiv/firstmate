@@ -258,8 +258,10 @@ test_version_check_refuses_old_protocol() {
 test_version_check_refuses_missing_herdr() {
   local dir out status
   dir="$TMP_ROOT/version-missing"; mkdir -p "$dir/empty-fakebin"
-  out=$( PATH="$dir/empty-fakebin:/usr/bin:/bin" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_version_check' "$ROOT" 2>&1 )
+  # /usr/bin may itself contain Herdr on packaged Linux installations.
+  out=$(bash -c '. "$0/bin/backends/herdr.sh"
+    command() { if [ "${1:-}" = -v ] && [ "${2:-}" = herdr ]; then return 1; fi; builtin command "$@"; }
+    fm_backend_herdr_version_check' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "version_check should refuse when herdr is not installed"
   assert_contains "$out" "not installed" "version_check did not report herdr as missing"
@@ -414,10 +416,10 @@ test_recovery_grade_read_widens_only_at_its_own_boundary() {
 test_agent_state_bypasses_a_stale_client_shadowing_a_compatible_one() {
   local dir out err
   dir="$TMP_ROOT/client-pair-bypass"; make_herdr_client_pair "$dir"
-  out=$(run_with_clients "$dir" "$dir/stale:$dir/current" 'fm_backend_herdr_agent_state fm-remote:wCY:p2' 2>"$dir/stderr") \
+  out=$(run_with_clients "$dir" "$dir/stale:$dir/current" 'fm_backend_herdr_pane_agent_state fm-remote wCY:p2' 2>"$dir/stderr") \
     || fail "agent-state read with a shadowing stale client should not fail"
   err=$(cat "$dir/stderr")
-  [ "$out" = alive ] || fail "a live remote pane behind a stale shadowing client should read alive, got: $out (stderr: $err)"
+  [ "$out" = live ] || fail "a registered pane behind a stale shadowing client should read live, got: $out (stderr: $err)"
   assert_contains "$(cat "$dir/current.log")" "pane get wCY:p2" "the compatible client should have served the pane read"
   assert_contains "$(cat "$dir/current.log")" "agent get wCY:p2" "the compatible client should have served the agent read"
   [ -z "$err" ] || fail "a successful bypass must print nothing on stderr (callers merge stderr into parsed JSON), got: $err"

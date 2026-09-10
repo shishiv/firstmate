@@ -7,11 +7,10 @@
 # agent-state classifier the control plane is allowed to trust, so its
 # behavior is pinned here against the REAL binary rather than a stub: whether
 # an agent is running, and therefore whether a lifecycle verb may act at all,
-# comes from herdr's own agent registry.
+# comes from the exact pane's process tree, not its semantic status registry.
 #
-# No real agent is launched. herdr's `pane report-agent` is the same registry
-# the adapter reads, so registering and not registering an agent on a plain
-# shell pane exercises exactly the classification the control plane gates on.
+# A real Pi is launched without a prompt when installed. A retained registry
+# entry over a shell is a separate negative control, not a fake live agent.
 #
 # Always runs on a private, named, throwaway lab session, never the default
 # one (tests/herdr-test-safety.sh; the 2026-07-02 incident). Skips cleanly
@@ -30,20 +29,41 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 . "$ROOT/tests/herdr-test-safety.sh"
 herdr_forget_inherited_pane
 
-SESSION="fm-lab-control-smoke-$$"
+HERDR_LAB_HELPER=${FM_HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+SESSION=$("$HERDR_LAB_HELPER" name control-smoke)
 export HERDR_SESSION="$SESSION"
+REAL_PATH=$PATH
 SCRATCH=
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  PATH="$REAL_PATH" "$HERDR_LAB_HELPER" teardown "$SESSION" || return 1
+  CLEANED=1
   [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
-  herdr_safe_stop_and_delete "$SESSION"
 }
 trap cleanup_all EXIT
-fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+"$HERDR_LAB_HELPER" provision "$SESSION" || fail "could not provision isolated Herdr lab session"
 
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-control-herdr.XXXXXX")
 SCRATCH=$(cd "$SCRATCH" && pwd)
 HOME_DIR="$SCRATCH/home"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data/hsmoke"
+# Even backend-owned CLI calls pass through the guarded helper. Its own CLI
+# uses the original PATH, so this adapter never recurses or targets default.
+mkdir -p "$SCRATCH/guarded-bin"
+export FM_LAB_TEST_PATH="$REAL_PATH" FM_LAB_TEST_SESSION="$SESSION" FM_HERDR_LAB_HELPER="$HERDR_LAB_HELPER"
+cat > "$SCRATCH/guarded-bin/herdr" <<'SH'
+#!/usr/bin/env bash
+args=(); session=$FM_LAB_TEST_SESSION
+while [ "$#" -gt 0 ]; do
+  case "$1" in --session) session=$2; shift 2 ;; *) args+=("$1"); shift ;; esac
+done
+case "$session" in "$FM_LAB_TEST_SESSION"|fm-lab-never-started-*) ;; *) exit 97 ;; esac
+PATH="$FM_LAB_TEST_PATH" exec "$FM_HERDR_LAB_HELPER" run "$session" "${args[@]}"
+SH
+chmod +x "$SCRATCH/guarded-bin/herdr"
+PATH="$SCRATCH/guarded-bin:$PATH"
+export PATH
 cat > "$HOME_DIR/data/hsmoke/brief.md" <<'EOF'
 # Task
 ## Captain's intent
@@ -121,8 +141,7 @@ pass "real herdr: exit on a pane with no registered agent is idempotent success"
 # tests/fm-backend-herdr.test.sh; this is the check that notices when the real
 # client stops answering the way that logic expects, and it names the version so
 # a release change is attributed rather than mysterious.
-HERDR_VERSION=$(herdr --version 2>&1 | head -1)
-HERDR_VERSION=${HERDR_VERSION#herdr }
+HERDR_VERSION=$(herdr status --json --session "$SESSION" | jq -r '.client.version')
 version_fail() {  # <message>
   fail "$1 [herdr $HERDR_VERSION]"
 }
@@ -197,39 +216,40 @@ case "$OUT" in
   *"nothing to interrupt"*) : ;;
   *) fail "the interrupt refusal should say there is no agent, got: $OUT" ;;
 esac
-pass "real herdr: interrupt refuses when herdr's own agent registry reports no agent"
+pass "real herdr: interrupt refuses when the pane processes prove no agent remains"
 
-# --- a registered agent: classification flips, and the verbs follow ---------
+# A retained registration must not turn a shell into a live process.
+herdr pane report-agent "$PANE_ID" --source fm-control-smoke --agent pi --state idle --session "$SESSION" >/dev/null
+[ "$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")" = dead ] || fail 'residual registration disguised a shell'
+pass 'real herdr: residual semantic registration does not prove agent presence'
 
-herdr pane report-agent "$PANE_ID" --source fm-control-smoke --agent fm-control-smoke-agent \
-  --state idle --session "$SESSION" >/dev/null 2>&1 \
-  || fail "could not register a live agent on the task pane"
-
-STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
-[ "$STATE" = alive ] || fail "herdr should classify a registered agent as alive, got '$STATE'"
-
-OUT=$(run_control hsmoke interrupt) || fail "interrupt against a registered agent should succeed: $OUT"
-case "$OUT" in
-  *"interrupt-delivered hsmoke harness=claude backend=herdr verified=agent-alive cancel=unconfirmed"*) : ;;
-  *) fail "interrupt should report the agent-alive proof on herdr, got: $OUT" ;;
-esac
-pass "real herdr: interrupt delivers the harness's key and proves the agent survived it"
-
-herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
-  || fail "the control plane must never remove the endpoint it was operating on"
-[ -d "$WT" ] || fail "the control plane must never remove the task's local copy"
-pass "real herdr: no control verb removed the endpoint or the task's local copy"
-
-# Last, because it deliberately types a harness command into a pane that hosts
-# a plain shell: the registered agent cannot actually be stopped that way, and
-# the control plane must say so rather than report a stop it did not achieve.
-if OUT=$(run_control hsmoke exit 2>&1); then
-  fail "exit should fail closed when the agent does not stop: $OUT"
+if command -v pi >/dev/null 2>&1; then
+  # Launch the actual runtime without submitting a model prompt. The installed
+  # reporter is read-only; this test never installs or modifies an integration.
+  printf 'harness=pi\n' >> "$HOME_DIR/state/hsmoke.meta"
+  PI_BIN=$(command -v pi)
+  printf -v PI_COMMAND '%q --approve --no-session --no-context-files --no-extensions' "$PI_BIN"
+  if [ -f "${HOME}/.pi/agent/extensions/herdr-agent-state.ts" ]; then
+    printf -v REPORTER_ARG ' -e %q' "${HOME}/.pi/agent/extensions/herdr-agent-state.ts"
+    PI_COMMAND="$PI_COMMAND$REPORTER_ARG"
+  fi
+  fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" 'bash --noprofile --norc -i' || fail 'nested shell launch failed'
+  fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" "$PI_COMMAND" || fail 'Pi launch failed'
+  STATE=
+  for _ in $(seq 1 100); do
+    STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+    [ "$STATE" != alive ] || break
+    sleep 0.1
+  done
+  [ "$STATE" = alive ] || fail "real Pi never classified alive: $STATE"
+  pass 'real herdr: idle Pi in a nested shell classifies alive'
+  OUT=$(run_control hsmoke interrupt) || fail "real Pi interrupt failed: $OUT"
+  [ "$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")" = alive ] || fail 'interrupt lost the live agent'
+  OUT=$(run_control hsmoke exit) || fail "real Pi exit did not confirm: $OUT"
+  [ "$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")" = dead ] || fail 'exited Pi still classified alive'
+  herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null || fail 'exit removed the pane'
+  [ -d "$WT" ] || fail 'exit removed the task copy'
+  pass 'real herdr: Pi exit is confirmed with nested shell and pane/copy preserved'
+else
+  echo 'skip: Pi not installed; actual harness exit not verified'
 fi
-case "$OUT" in
-  *"did not stop"*) : ;;
-  *) fail "the exit failure should say the agent did not stop, got: $OUT" ;;
-esac
-pass "real herdr: an agent that does not stop fails closed instead of being reported as stopped"
-
-fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true

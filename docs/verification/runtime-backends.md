@@ -1006,24 +1006,28 @@ Polling remained active and is covered as the fallback for capability, connect, 
 
 ### Agent lifecycle control
 
-Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results:
+Reverified on 2026-09-10, Linux x86_64, with Herdr 0.9.0 (client and server protocol 22), Pi 0.85.1 and Node 26.8.1 (ABI 147).
+Unlike the earlier registration-only smoke, the control test now launches a real Pi without a model prompt and checks a retained semantic registration over a shell separately.
 
 ```sh
-tests/fm-control-herdr-smoke.test.sh
+mise exec node@26 -- bin/fm-test-run.sh --jobs 1 tests/fm-control-herdr-smoke.test.sh
 ```
 
-Observed output:
+Observed:
 
 ```text
-ok - real herdr: exit on a pane with no registered agent is idempotent success
-ok - real herdr: interrupt refuses when herdr's own agent registry reports no agent
-ok - real herdr: interrupt delivers the harness's key and proves the agent survived it
-ok - real herdr: no control verb removed the endpoint or the task's local copy
-ok - real herdr: an agent that does not stop fails closed instead of being reported as stopped
+ok - real herdr: residual semantic registration does not prove agent presence
+ok - real herdr: idle Pi in a nested shell classifies alive
+ok - real herdr: Pi exit is confirmed with nested shell and pane/copy preserved
 ```
 
-The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
-That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
+The named lab's guarded cleanup succeeded with its default-session tripwire unchanged.
+Portable kernel tests in `tests/fm-herdr-process-state.test.sh` cover nested shells, unknown processes, diverging command-name/argv signals, recycled identities and mismatched pane bindings; the destructive husk and single-shell cleanup classifiers remain unchanged.
+macOS process snapshots are implemented conservatively but were not live-verified in this Linux run.
+
+The shared process vocabulary also passed `tests/fm-harness-liveness-drift-live-e2e.test.sh`, run serially without prompts on every installed harness: Claude Code 2.1.266, OpenCode 1.18.30, Pi 0.85.1, Cursor 2026.08.25-3e8eec8, Gemini 0.59.0, Muse 1.1.1-R2514.1 and omp 18.1.14.
+Codex, Pi-signed, Grok, Kimi and Rovo were absent and remain unverified on this machine.
+That matrix uses private tmux endpoints; the Herdr lifecycle proof above is Pi-specific, not a claim to have exited every harness through Herdr.
 
 ### Endpoint recovery classification
 

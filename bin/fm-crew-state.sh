@@ -793,9 +793,9 @@ if ! pane_readable "$BACKEND_TARGET"; then
   #             and fm-session-start depend on it to license a respawn after a
   #             genuine server death - a socket-connection failure is NOT
   #             covered by the unknown-never-death rule above).
-  #   dead    - the endpoint exists but confidently has no agent (herdr's agent
-  #             get answered agent_not_found; tmux's readable foreground process
-  #             group is nothing but shells), still positive death evidence.
+  #   dead    - the endpoint exists but the backend's process proof confirms
+  #             it has no agent; a semantic registration alone cannot settle
+  #             this verdict, even when a heavy scrollback read failed.
   #   alive   - the endpoint and its agent answered and only the heavy
   #             scrollback read failed, so the live state is classified by the
   #             normal flow below instead of being discarded.

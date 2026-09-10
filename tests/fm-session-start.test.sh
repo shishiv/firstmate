@@ -469,6 +469,9 @@ case "${1:-} ${2:-}" in
       exit 1
     fi
     ;;
+  "pane process-info")
+    printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":99999999,"foreground_process_group_id":99999999,"foreground_processes":[{"pid":99999999}]}}}\n' "${4:-}"
+    ;;
   "pane close")
     [ "${3:-}" = p-old ] && : > "$killed"
     ;;
@@ -481,6 +484,21 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/herdr"
+  # Pin the caller's process observation without assuming registration is life.
+  cat > "$fakebin/python3" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  */herdr-process-snapshot.py)
+    if [ -e "${FM_FAKE_HERDR_STATE}.spawned" ]; then
+      printf '%s\n' '{"processes":[{"comm":"pi","argv":["pi"],"pid":99999999}],"shell_only":false}'
+    else
+      printf '%s\n' '{"processes":[{"comm":"bash","argv":["bash"],"pid":99999999}],"shell_only":true}'
+    fi
+    exit 0 ;;
+esac
+SH
+  printf 'exec %q "$@"\n' "$(command -v python3)" >> "$fakebin/python3"
+  chmod +x "$fakebin/python3"
 }
 
 # make_fake_herdr <fakebin> <live-pane>: `herdr pane get <pane>` succeeds only
