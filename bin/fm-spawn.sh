@@ -3346,6 +3346,8 @@ EOF
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
       # loaded from inside the project (verified live), but an explicit -e path
       # elsewhere loads without a dialog. Lives in state/, cleaned by teardown.
+      completion_module=$(jq -Rn --arg path "$FM_ROOT/.pi/extensions/lib/fm-worker-completion.ts" '$path')
+      completion_binding=$(jq -cn --arg state "$STATE_REAL" --arg task "$ID" --arg generation "$BUSY_GEN" --arg brief "$BRIEF_DIR_REAL/brief.md" '{state:$state,task:$task,generation:$generation,brief:$brief}')
       cat > "$STATE/$ID.pi-ext.ts" <<EOF
 // Firstmate semantic busy-state events + turn-end notification; written by
 // fm-spawn under the contract owned by bin/fm-busy-lib.sh.
@@ -3357,6 +3359,7 @@ EOF
 // "turn_end" fires at every inner turn boundary (one LLM response plus its
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
+import { workerCompletion } from $completion_module;
 import { execFile } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
@@ -3371,7 +3374,11 @@ export default function (pi: any) {
     if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
     return busyEvent("idle", "agent-settled");
   });
-  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+  const recoverCompletion = workerCompletion(pi, $completion_binding);
+  pi.on("turn_end", (event: any, ctx: any) => {
+    recoverCompletion(event, ctx);
+    execFile("touch", ["$TURNEND"]);
+  });
   // A native harness can make progress inside one Pi turn. This separate
   // marker prevents false wedge alarms without fabricating a completed turn.
   let lastProgress = 0;
