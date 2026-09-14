@@ -1406,6 +1406,52 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
 
+## Pi worker completion recovery
+
+The protocol and private receipt format are owned by [the worker completion module](../../.pi/extensions/lib/fm-worker-completion.ts).
+`tests/fm-worker-completion.test.sh` drives the real spawn-generated Pi and Pi-signed extensions with portable, model-free event fixtures, including threshold boundaries, explicit-event precedence, concurrent changes, duplicate loading, process restart, timeout, and assessment recursion.
+`tests/fm-worker-completion-live-e2e.test.sh` is the credentialed refresh guard; it exercises each installed Pi identity, reports absent identities, and fails if none ran.
+It uses a real file-analysis task and contrasts a completed report with the same report whose delivery contract still requires a published, reviewed PR and passing CI.
+
+### Compatibility boundary
+
+| Surface inspected | Completion recovery |
+|---|---|
+| Pi / Pi-signed worker extension | Uses Pi's persisted response identity, same-session follow-up, context and tool-call hooks; portable coverage for both identities, live result below. |
+| Pi primary / secondmate extensions | Unchanged; no task-completion assessment is installed. |
+| Claude, Grok, standalone Kimi and Gemini shell hooks | Notification/lifecycle hooks remain unchanged; no equivalent same-session assessment protocol has been integrated or verified. |
+| OpenCode plugin and omp extension | Separate event APIs remain unchanged; a similar extension surface is not evidence of equivalent callback or persistence semantics. |
+| Codex notify; Muse and Cursor transcript bindings; Rovo | Existing notification or observation paths remain unchanged; no transcript or screen-scraping completion fallback. |
+| tmux, Herdr, Zellij, Orca, cmux | Common worker-hook construction is above these terminal transports; no backend lifecycle or busy-state contract changes. |
+
+The live guard proves Pi callbacks, not all provider implementations or all terminal transports.
+A provider extension that bypasses Pi's context, tool-call, or turn-end events has no completion-recovery guarantee from this test.
+Existing running workers retain their installed hook until their normal next launch.
+
+### 2026-09-14 empirical result
+
+Host runtime: Node `v26.8.1`, `/usr/bin/node`, ABI `147`; installed Pi `0.85.1`.
+Run the guard serially with a configured model, for example:
+
+```sh
+FM_PI_COMPLETION_LIVE=1 FM_PI_COMPLETION_MODEL=azure-openai-responses/gpt-6-astra bin/fm-test-run.sh --jobs 1 tests/fm-worker-completion-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+testing - pi 0.85.1
+assessment: provider=azure-openai-responses model=gpt-6-astra complete=true confidence=99
+ok - pi 0.85.1 complete: same-session assessment, normal status, no recursion
+assessment: provider=azure-openai-responses model=gpt-6-astra complete=false confidence=0
+ok - pi 0.85.1 incomplete: same-session assessment, normal status, no recursion
+absent - pi-signed (completion live guard)
+```
+
+The positive case wrote the normal `done:` event once; the missing-delivery case retained its original `working:` event.
+Each case had exactly one persisted session, one assessment, and two final responses from the same provider/model.
+Pi-signed's wrapper was absent, so only its common generated-hook behavior is portable-tested here, not its real executable.
+
 ## Pi supervision branch
 
 The supervision-branch extension (`.pi/extensions/fm-branch-supervision.ts`, [docs/pi-supervision-branch.md](../pi-supervision-branch.md)) builds its second session through the Pi SDK surface: `createAgentSession` (including its `model`, `modelRuntime`, and `thinkingLevel` options), `DefaultResourceLoader` with `extensionFactories`, `SessionManager`, `createBashToolDefinition` with a `spawnHook`, `sendCustomMessage` for routine notes, `appendEntry` and `registerEntryRenderer` for captain outcomes, the `before_provider_request` hook, the command context's model registry for picker candidates, a fresh `ModelRuntime` for isolated-branch resolution, and Pi's own `getSupportedThinkingLevels`/`clampThinkingLevel` plus its `getThinkingLevel` and `thinking_level_select` extension surface for effort.

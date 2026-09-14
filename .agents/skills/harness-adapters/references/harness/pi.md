@@ -40,6 +40,7 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 The extension listens for Pi's `turn_end` event, not `agent_end`, so supervision is notified after each completed turn rather than only when the whole run exits.
 Native-harness progress uses the separate generation-bound marker owned by `../../../bin/fm-busy-event.sh`; it never fabricates Pi turn completion.
 Pi sets `PI_CODING_AGENT=true` for its children as its harness-detection marker.
+New worker launches also load the contextual completion recovery owned by `../../../.pi/extensions/lib/fm-worker-completion.ts`; compatibility and current empirical proof are recorded in `../../../docs/verification/runtime-backends.md` under "Pi worker completion recovery".
 
 ## Primary integration
 

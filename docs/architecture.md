@@ -189,6 +189,13 @@ Each record is bound to an incarnation token minted when the task's wiring is ar
 Three rendered-text checks deliberately remain outside this contract because they answer delivery questions: submit acknowledgement and the away-mode supervisor-pane busy guard consume the shared delivery-footer matcher owned by `bin/fm-composer-lib.sh`, while `bin/fm-pending-reply-lib.sh` owns the secondmate delivery-confirmation observation.
 All are harness-scoped rather than a global pattern union, and none is a recorded worker state source.
 
+## Worker completion recovery
+
+[The Pi worker completion module](../.pi/extensions/lib/fm-worker-completion.ts) owns the bounded contextual assessment, private attempt receipts, explicit-event precedence, and normal completion-event publication.
+`bin/fm-spawn.sh` loads it through the existing Pi-family worker extension for new ships and scouts; primary and secondmate supervision do not run assessments.
+The module never derives task completion from busy state, terminal capture, or turn-ended notifications, and leaves delivery and approval decisions to the existing supervisor.
+[Runtime verification](verification/runtime-backends.md#pi-worker-completion-recovery) records the supported callback surface and the live guard that refreshes its evidence.
+
 ## Runtime session backends
 
 The runtime backend is the session-provider layer below firstmate's scripts.

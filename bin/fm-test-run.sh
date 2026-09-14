@@ -327,7 +327,7 @@ family_for_basename() {
     fm-muse-signals-live-e2e.test.sh|fm-rovo-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
-    fm-pi-branch-responsiveness-live-e2e.test.sh|\
+    fm-pi-branch-responsiveness-live-e2e.test.sh|fm-worker-completion-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|fm-pi-codex-native.test.sh|fm-pi-notebook-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
@@ -365,7 +365,7 @@ family_for_basename() {
     fm-backend-orca.test.sh)
       printf '%s\n' orca
       ;;
-    fm-branch-supervision.test.sh|fm-busy-adapter-wiring.test.sh|\
+    fm-branch-supervision.test.sh|fm-busy-adapter-wiring.test.sh|fm-worker-completion.test.sh|\
     fm-busy-state.test.sh|fm-classify-corr-token.test.sh|\
     fm-claude-stop-autoarm.test.sh|fm-cursor-harness.test.sh|\
     fm-extension-binding.test.sh|fm-gitignore-config.test.sh|\
@@ -1309,6 +1309,12 @@ families_for_changed_path() {
       # Whether an arriving outcome still lets the captain type is a fact only
       # a real Pi TUI can answer, so the live guards are selected too.
       printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-worker-completion.ts|tests/fm-worker-completion.mjs|tests/fm-worker-completion-live.mjs)
+      printf '%s\n' __script__:fm-worker-completion.test.sh
+      printf '%s\n' __script__:fm-busy-adapter-wiring.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      printf '%s\n' __script__:fm-worker-completion-live-e2e.test.sh
       ;;
     .pi/extensions/lib/fm-operational-input.ts)
       # The same rule for the operational-input library, whose reach is wider:
