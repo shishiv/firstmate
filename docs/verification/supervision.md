@@ -592,6 +592,69 @@ Neither surface is adopted: a stdio ACP agent has no pane to steer, observe, or 
 Regression coverage: `tests/fm-kiro-harness.test.sh` (V3 launch line with `-a`, wildcard-free concrete grants equal between the generated and tracked agents, `agent validate` when installed), `tests/fm-primary-endpoint.test.sh` (SessionStart publication and the `KIRO_PRIMARY_ENDPOINT` digest line, lock-bound ring, foreground and pending refusals, UserPromptSubmit context without early acknowledgement), `tests/fm-supervision-instructions.test.sh` (doorbell-first protocol with the checkpoint fallback), and `tests/fm-composer-lib.test.sh` (both footer shapes).
 Refresh the live facts with the two guards above.
 
+### kiro-cli 2.24.1 hook surface and process tree, 2026-09-29
+
+Verified against kiro-cli 2.24.1 (KAS 0.66.8) on 2026-09-29, 02:24-02:54 UTC, with model `claude-sonnet-5`, in private tmux servers and temporary homes; no production home and no Herdr session were touched.
+Each session ran as `env -i HOME="$HOME" PATH="$PATH" TERM=xterm-256color LANG=C.UTF-8 KIRO_HOME="$LAB/kiro-home" kiro-cli chat --v3 -a --model claude-sonnet-5`, with `settings/cli.json` = `{"chat.disableTrustAllConfirmation": true, "chat.allowAnimations": false}` and one probe hook file per experiment under the lab workspace's `.kiro/hooks/`.
+
+| Probe | Observed on 2.24.1 |
+|---|---|
+| `Stop` exits 2 with stderr | No continuation and no new turn. |
+| `Stop` prints `{"decision":"block","reason":"reply BANANA"}` and exits 0 | The same turn continues once: the reason reaches the model, `BANANA` renders, no new `user` or `turn_start` entry is written, and `Stop` does not fire again after that continuation. |
+| `Stop` prints `{"followup_message":"reply BANANA"}` | No continuation. |
+| `PreToolUse` exits 2 with stderr `PROBE-DENY` | The tool call is blocked; the model sees the stderr text and the transcript records `status:"denied"`. |
+| `PreToolUse` prints `{"decision":"deny",...}` or `{"permissionDecision":"deny"}` | Not blocked; the command ran. |
+| Payload keys | Every event carries `session_id`, `hook_event_name`, and `cwd`; `UserPromptSubmit` carries the prompt text in `prompt`; `PreToolUse` carries `tool_name` and `tool_input.command`; `PostToolUse` adds `tool_response`; workspace `Stop` carries no `assistant_response` or other reply text. |
+| Hook timeout | A hook is killed at 60 s by default, delaying the turn end by the full wait, and the TUI stays usable; a per-hook `"timeout": 90` (seconds) extends it, and `"timeout_ms"` is ignored. |
+| `setsid --fork` child from `Stop` | Survives the hook and wrote its marker 20 s later; the hook and the turn end were not delayed. |
+| Background tool completion | A `run_in_background` command only gets ` &` appended; its completion starts no turn, fires no hook, writes no transcript entry, and shows no pane notice. |
+| V3 process tree | A `Stop` hook descends from `node .../@kiro/agent/dist/server/acp-server.js` (its own session), under `bun`, `kiro-cli-chat`, and the outer `kiro-cli`; the 2.22.1 innermost `kiro-cli-chat acp` frame is gone. |
+
+The three probes the owners rely on, with their exact hook files and evidence:
+
+```text
+# Stop continuation (.kiro/hooks/probe.json, prompt "Reply PONG only.")
+{"version": "v1", "hooks": [{"name": "probe-stop", "trigger": "Stop", "action": {"type": "command", "command": "date -u +%T.%N >> \"$PWD/stop-fired.log\"; cat > \"$PWD/stop.$(date +%s%N).json\"; [ $(wc -l < \"$PWD/stop-fired.log\") -gt 3 ] && exit 0; printf '%s\n' '{\"decision\":\"block\",\"reason\":\"reply BANANA\"}'; exit 0"}}]}
+stop-fired.log: 1 line (02:25:56.155198834); pane: "• PONGBANANA"; transcript of the single execution:
+02:25:53.095Z turn_start
+02:25:56.140Z assistant "PONG"
+02:25:56.162Z ContextualHookInvoked probe-stop completed
+02:25:58.535Z assistant "BANANA"
+02:25:58.550Z turn_end end_turn
+
+# PreToolUse deny (prompt: run exactly "echo PROBE-RAN > probe-ran.txt")
+{"version": "v1", "hooks": [{"name": "probe-pre", "trigger": "PreToolUse", "action": {"type": "command", "command": "cat >> \"$PWD/pretool-stdin.log\"; echo >> \"$PWD/pretool-stdin.log\"; echo PROBE-DENY >&2; exit 2"}}]}
+payload: {"session_id":"sess_...","hook_event_name":"PreToolUse","cwd":".../lab/e2a","tool_name":"execute_bash","tool_input":{"command":"echo PROBE-RAN > probe-ran.txt",...}}
+probe-ran.txt absent; transcript tool_call "status":"denied"; model: "The command was blocked before execution by a PreToolUse hook (PROBE-DENY); probe-ran.txt was not created."
+
+# Background completion (prompt runs "(sleep 15; echo BG-DONE > bg-done.txt)" with run_in_background true)
+hooks.log: UserPromptSubmit 1790649168 / PreToolUse 1790649171 / PostToolUse 1790649171 / Stop 1790649174
+transcript: tool_call args.command "(sleep 15; echo BG-DONE > bg-done.txt) &" completed; turn_end 02:32:54.336Z (last entry)
+bg-done.txt appeared 1790649187; polled to 1790649228: no hook line, no transcript entry, no pane change
+```
+
+Consequences recorded in the owners: `Stop` still cannot keep a primary supervised across turns, because its only continuation fires once and ends with no further `Stop`, and a background command never wakes the model, so the doorbell owner (`bin/fm-primary-doorbell.sh`) stays the continuity path ([`watcher-continuity.md`](../watcher-continuity.md#kiro-doorbell-owner)).
+
+Live guards on 2.24.1: `FM_KIRO_LIVE_E2E=1 FM_KIRO_LIVE_TIMEOUT=300 bash tests/fm-kiro-signals-live-e2e.test.sh` passed all eleven checks, ending with:
+
+```text
+ok - kiro-cli live crewmate signals (turn-end, detection, busy/idle, control, teardown) passed
+```
+
+The doorbell owner passed its live guard on 2.24.1 at 2026-09-29 04:13 UTC with model `claude-sonnet-5`; the guard registers two process-to-event watches, types nothing after the first prompt, and requires each wake to ring an idle pane and be acknowledged:
+
+```text
+$ FM_KIRO_LIVE_MODEL=claude-sonnet-5 FM_KIRO_PRIMARY_LIVE_E2E=1 FM_KIRO_PRIMARY_READY_TIMEOUT=300 FM_KIRO_PRIMARY_WAKE_TIMEOUT=300 bash tests/fm-kiro-primary-live-e2e.test.sh
+ok - live primary: first-prompt SessionStart ran and published an idle Kiro endpoint
+ok - live primary: Stop hook started a live doorbell owner (pid 3897569)
+ok - live primary: first source wake rang the idle pane and its drain was acknowledged
+ok - live primary: second source wake rang after 41s idle with nobody typing and was acknowledged
+ok - live primary: first-wake cycle started its successor (started:3924911) and no cycle re-announced downtime
+ok - Kiro V3 primary doorbell-owner continuity passed
+```
+
+`FM_KIRO_RESUME_LIVE_E2E=1 bash tests/fm-kiro-resume-live-e2e.test.sh` does not pass on 2.24.1: `chat --list-sessions --format json` now lists an account-level `"executionTarget":"cloud-sandbox"` session under every cwd, so its exactly-one-session check fails, and with a local-only filter its primary step still fails with `not ok - the launched primary's SessionStart did not take the lock`.
+
 ## Watcher continuity
 
 The cross-harness evidence combines the 2026-07-17 live pass with Claude's replacement Stop-owned path revalidated on 2026-09-21, all against isolated project and home state.

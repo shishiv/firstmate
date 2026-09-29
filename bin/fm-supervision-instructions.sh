@@ -201,7 +201,7 @@ repair_line() {
       printf '%s%s\n' "$prefix" 'watcher supervision is owned by the stop-hook park; inspect the hook registration and watcher startup path before ending the turn.'
       ;;
     kiro-cli)
-      printf '%s%s%s%s\n' "$prefix" 'repair missing watcher supervision with one bin/fm-watch-arm.sh when the session-start digest reported KIRO_PRIMARY_ENDPOINT published (the background watcher rings this pane), otherwise with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds ' "$checkpoint_seconds" '. The stop hook only re-arms as a backstop and cannot wake this turn by itself.'
+      printf '%s%s%s%s\n' "$prefix" 'watcher supervision is owned by the doorbell owner the stop hook keeps running; when KIRO_PRIMARY_ENDPOINT is published, repair it with one bin/fm-primary-doorbell.sh ensure and never arm a watcher yourself, otherwise with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds ' "$checkpoint_seconds" '.'
       ;;
     *)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision according to the session-start block for this harness; do not use shell &.'
@@ -233,7 +233,7 @@ ordinary_wake_line() {
       printf '%s\n' '- Ordinary wake: the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
     kiro-cli)
-      printf '%s\n' '- Ordinary wake: when the session-start digest reported KIRO_PRIMARY_ENDPOINT published, this doorbell turn already carries its drained wake context - handle it, run the printed WAKE_ACK_REQUIRED command, and let the stop hook re-arm the background watcher; when it reported the doorbell unavailable, take the next foreground bin/fm-watch-checkpoint.sh checkpoint as directed below, because the stop hook only re-arms as a backstop and never wakes this turn.'
+      printf '%s\n' '- Ordinary wake: when the session-start digest or a later turn context reported KIRO_PRIMARY_ENDPOINT published, this doorbell turn already carries its drained wake context - handle it and run the printed WAKE_ACK_REQUIRED command; the doorbell owner (bin/fm-primary-doorbell.sh) already started the next watcher cycle, so do not arm one yourself. When the doorbell is unavailable, take the next foreground bin/fm-watch-checkpoint.sh checkpoint as directed below, because the stop hook re-arm is only a backstop and never wakes this turn.'
       ;;
     *)
       printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'
