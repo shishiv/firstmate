@@ -813,6 +813,24 @@ test_branch_outcomes_keep_a_drain_presented_outcome_across_an_index_repair() {
   pass "drain: an outcome the host drain presented but main never acknowledged survives an outcome index repair"
 }
 
+# A first cycle that closes before the host's first poll streamed its status
+# line must still print that line while the host keeps running on the engine
+# turn, or an owner that waits for readiness (the Kiro doorbell owner, the
+# OpenCode plugin, the omp extension) retires the host mid-turn. A long poll
+# makes the arm close inside the host's first sleep.
+test_early_first_close_still_streams_the_ready_line() {
+  local home
+  home=$(make_home early-close away)
+  append_status "$home" 'already waiting before the host started'
+  FM_SUPERVISION_HOST_POLL=5 start_host "$home"
+  wait_until 400 handled_at_least "$home" 1 \
+    || fail "early close: the away wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log" 2>/dev/null)"
+  assert_re '^watcher: (started|attached) pid=' "$home/host.out" \
+    "early close: the host never printed its first cycle's status line while it kept running"
+  host_exited "$home" && fail "early close: the host exited instead of parking: $(cat "$home/host.out")"
+  pass "host: a first cycle that closes before the first poll still streams its status line while the engine handles the wake"
+}
+
 test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main() {
   local home first drained
   home=$(make_home attended-routine attended)
@@ -2264,6 +2282,7 @@ test_branch_outcomes_date_an_outcome_carried_across_a_switch_off_pi
 test_branch_outcomes_keep_an_unshown_outcome_until_acknowledged
 test_branch_outcomes_keep_a_drain_presented_outcome_across_a_switch_to_pi
 test_branch_outcomes_keep_a_drain_presented_outcome_across_an_index_repair
+test_early_first_close_still_streams_the_ready_line
 test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main
 test_attended_captain_outcome_reaches_main_through_branch_outcomes
 test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return

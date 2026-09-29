@@ -490,6 +490,10 @@ await_close() {
     sleep "$POLL"
   done
   wait "$ARM_PID" 2>/dev/null || true
+  # An arm that closed before a poll streamed its status line still owes the
+  # owner that line now: a close the engine takes keeps this host running, and
+  # an owner waiting for readiness would otherwise retire it mid-turn.
+  [ "$READY_PENDING" -eq 0 ] || stream_ready_line
   ARM_TEXT=$(cat "$ARM_OUT" 2>/dev/null || true)
   if [ -n "$READY_LINE" ]; then
     # Already printed: drop its first occurrence from this first close.
