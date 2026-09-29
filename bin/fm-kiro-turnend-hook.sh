@@ -40,7 +40,9 @@
 #
 # Primary/secondmate registrations carry FM_KIRO_PRIMARY_HOOK=1:
 #   SessionStart      -> session-start digest into context, endpoint publication
-#   UserPromptSubmit  -> endpoint ensure, then the drained wake queue while this
+#   UserPromptSubmit  -> endpoint ensure, the dialog-mirror entry, doorbell-owner
+#                        ensure, any supervision-host note the owner kept, then
+#                        the drained wake queue while this
 #                        session owns the home lock; when the lock is free or its
 #                        recorded pid is not a live harness, the SessionStart
 #                        path instead, because Kiro fires SessionStart only for a
@@ -48,7 +50,7 @@
 #                        otherwise never retake the lock
 #   PreToolUse        -> blocks (exit 2) a model-run watcher arm or checkpoint
 #                        while the doorbell owner can run (kiro_primary_arm_seatbelt)
-#   Stop              -> endpoint ensure, then `bin/fm-primary-doorbell.sh
+#   Stop              -> the dialog-mirror entry, endpoint ensure, then `bin/fm-primary-doorbell.sh
 #                        ensure`, which keeps the one doorbell owner running;
 #                        that owner, not this hook, owns watcher continuity and
 #                        the ring for this pane
@@ -151,6 +153,27 @@ kiro_primary_arm_seatbelt() {
   [ "$?" -ne 2 ] || exit 2
 }
 
+# Record this turn's captain prompt or MAIN reply in the supervision host's
+# dialog mirror; a silent no-op unless the home opted into the host
+# (bin/fm-host-mirror.sh owns the gate, the Kiro writer, and the file).
+kiro_primary_mirror() {
+  printf '%s' "$PAYLOAD" | "$SCRIPT_DIR/fm-host-mirror.sh" hook kiro-cli >/dev/null 2>&1 || true
+}
+
+# Attach, once, the supervision-host lines the doorbell owner kept for this
+# turn (bin/fm-primary-doorbell.sh "SUPERVISION HOST"). The note is taken by an
+# atomic rename first, so a line the owner appends meanwhile waits for the next
+# turn instead of being cleared unseen.
+kiro_primary_doorbell_note() {
+  local note="$STATE/.primary-doorbell-note" taken
+  [ -s "$note" ] || return 0
+  taken="$note.taken.$$"
+  mv -f -- "$note" "$taken" 2>/dev/null || return 0
+  printf '%s\n' 'KIRO_PRIMARY_DOORBELL_NOTE: the supervision host handed this wake to you; treat the following lines as its close and reason, then drain and acknowledge as usual:'
+  tail -c 8192 -- "$taken" 2>/dev/null || true
+  rm -f -- "$taken" 2>/dev/null || true
+}
+
 kiro_primary_session_open() {
   local digest
   digest=$("$SCRIPT_DIR/fm-sessionstart-run.sh" --source startup 2>&1 || true)
@@ -211,7 +234,9 @@ if [ "${FM_KIRO_PRIMARY_HOOK:-0}" = 1 ]; then
         exit 0
       fi
       kiro_primary_endpoint_ensure 1
+      kiro_primary_mirror
       kiro_primary_doorbell_owner_ensure || true
+      kiro_primary_doorbell_note
       # The queue remains durable until the model runs the exact
       # WAKE_ACK_REQUIRED command this drain prints after handling its context.
       [ -s "$STATE/.wake-queue" ] || exit 0
@@ -361,6 +386,7 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 fm_session_lock_owned_by_self "$STATE" || exit 0
 if [ "${FM_KIRO_PRIMARY_HOOK:-0}" = 1 ]; then
+  kiro_primary_mirror
   kiro_primary_endpoint_ensure 0
   kiro_primary_doorbell_owner_ensure
   # Only a primary with no loadable endpoint (exit 3) falls back to the plain

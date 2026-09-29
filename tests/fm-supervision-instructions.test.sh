@@ -82,6 +82,26 @@ test_supervision_host_protocol_on_every_arm_owner() {
   pass "renderer gives each non-Pi arm owner the host protocol in its own terms, and grok arms the host"
 }
 
+test_supervision_host_protocol_on_an_opted_in_kiro_home() {
+  local home config plain hosted intro away
+  home="$TMP_ROOT/kiro-host-home"
+  config="$TMP_ROOT/kiro-host-config"
+  mkdir -p "$home/state" "$config"
+  intro="The doorbell owner runs the supervision host in the arm's place"
+  # shellcheck disable=SC2016 # Literal backticks from the rendered Markdown.
+  away='as a doorbell turn whose `UserPromptSubmit` context carries the close'
+  plain=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness kiro-cli)
+  assert_not_contains "$plain" "$intro" "a kiro-cli home without config/supervision-host rendered the host intro"
+  assert_not_contains "$plain" "$away" "a kiro-cli home without config/supervision-host rendered the host away line"
+  : > "$config/supervision-host"
+  hosted=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness kiro-cli)
+  assert_contains "$hosted" "$intro" "an opted-in kiro-cli home did not render the host intro"
+  assert_contains "$hosted" "$away" "an opted-in kiro-cli home did not render the UserPromptSubmit away line"
+  assert_contains "$hosted" "a headless supervision session takes the wakes" "an opted-in kiro-cli home did not render the attended engine posture its verified mirror enables"
+  assert_not_contains "$hosted" "no verified dialog mirror feeds a supervision session from this harness yet" "an opted-in kiro-cli home rendered the pass-through attended line"
+  pass "renderer adds the kiro-cli supervision-host protocol, attended engine posture included, only on an opted-in home"
+}
+
 test_unknown_fallback() {
   local out
   out=$("$RENDER" --harness not-real)
@@ -308,6 +328,7 @@ test_pi_snippet_uses_effective_extension_path() {
 
 test_supervision_host_protocol_only_on_an_opted_in_claude_home
 test_supervision_host_protocol_on_every_arm_owner
+test_supervision_host_protocol_on_an_opted_in_kiro_home
 test_selected_harness_block_only
 test_unknown_fallback
 test_conditional_stanzas

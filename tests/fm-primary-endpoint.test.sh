@@ -299,6 +299,21 @@ test_ensure_refuses_another_sessions_lock() {
 test_every_turn_hooks_ensure_the_doorbell
 test_ensure_refuses_another_sessions_lock
 
+test_prompt_hook_attaches_the_doorbell_note_once() {
+  local dir="$TMP_ROOT/doorbell-note" note out
+  make_ensure_case "$dir"
+  note="$dir/home/state/.primary-doorbell-note"
+  printf 'supervision-host: cycle boundary test\n' > "$note"
+  out=$(run_ensure_hook "$dir" UserPromptSubmit self) || fail "doorbell-note scenario failed: $out"
+  printf '%s\n' "$out" | grep -A1 '^KIRO_PRIMARY_DOORBELL_NOTE: ' | grep -qx 'supervision-host: cycle boundary test' \
+    || fail "UserPromptSubmit did not attach the note after its header: $out"
+  assert_absent "$note" "UserPromptSubmit left the doorbell note behind"
+  out=$(run_ensure_hook "$dir" UserPromptSubmit self) || fail "second doorbell-note scenario failed: $out"
+  assert_not_contains "$out" 'KIRO_PRIMARY_DOORBELL_NOTE' "a second UserPromptSubmit attached the note again: $out"
+  pass "Kiro primary hooks: the lock-owning UserPromptSubmit attaches the doorbell note once and removes it"
+}
+test_prompt_hook_attaches_the_doorbell_note_once
+
 test_stop_hook_ensures_the_doorbell_owner() {
   local dir="$TMP_ROOT/stop-doorbell" other out i
   make_ensure_case "$dir"

@@ -53,11 +53,30 @@
 #     doorbell-owner: FAILED - <why>         exit 1
 #   fm-primary-doorbell.sh run      the owner loop (started by ensure, detached)
 #
-# Called by bin/fm-kiro-turnend-hook.sh on every primary UserPromptSubmit and
-# Stop, and by the model only as the one repair command the protocol names.
+# SUPERVISION HOST. When the home opted in (config/supervision-host, read at
+# every cycle), each cycle runs `bin/fm-supervision-host.sh park` in the arm's
+# place, with FM_SUPERVISION_HOST_PRIMARY=kiro-cli and the served pid as
+# FM_SUPERVISION_HOST_SERVED_PID, because this owner runs outside the primary's
+# process tree and the host proves ownership through the endpoint record
+# instead (docs/supervision-host.md). The host prints the arm's status line at
+# once and exits only when main is needed. A host close that carries a
+# "supervision-host:" line always rings, and every line of that close except
+# the status line is appended to state/.primary-doorbell-note, which the
+# primary's UserPromptSubmit hook attaches to the doorbell turn and then
+# clears; "supervision-host stood down: ..." or a close with nothing actionable
+# counts as a failed start. A running host owns delivery, so the row-only ring
+# (step 3) is off while it runs; a host that dies (a status above 128, or no
+# output) is a failed start whose queued main rows are rung, the failure
+# direction the host design gives every wake it cannot finish.
+#
+# Called by bin/fm-kiro-turnend-hook.sh on SessionStart and on every primary
+# UserPromptSubmit and Stop, and by the model only as the one repair command
+# the protocol names.
 #
 # Records (state/): .primary-doorbell.lock (singleton, pid + pid-identity),
-# .primary-doorbell-failed (continuity-failure episode: epoch and reason).
+# .primary-doorbell-failed (continuity-failure episode: epoch and reason),
+# .primary-doorbell-note (supervision-host lines for the next doorbell turn;
+# the hook that attaches it prints only its newest 8 KB).
 #
 # Tunables: FM_PRIMARY_DOORBELL_POLL (seconds between polls, default 1; a
 # fraction such as 0.2 is accepted),
@@ -73,6 +92,9 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 GRACE=${FM_GUARD_GRACE:-300}
 ARM="$SCRIPT_DIR/fm-watch-arm.sh"
+HOST="$SCRIPT_DIR/fm-supervision-host.sh"
+NOTE="$STATE/.primary-doorbell-note"
+HOST_LINE_RE='^supervision-host:'
 OWNER_LOCK="$STATE/.primary-doorbell.lock"
 FAILURE_RECORD="$STATE/.primary-doorbell-failed"
 WAKE_RE='^(signal:|stale:|check:|heartbeat($|:))'
@@ -175,6 +197,8 @@ CHILD_OUT=
 PREDECESSOR=
 HANDOFF_PENDING=0
 RING_WANTED=0
+RING_FORCED=0
+CHILD_MODE=arm
 RUNG_SEQ=0
 RING_KIND=wake
 STOP_AFTER_RING=0
@@ -243,6 +267,9 @@ want_ring_for_new_rows() {
   case "$at:$seq" in *[!0-9:]*|:*|*:) return 0 ;; esac
   [ "$seq" -gt "$RUNG_SEQ" ] || return 0
   [ $(( $(date +%s) - at )) -ge 2 ] || return 0
+  # A running host owns delivery: it may still be offering this row to its
+  # engine, and it exits with the close whenever main is needed.
+  if [ "$CHILD_MODE" = host ] && [ -n "$CHILD" ]; then return 0; fi
   if [ -n "$CHILD" ] && grep -qE "$WAKE_RE" "$CHILD_OUT" 2>/dev/null; then return 0; fi
   RING_WANTED=1
 }
@@ -250,33 +277,49 @@ want_ring_for_new_rows() {
 ring_if_pending() {
   local seq
   seq=$(newest_queue_seq) || seq=$RUNG_SEQ
-  if [ "$STOP_AFTER_RING" -eq 0 ] && ! main_pending; then
+  if [ "$STOP_AFTER_RING" -eq 0 ] && [ "$RING_FORCED" -eq 0 ] && ! main_pending; then
     RING_WANTED=0
     RUNG_SEQ=$seq
     return 0
   fi
   fm_primary_endpoint_ring_kiro "$STATE" "$FM_ROOT" "$FM_HOME" "$RING_KIND" || return 1
   RING_WANTED=0
+  RING_FORCED=0
   RUNG_SEQ=$seq
 }
 
 start_arm() {  # <predecessor-arm-pid>
   CHILD_OUT=$(mktemp "$STATE/.primary-doorbell-arm.XXXXXX") || return 1
+  CHILD_MODE=arm
+  [ ! -f "$CONFIG/supervision-host" ] || CHILD_MODE=host
   (
     # shellcheck source=/dev/null # Operator-local Relay settings.
     [ ! -f "$CONFIG/x-mode.env" ] || . "$CONFIG/x-mode.env"
-    FM_WATCH_PREDECESSOR_ARM_PID=$1 exec "$ARM"
+    export FM_WATCH_PREDECESSOR_ARM_PID=$1
+    if [ "$CHILD_MODE" = host ]; then
+      FM_SUPERVISION_HOST_PRIMARY=kiro-cli FM_SUPERVISION_HOST_SERVED_PID=$SERVED_PID exec "$HOST" park
+    fi
+    exec "$ARM"
   ) </dev/null >"$CHILD_OUT" 2>&1 &
   CHILD=$!
+}
+
+# Append a host close to the note the next doorbell turn attaches. The owner
+# only ever appends, so a note the hook is taking by rename is never rewritten;
+# the hook bounds what it prints.
+append_host_note() {
+  grep -vE '^watcher: (started|attached) pid=' "$CHILD_OUT" >> "$NOTE" 2>/dev/null || true
 }
 
 # Wait for the current arm's first status line. Prints started, attached,
 # wake, or failed.
 await_ready() {
-  local deadline
-  deadline=$(( $(date +%s) + READY_TIMEOUT ))
+  local deadline timeout=$READY_TIMEOUT
+  # The host verifies its own first cycle before printing the arm's line.
+  [ "$CHILD_MODE" != host ] || [ "$timeout" -ge 30 ] || timeout=30
+  deadline=$(( $(date +%s) + timeout ))
   while :; do
-    if grep -qE "$WAKE_RE" "$CHILD_OUT" 2>/dev/null; then printf 'wake'; return 0; fi
+    if grep -qE "$WAKE_RE|$HOST_LINE_RE" "$CHILD_OUT" 2>/dev/null; then printf 'wake'; return 0; fi
     if grep -q '^watcher: started pid=' "$CHILD_OUT" 2>/dev/null; then printf 'started'; return 0; fi
     if grep -q '^watcher: attached pid=' "$CHILD_OUT" 2>/dev/null; then printf 'attached'; return 0; fi
     if grep -q '^watcher: FAILED' "$CHILD_OUT" 2>/dev/null || ! fm_pid_alive "$CHILD"; then
@@ -322,7 +365,23 @@ arm_failed() {  # <reason>
 owner_close() {
   local rc=0 reason failed seq
   wait "$CHILD" 2>/dev/null || rc=$?
+  if [ "$CHILD_MODE" = host ] && [ "$rc" -le 128 ] \
+    && grep -qE "$HOST_LINE_RE" "$CHILD_OUT" 2>/dev/null; then
+    append_host_note
+    PREDECESSOR=$CHILD
+    HANDOFF_PENDING=1
+    RING_WANTED=1
+    RING_FORCED=1
+    rm -f "$CHILD_OUT" 2>/dev/null || true
+    CHILD=
+    CHILD_OUT=
+    return 0
+  fi
   reason=$(grep -m1 -E "$WAKE_RE" "$CHILD_OUT" 2>/dev/null || true)
+  if [ "$CHILD_MODE" = host ] && { [ "$rc" -gt 128 ] || [ ! -s "$CHILD_OUT" ]; }; then
+    reason=
+    RING_WANTED=1
+  fi
   if [ -n "$reason" ]; then
     PREDECESSOR=$CHILD
     HANDOFF_PENDING=1
@@ -337,7 +396,7 @@ owner_close() {
     CHILD_OUT=
     return 0
   fi
-  failed=$(grep -m1 '^watcher: FAILED' "$CHILD_OUT" 2>/dev/null || true)
+  failed=$(grep -m1 -E '^(watcher: FAILED|supervision-host stood down:)' "$CHILD_OUT" 2>/dev/null || true)
   rm -f "$CHILD_OUT" 2>/dev/null || true
   CHILD=
   CHILD_OUT=

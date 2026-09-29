@@ -870,6 +870,16 @@ The run above exercised these payload fields:
 | --- | --- | --- |
 | Claude | `UserPromptSubmit` `.prompt` | `Stop` `.last_assistant_message` |
 | Cursor | `beforeSubmitPrompt` `.prompt` | `afterAgentResponse` `.text` |
+| Kiro | `UserPromptSubmit` `.prompt` | the last non-reasoning `assistant` entry of the newest execution in the session transcript `Stop`'s `.session_id` names |
+
+The Kiro writer was measured on 2026-09-29 at 04:25 UTC on Linux with kiro-cli 2.24.1 (`claude-sonnet-5`), in a lab copy launched through `bin/fm-kiro-primary.sh` on a private tmux socket; the first prompt, its reply, a second prompt, and its reply were mirrored in order under one main-session key:
+
+```text
+$ FM_KIRO_LIVE_MODEL=claude-sonnet-5 FM_KIRO_MIRROR_LIVE_E2E=1 bash tests/fm-kiro-host-mirror-live-e2e.test.sh
+ok - live Kiro: the mirror holds the first prompt, its reply, the second prompt, and its reply, in order under one main-session key
+ok - live Kiro: no doorbell prompt was mirrored as captain dialog
+ok - Kiro 2.24.1 dialog mirror live proof passed
+```
 
 Deterministic entry point:
 
@@ -898,6 +908,30 @@ $ FM_SUPERVISION_HOST_LIVE_E2E=1 tests/fm-supervision-host-live-e2e.test.sh
 # first turn: handled	turn=host-85573-1790386456.1	posture=away	rc=0
 # second turn: handled	turn=host-85573-1790386456.2	posture=away	rc=0
 ok - supervision host live (2.1.283 (Claude Code)): a real engine handles and resumes away wakes under the branch contract without waking main
+```
+
+Beside a Kiro primary the doorbell owner runs the host and the host proves ownership through the endpoint record; measured on 2026-09-29 at 04:57 UTC on Linux with Claude Code 2.1.283, a copied Bash named `kiro-cli` owning the lab lock in a private tmux pane, the away-posture record, and a wake appended as soon as the first cycle started:
+
+```text
+$ FM_KIRO_SUPERVISION_HOST_LIVE_E2E=1 bash tests/fm-kiro-supervision-host-live-e2e.test.sh
+ok - the doorbell owner runs the supervision host for primary kiro-cli serving pid 3790890
+ok - a real headless engine turn handled the away wake (2.1.283 (Claude Code))
+ok - the host neither stood down nor handed the wake to main
+ok - the engine recorded its outcome and the wake queue no longer holds the row
+ok - the host stays parked on a live successor watcher
+ok - the doorbell owner is still alive
+ok - the Kiro pane was never rung
+# turn: handled	turn=host-3791348-1790657800.1	posture=away	rc=0	reports=1	error=0 cost=0.062347 conversation_cost=0.062347 input=10 cache_read=64521 cache_write=16717 output=763 turns=5
+```
+
+The same guard with `FM_KIRO_SUPERVISION_HOST_POSTURE=attended` (no away record, the dialog mirror seeded through the Kiro writer) passed at 05:11 UTC, the routine wake handled on the engine with the pane never rung:
+
+```text
+$ FM_KIRO_SUPERVISION_HOST_LIVE_E2E=1 FM_KIRO_SUPERVISION_HOST_POSTURE=attended bash tests/fm-kiro-supervision-host-live-e2e.test.sh
+ok - a real headless engine turn handled the attended wake (2.1.283 (Claude Code))
+ok - the host neither stood down nor handed the wake to main
+ok - the Kiro pane was never rung
+# turn: handled	turn=host-309070-1790658589.1	posture=attended	rc=0	reports=1	error=0 cost=0.092462 conversation_cost=0.092462 input=22 cache_read=165076 cache_write=17705 output=1514 turns=11
 ```
 
 Deterministic entry points:

@@ -71,6 +71,36 @@ exit 0
 SH
 chmod +x "$TMP_ROOT/stub-arm.sh"
 
+# A stub supervision host for opted-in cases: it records how the owner started
+# it, prints the arm's status line (or stands down when host-behavior.<n> says
+# so), and closes with the contents of hclose.<n>; with behavior `die` it
+# kills itself with SIGKILL once hdie.<n> exists.
+cat > "$TMP_ROOT/stub-host.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+dir=$FM_DOORBELL_TEST_DIR
+n=$(( $(cat "$dir/host-count" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$n" > "$dir/host-count"
+printf 'host-start n=%s pid=%s primary=%s served=%s args=%s pred=%s\n' "$n" "$$" \
+  "${FM_SUPERVISION_HOST_PRIMARY:-}" "${FM_SUPERVISION_HOST_SERVED_PID:-}" "$*" \
+  "${FM_WATCH_PREDECESSOR_ARM_PID:-none}" >> "$dir/events.log"
+trap 'printf "host-term n=%s\n" "$n" >> "$dir/events.log"; exit 143' TERM
+if [ "$(cat "$dir/host-behavior.$n" 2>/dev/null)" = standdown ]; then
+  echo 'supervision-host stood down: test'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+while [ ! -f "$dir/hclose.$n" ]; do
+  if [ -f "$dir/hdie.$n" ] && [ "$(cat "$dir/host-behavior.$n" 2>/dev/null)" = die ]; then
+    kill -KILL "$$"
+  fi
+  sleep 0.1
+done
+cat "$dir/hclose.$n"
+exit 0
+SH
+chmod +x "$TMP_ROOT/stub-host.sh"
+
 # Kill every process whose command line names this run's fixture tree: owners,
 # stub arms, and fake kiro-cli sessions.
 reap_all() {
@@ -493,6 +523,110 @@ test_row_without_close_rings_once() {
   pass "doorbell owner: a row queued without a close rings once, and a newer row rings once more"
 }
 
+# ---- supervision host (config/supervision-host) ------------------------------
+
+opt_in_host() {
+  cp "$TMP_ROOT/stub-host.sh" "$R/bin/fm-supervision-host.sh"
+  mkdir -p "$H/config"
+  : > "$H/config/supervision-host"
+}
+
+start_host_owner() {
+  local out
+  out=$(doorbell ensure) || fail "ensure failed: $out"
+  wait_for "the first host starts" 5 events_has '^host-start n=1 '
+}
+
+close_host() {  # <n> <content>
+  printf '%s\n' "$2" > "$D/hclose.$1.tmp" && mv "$D/hclose.$1.tmp" "$D/hclose.$1"
+}
+
+test_opted_in_owner_runs_the_host_in_the_arms_place() {
+  local served
+  new_case hoststart
+  opt_in_host
+  start_kiro
+  served=$(cat "$S/.lock")
+  start_host_owner
+  events_has "^host-start n=1 pid=[0-9]* primary=kiro-cli served=$served args=park pred=none\$" \
+    || fail "the host did not start as a kiro-cli park serving pid $served: $(cat "$D/events.log")"
+  sleep 0.5
+  assert_equals "$(count '^start n=')" 0 "an opted-in owner started the watcher arm"
+  end_case
+  pass "doorbell owner: an opted-in home runs the supervision host park (primary kiro-cli, served lock pid) instead of the arm"
+}
+
+test_host_close_rings_with_an_empty_queue_and_writes_the_note() {
+  local s r
+  new_case hostclose
+  opt_in_host
+  start_kiro
+  start_host_owner
+  [ ! -s "$S/.wake-queue" ] || fail "fixture: the queue is not empty"
+  close_host 1 'supervision-host: cycle boundary test'
+  wait_for "the host close rings" 5 rings_at_least 1
+  wait_for "the next host cycle starts" 5 events_has '^host-start n=2 '
+  never_for "a host close rang more than once" 1 rings_at_least 2
+  s=$(line_of '^host-start n=2 ')
+  r=$(line_of '^ring ')
+  [ "$s" -lt "$r" ] || fail "the next host did not start before the ring: $(cat "$D/events.log")"
+  assert_present "$S/.primary-doorbell-note" "the host close left no doorbell note"
+  assert_grep 'supervision-host: cycle boundary test' "$S/.primary-doorbell-note" "the note lacks the host line"
+  assert_no_grep 'watcher: started' "$S/.primary-doorbell-note" "the note kept the arm's status line"
+  end_case
+  pass "doorbell owner: a host close with a supervision-host line rings once on an empty queue, notes the close without its status line, and starts the next host"
+}
+
+test_host_stand_down_is_a_failed_start() {
+  new_case hoststanddown
+  opt_in_host
+  printf 'standdown\n' > "$D/host-behavior.1"
+  start_kiro
+  start_host_owner
+  wait_for "a stood-down host is retried" 8 events_has '^host-start n=2 '
+  never_for "a stood-down host rang the primary" 1 rings_at_least 1
+  assert_absent "$S/.primary-doorbell-note" "a stood-down host wrote a doorbell note"
+  assert_equals "$(count '^start n=')" 0 "a stood-down host fell back to the arm"
+  end_case
+  pass "doorbell owner: a host that stands down is a failed start that retries without ringing"
+}
+
+test_host_owns_rows_while_it_runs() {
+  local posture
+  for posture in away attended; do
+    new_case "hostrows-$posture"
+    opt_in_host
+    start_kiro
+    start_host_owner
+    [ "$posture" = attended ] || printf 'words=watch\n' > "$S/.afk-contract"
+    append_row
+    never_for "a row rang while the $posture host may still offer it to its engine" 3 rings_at_least 1
+    end_case
+  done
+  pass "doorbell owner: while an opted-in host runs, attended or away, it owns queued rows and no row-only ring fires"
+}
+
+test_host_death_rings_its_queued_rows() {
+  new_case hostdeath
+  opt_in_host
+  printf 'die\n' > "$D/host-behavior.1"
+  start_kiro
+  start_host_owner
+  append_row
+  never_for "a row rang while the host was alive" 2 rings_at_least 1
+  : > "$D/hdie.1"
+  wait_for "a dead host's queued row reaches main" 8 rings_at_least 1
+  wait_for "a dead host is replaced" 8 events_has '^host-start n=2 '
+  never_for "a dead host's row rang more than once" 1 rings_at_least 2
+  end_case
+  pass "doorbell owner: a host that dies is replaced, and the main rows it held are rung once"
+}
+
+test_opted_in_owner_runs_the_host_in_the_arms_place
+test_host_close_rings_with_an_empty_queue_and_writes_the_note
+test_host_stand_down_is_a_failed_start
+test_host_owns_rows_while_it_runs
+test_host_death_rings_its_queued_rows
 test_ensure_starts_exactly_one_owner
 test_row_without_close_rings_once
 test_reused_pid_lock_is_reclaimed

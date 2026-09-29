@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Render the primary-harness supervision operating block for session start and
 # the short repair line used by guards and turn-end hooks. On a non-Pi primary
-# with a supervision protocol (claude, cursor, opencode, omp, grok, codex) whose
+# with a supervision protocol (claude, cursor, opencode, omp, grok, codex, kiro-cli) whose
 # home opted into the supervision host (config/supervision-host), the block
 # adds one state line and the host's main-side protocol
 # (docs/supervision-protocols/supervision-host.md, whose lines tagged
@@ -107,7 +107,7 @@ esac
 HOST_SNIPPET=
 grok_arm='bin/fm-watch-arm.sh'
 case "$HARNESS" in
-  claude|cursor|opencode|omp|grok|codex)
+  claude|cursor|opencode|omp|grok|codex|kiro-cli)
     if [ -f "$CONFIG/supervision-host" ]; then
       HOST_SNIPPET="$DOC_DIR/supervision-host.md"
       grok_arm='bin/fm-supervision-host.sh park'
