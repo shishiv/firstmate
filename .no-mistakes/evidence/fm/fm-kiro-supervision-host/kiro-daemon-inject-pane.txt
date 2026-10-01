@@ -1,0 +1,105 @@
+⠦ Launching...Preparing V3...
+                                                                     ⢀⣴⣶⣶⣦⡀⠀⠀⠀⠀⢀⣴⣶⣦⣄⡀   ⢀⣴⣶⣶⣦⡀   ⢀⣴⣶⣶⣶⣶⣶⣶⣶⣶⣶⣦⣄⡀       ⢀⣠⣴⣶⣶⣶⣶⣶⣦⣄⡀
+                                                                    ⢰⣿⠋⠁⠈⠙⣿⡆⠀⢀⣾⡿⠁  ⠈⢻⡆ ⢰⣿⠋⠁⠈⠙⣿⡆ ⢰⣿⠋⠁        ⠈⠙⠻⣦     ⣴⡿⠟⠋⠁   ⠈⠙⠻⢿⣦
+                                                                    ⢸⣿⠀⠀⠀⠀⣿⣇⣴⡿⠋⠀⠀  ⢀⣼⠇ ⢸⣿⠀⠀⠀⠀⣿⡇ ⢸⣿⠀⠀⠀⢠⣤⣤⣤⣤⣄    ⣿⡆   ⣼⡟⠀⠀⠀ ⣀⣀⣀    ⢻⣧
+                                                                    ⢸⣿⠀⠀⠀⠀⣿⡿⠋⠀⠀  ⢀⣾⡿⠁  ⢸⣿⠀⠀⠀⠀⣿⡇ ⢸⣿⠀⠀⠀⢸⣿⠉⠉⠉⣿⡇   ⣿⡇  ⣼⡟⠀⠀ ⣰⡿⠟⠛⠻⢿⣆⠀⠀ ⢻⣧
+                                                                    ⢸⣿⠀⠀⠀⠀⠙⠁⠀⠀ ⢀⣼⡟⠁    ⢸⣿⠀⠀⠀⠀⣿⡇ ⢸⣿⠀⠀⠀⢸⣿⣶⣶⡶⠋⠀   ⣿⠇ ⢰⣿⠀⠀⠀⢰⣿⠀⠀⠀  ⣿⡆⠀⠀ ⣿⡆
+                                                                    ⢸⣿⠀⠀⠀⠀⠀⠀⠀⠀ ⠹⣷⡀     ⢸⣿⠀⠀⠀⠀⣿⡇⠀⢸⣿⠀⠀⠀⠀⠀⠀⠀⠀   ⣠⣼⠟  ⢸⣿⠀⠀ ⢸⣿⠀⠀⠀⠀ ⣿⡇⠀⠀ ⣿⡇
+                                                                    ⢸⣿⠀⠀⠀⠀⠀⣠⡀⠀⠀ ⠹⣷⡄    ⢸⣿⠀⠀⠀⠀⣿⡇⠀⢸⣿⠀⠀⠀⠀⣤⣄  ⠀⠀⠹⣿⡅   ⠸⣿⠀⠀ ⠸⣿⠀⠀⠀⠀ ⣿⠇⠀  ⣿⠇
+                                                                    ⢸⣿⠀⠀⠀⠀⣾⡟⣷⡀⠀⠀ ⠘⣿⣆   ⢸⣿⠀⠀⠀⠀⣿⡇ ⢸⣿⠀⠀⠀⠀⣿⡟⣷⡀⠀⠀ ⠘⣿⣆   ⢻⣧⠀⠀ ⠹⣷⣦⣤⣤⣾⠏⠀⠀⠀⣼⡟
+                                                                    ⢸⣿⠀⠀⠀⠀⣿⡇⠹⣷⡀  ⠀⠈⢻⡇  ⢸⣿⠀⠀⠀⠀⣿⡇ ⢸⣿⠀⠀⠀⠀⣿⡇⠹⣷⡀  ⠀⠈⢻⡇   ⢻⣧⠀⠀⠀ ⠉⠉⠉    ⣼⡟
+                                                                    ⠸⣿⣄⡀⢀⣠⣿⠇⠀⠙⣷⡀  ⢀⣼⠇  ⠸⣿⣄⡀⢀⣠⣿⠇ ⠸⣿⣄⡀⢀⣠⣿⠇⠀⠙⣷⡀  ⢀⣼⠇    ⠻⣷⣦⣄⡀   ⢀⣠⣴⣾⠟
+                                                                     ⠈⠻⠿⠿⠟⠁⠀⠀⠀⠈⠻⠿⠿⠟⠁    ⠈⠻⠿⠿⠟⠁   ⠈⠻⠿⠿⠟⠁⠀⠀⠀⠈⠻⠿⠿⠟⠁     ⠀⠀⠈⠙⠻⠿⠿⠿⠿⠟⠋⠁
+
+                                                                                        Welcome to Kiro CLI V3!
+                                                                     Upgrade your V2 agent configurations to V3 with /upgrade-agent
+                                                                                     https://kiro.dev/docs/cli/v3/
+                                                                       Prefer the previous experience? Launch with kiro-cli --v2
+
+                                                              Tip: Type /code overview to get a high-level map of your codebase structure.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✨ What's new: Cloud sessions, specs, expanded hooks, and an improved trust model.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  › FIRSTMATE_OP: v1 away-supervisor: done: PR https://example.test/pull/11 checks green (change-7170d84)
+
+● Load skill: away-quiet-supervision
+    ╰ toolName=disclose_context, name=away-quiet-supervision
+    {
+      "contentLength": 2328,
+      "item": {
+    ...+24 lines
+    (ctrl+o to toggle)
+● Shell cd /home/shiv/.no-mistakes/worktrees/47ddb98ef5e3/01M3VJEKN3D1XXY33CG3CPC1SH && ls state/ 2>/dev/null; echo "---"; cat state/.afk-contract 2>/dev/null; echo "---afk---"; cat state/.afk
+  2>/dev/null; echo "---pwd---"; pwd; echo "---git root---"; git rev-parse --show-toplevel 2>/dev/null
+    ╰ run_in_background=false
+    ---
+    ---afk---
+    ---pwd---
+    /home/shiv/.no-mistakes/worktrees/47ddb98ef5e3/01M3VJEKN3D1XXY33CG3CPC1SH
+    ---git root---
+    ...+2 lines
+    (ctrl+o to toggle)
+● Shell echo "FM_HOME=$FM_HOME"; env | grep -i FM_ ; echo "---"; find / -maxdepth 3 -iname "firstmate*" 2>/dev/null; echo "---check for AGENTS.md location---"; ls -la
+  /home/shiv/.no-mistakes/worktrees/47ddb98ef5e3/01M3VJEKN3D1XXY33CG3CPC1SH 2>/dev/null | head -30
+    ╰ run_in_background=false
+    FM_HOME=/tmp/fm-lab.K8AZqt
+    FM_HOME=/tmp/fm-lab.K8AZqt
+    ---
+    /home/shiv/Firstmate
+    /tmp/firstmate-herdr-presentation
+    ...+32 lines
+    (ctrl+o to toggle)
+● Shell echo "FM_HOME=$FM_HOME"; ls -la "$FM_HOME" 2>/dev/null; echo "---state---"; ls -la "$FM_HOME/state" 2>/dev/null; echo "---afk-contract---"; cat "$FM_HOME/state/.afk-contract" 2>/dev/null;
+  echo "---afk---"; cat "$FM_HOME/state/.afk" 2>/dev/null; echo "---subsuper---"; ls "$FM_HOME"/state/.subsuper-* 2>/dev/null
+    ╰ run_in_background=false
+    FM_HOME=/tmp/fm-lab.K8AZqt
+    total 92
+    drwx------    8 shiv shiv   300 Oct  1 08:33 .
+    drwxrwxrwt 3309 root root 92820 Oct  1 08:33 ..
+    drwxr-xr-x    3 shiv shiv  4320 Oct  1 08:32 basebin
+    ...+22 lines
+    Output:
+    FM_HOME=/tmp/fm-lab.K8AZqt
+    total 92
+    drwx------    8 shiv shiv   300 Oct  1 08:33 .
+    drwxrwxrwt 3309 root root 92820 Oct  1 08:33 ..
+    drwxr-xr-x    3 shiv shiv  4320 Oct  1 08:32 basebin
+    drwxr-xr-x    2 shiv shiv    40 Oct  1 08:31 config
+    drwxr-xr-x    2 shiv shiv    40 Oct  1 08:31 data
+    -rw-r--r--    1 shiv shiv    15 Oct  1 08:31 .fm-lab-home
+    -rw-r--r--    1 shiv shiv   154 Oct  1 08:33 inject-base-e2707c2.log
+    -rw-r--r--    1 shiv shiv   394 Oct  1 08:33 inject.out
+    -rw-r--r--    1 shiv shiv   800 Oct  1 08:33 inject.sh
+    -rw-r--r--    1 shiv shiv   598 Oct  1 08:32 probe.out
+    -rwxr-xr-x    1 shiv shiv   872 Oct  1 08:32 probe.sh
+    drwxr-xr-x    2 shiv shiv    40 Oct  1 08:31 projects
+    -rw-r--r--    1 shiv shiv 66050 Oct  1 08:31 sessions.before
+    drwxr-xr-x    3 shiv shiv    80 Oct  1 08:33 state
+    drwxr-xr-x    3 shiv shiv    60 Oct  1 08:31 tmux
+    ---state---
+    total 4
+    drwxr-xr-x 3 shiv shiv  80 Oct  1 08:33 .
+    drwx------ 8 shiv shiv 300 Oct  1 08:33 ..
+    -rw-r--r-- 1 shiv shiv  11 Oct  1 08:33 .afk
+    drwxr-xr-x 6 shiv shiv 140 Oct  1 08:33 .kiro-primary-home
+    ---afk-contract---
+    ---afk---
+    1790854396
+    ---subsuper---
+
+
+    Exit Code: 2
+    (ctrl+o to toggle)
+⣿ Thinking... (esc to cancel)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Trust All Tools active, confirmations are off · /quit to exit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+firstmate-kiro · claude-sonnet-5 · thinking · high · ◔ 5%                                                                      ~/.no-mistakes/worktrees/47ddb98ef5e3/01M3VJEKN3D1XXY33CG3CPC1SH · (HEAD)
+
+›  Kiro is working · Type to steer · Ctrl+S to queue
+
+
+

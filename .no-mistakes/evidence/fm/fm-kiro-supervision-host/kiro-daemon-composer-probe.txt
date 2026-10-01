@@ -1,0 +1,14 @@
+## Live idle kiro-cli 2.24.1 pane (fm-kiro-primary.sh, private tmux socket fm-lab), composer guard probes
+[base-e2707c2] fm_backend_composer_state tmux %0 (no harness): pending
+[base-e2707c2] fm_backend_composer_state tmux %0 '' kiro-cli: empty
+[base-e2707c2] pane_input_pending (FM_DAEMON_PRIMARY_HARNESS=kiro-cli): pending
+[base-e2707c2] pane_input_pending (FM_DAEMON_PRIMARY_HARNESS=codex): pending
+[change-7170d84] fm_backend_composer_state tmux %0 (no harness): pending
+[change-7170d84] fm_backend_composer_state tmux %0 '' kiro-cli: empty
+[change-7170d84] pane_input_pending (FM_DAEMON_PRIMARY_HARNESS=kiro-cli): empty
+[change-7170d84] pane_input_pending (FM_DAEMON_PRIMARY_HARNESS=codex): pending
+
+## Live inject_msg into the same idle Kiro pane with the away flag set
+[base-e2707c2] inject_msg rc=1 INJECT_LAST_FAILURE=deferred: supervisor composer not confirmed-empty (state=pending: pending input, dead-shell prompt, or unreadable pane)
+[$2 log] [2026-10-01T08:33:13-0300] inject deferred: supervisor composer not confirmed-empty (state=pending: pending input, dead-shell prompt, or unreadable pane)
+[change-7170d84] inject_msg rc=0 INJECT_LAST_FAILURE=<none>
