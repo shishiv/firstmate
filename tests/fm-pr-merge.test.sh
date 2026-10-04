@@ -2358,9 +2358,12 @@ test_distinct_merged_prs_keep_distinct_wakes() {
   rm -f "$case_dir/state/task-x1.check.sh" \
     "$case_dir/state/task-x1.pr-poll" \
     "$case_dir/state/task-x1.pr-poll-registration"
-  # The first PR's merge is already confirmed (the notified marker
-  # fm_merge_outcome_report wrote), so the task's next PR is accepted with
-  # pr= still bound to the first URL; no hand-edit of the recorded identity.
+  # Reused tasks re-bind through fm-pr-check before the next merge. Merge
+  # refuses a URL that is not the recorded pr= unless that PR merged and the
+  # new one is on a sibling branch of the task, so drop the first PR identity.
+  grep -vE '^(pr|pr_head)=' "$case_dir/state/task-x1.meta" \
+    > "$case_dir/state/task-x1.meta.rebind"
+  mv "$case_dir/state/task-x1.meta.rebind" "$case_dir/state/task-x1.meta"
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$second_url" \
     >"$case_dir/stdout-2" 2>"$case_dir/stderr-2" \
     || fail "distinct-merge-wakes: second merge failed"

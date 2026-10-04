@@ -1047,12 +1047,12 @@ unit_supervision_host_kiro_start_refuses_like_opencode() {
     st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-host-kiro.XXXXXX")
     mkdir -p "$st/state" "$st/config"
     : > "$st/config/supervision-host"
-    enter_posture "$st" || fail "$harness: could not enter fixture posture"
-    out=$(FM_TEST_SEAM=1 FM_TEST_HARNESS="$harness" FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start 2>&1)
+    FM_CONFIG_OVERRIDE="$st/config" enter_posture "$st" || fail "$harness: could not enter fixture posture"
+    out=$(FM_TEST_SEAM=1 FM_TEST_HARNESS="$harness" FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_CONFIG_OVERRIDE="$st/config" "$LAUNCH" start 2>&1)
     rc=$?
     [ ! -e "$st/state/.afk" ] && [ ! -e "$st/state/.afk-daemon-terminal" ] && [ -f "$st/state/.afk-contract" ] \
       || fail "$harness: an away start on an opted-in home launched a daemon or lost the record: $out"
-    FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" stop >/dev/null 2>&1 || true
+    FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_CONFIG_OVERRIDE="$st/config" "$LAUNCH" stop >/dev/null 2>&1 || true
     rm -rf "$st"
     out=$(printf '%s' "$out" | sed "s|$st|<home>|g; s|this $harness home|this <harness> home|g")
     if [ "$harness" = kiro-cli ]; then kiro_out=$out; kiro_rc=$rc; else open_out=$out; open_rc=$rc; fi
