@@ -29,6 +29,11 @@ set -u
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
+# Hermetic Herdr host diagnostics: a herdr-backend case must not read this
+# machine's real Herdr server cgroup or config.toml; the dedicated diagnostics
+# case points both at its own fixtures.
+export FM_HERDR_PROC_ROOT="$TMP_ROOT/no-proc"
+export XDG_CONFIG_HOME="$TMP_ROOT/no-xdg-config"
 
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,
@@ -45,7 +50,7 @@ make_fake_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
   fm_fake_exit0 "$fakebin" tmux node chrome-devtools-axi
-  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.77
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.80
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
@@ -380,8 +385,9 @@ ROWS
 }
 
 test_lavish_axi_min_version() {
-  local label version mode case_dir fakebin out unavailable n
+  local label version mode case_dir fakebin out unavailable upgrade n
   unavailable='PRESENTATION_UNAVAILABLE: lavish-axi (requires >=0.1.77; install: npm install -g lavish-axi && lavish-axi setup hooks) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish'
+  upgrade='BOOTSTRAP_INFO: lavish-axi >=0.1.80 enables confirmed board replies; this older compatible version retains the legacy reply path, but upgrade to prevent handing back a board before its reply is accepted'
   n=0
   while IFS='^' read -r label version mode; do
     [ -n "$label" ] || continue
@@ -398,20 +404,24 @@ test_lavish_axi_min_version() {
     case "$mode" in
       empty)
         [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+      upgrade)
+        [ "$out" = "$upgrade" ] || fail "$label: expected '$upgrade', got: $out" ;;
       unavailable)
         [ "$out" = "$unavailable" ] || fail "$label: expected '$unavailable', got: $out" ;;
     esac
   done <<'ROWS'
 absent lavish-axi permits text fallback^absent^unavailable
-minimum lavish-axi version is accepted^0.1.77^empty
-newer lavish-axi patch is accepted^0.1.78^empty
+lavish-axi reply feature floor is accepted^0.1.80^empty
+older compatible lavish-axi retains boards and recommends upgrade^0.1.79^upgrade
+minimum legacy board version is accepted with upgrade advice^0.1.77^upgrade
+newer lavish-axi patch is accepted^0.1.81^empty
 newer lavish-axi minor is accepted^0.2.0^empty
 newer lavish-axi major is accepted^1.0.0^empty
-the patch just below the floor permits text fallback^0.1.76^unavailable
+the patch just below the board compatibility floor permits text fallback^0.1.76^unavailable
 much older lavish-axi minor permits text fallback^0.0.9^unavailable
 unparseable lavish-axi version permits text fallback^lavish-axi development build^unavailable
 ROWS
-  pass "bootstrap permits nonvisual work without compatible lavish-axi and retains its presentation floor"
+  pass "bootstrap preserves legacy Lavish boards while recommending synchronous reply support"
 }
 
 test_tasks_axi_min_version() {
@@ -612,6 +622,66 @@ zellij^zellij
 cmux^cmux
 ROWS
   pass "bootstrap: a session-provider backend gates its own CLI, never a false tmux requirement"
+}
+
+# A herdr home gets two read-only warnings about how the host runs the default
+# Herdr session: a server under app.slice, and agent resume left on. The fake
+# process table holds the default server and a named lab server, so only the
+# default one may be named; the fake config decides the resume line.
+herdr_diagnostics_case() {  # <case> <backend> <herdr-version> <cgroup> <config-body|-> -> output
+  local case_dir="$TMP_ROOT/herdr-diag-$1" fakebin proc
+  mkdir -p "$case_dir/home/config" "$case_dir/xdg/herdr"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$2" > "$case_dir/home/config/backend"
+  fakebin=$(make_fake_toolchain_no_tmux "$case_dir" herdr)
+  cat > "$fakebin/herdr" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" = --version ] && printf 'herdr %s\n' '$3'
+exit 0
+SH
+  chmod +x "$fakebin/herdr"
+  cat > "$fakebin/fake-ps" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '  4242 /usr/bin/herdr server' '  4243 herdr server --session fm-lab-other' '  4244 herdr --session default'
+SH
+  chmod +x "$fakebin/fake-ps"
+  proc="$case_dir/proc"
+  mkdir -p "$proc/4242" "$proc/4243" "$proc/4244"
+  printf '0::%s\n' "$4" > "$proc/4242/cgroup"
+  printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-ghostty-surface-transient-7.scope\n' \
+    | tee "$proc/4243/cgroup" > "$proc/4244/cgroup"
+  [ "$5" = - ] || printf '%s\n' "$5" > "$case_dir/xdg/herdr/config.toml"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_HERDR_PS_BIN="$fakebin/fake-ps" FM_HERDR_PROC_ROOT="$proc" XDG_CONFIG_HOME="$case_dir/xdg" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh"
+}
+
+test_herdr_host_diagnostics_warn_on_app_slice_and_agent_resume() {
+  local out app=/user.slice/user-1000.slice/user@1000.service/app.slice/app-ghostty-surface-transient-9.scope
+  local own=/user.slice/user-1000.slice/user@1000.service/herdr.slice/herdr.service
+  out=$(herdr_diagnostics_case exposed herdr 0.9.3 "$app" -)
+  assert_contains "$out" "HERDR_SERVER_CGROUP: the default Herdr server (pid 4242) runs in $app, under app.slice" \
+    "a default server under app.slice was not reported"
+  assert_not_contains "$out" "pid 4243" "a named lab server was reported as the default server"
+  assert_not_contains "$out" "pid 4244" "a Herdr client was reported as the default server"
+  assert_contains "$out" "HERDR_AGENT_RESUME: Herdr 0.9.3 resumes agents after a server restart because $TMP_ROOT/herdr-diag-exposed/xdg/herdr/config.toml does not set [session] resume_agents_on_restore = false" \
+    "an absent config on a resuming release was not reported"
+
+  out=$(herdr_diagnostics_case protected herdr 0.9.3 "$own" $'theme = "x"\n[session]\nresume_agents_on_restore = false  # off')
+  [ -z "$out" ] || fail "a server in its own slice with resume off must be silent, got: $out"
+
+  out=$(herdr_diagnostics_case dotted herdr 0.9.3 "$own" 'session.resume_agents_on_restore = false')
+  [ -z "$out" ] || fail "the dotted resume key must count as resume off, got: $out"
+
+  out=$(herdr_diagnostics_case other-table herdr 0.9.3 "$own" $'[ui]\nresume_agents_on_restore = false')
+  assert_contains "$out" "HERDR_AGENT_RESUME:" "the resume key outside [session] must not count as resume off"
+
+  out=$(herdr_diagnostics_case old-release herdr 0.9.1 "$own" -)
+  [ -z "$out" ] || fail "a release before agent resume (0.9.1) must not warn about it, got: $out"
+
+  out=$(herdr_diagnostics_case tmux-home tmux 0.9.3 "$app" -)
+  assert_not_contains "$out" "HERDR_" "a tmux home must not report Herdr host diagnostics"
+  pass "bootstrap: a herdr home warns when the default server sits under app.slice and when agent resume is on, read-only"
 }
 
 test_herdr_install_requires_manual_action() {
@@ -1269,6 +1339,7 @@ test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux
 test_herdr_install_requires_manual_action
+test_herdr_host_diagnostics_warn_on_app_slice_and_agent_resume
 test_cmux_bundled_cli_satisfies_dependency
 test_unknown_backend_reports_invalid_configuration
 test_json_backends_require_jq_not_tmux

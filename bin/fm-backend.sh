@@ -622,34 +622,35 @@ fm_backend_source_readable() {  # <path>
 }
 
 fm_backend_source() {  # <name>
-  local name=$1 adapter rel path siblings
+  local name=$1 adapter rel sibling
   fm_backend_validate "$name" || return 1
   adapter="$FM_BACKEND_LIB_DIR/backends/$name.sh"
+  # The sibling list rides in the positional parameters: zsh does not
+  # word-split an unquoted expansion, so a space-separated string is one path.
   case "$name" in
     tmux)
-      siblings="fm-tmux-lib.sh fm-composer-lib.sh fm-cursor-lib.sh fm-session-lock-lib.sh fm-agent-process-lib.sh fm-gemini-lib.sh"
+      set -- fm-tmux-lib.sh fm-composer-lib.sh fm-cursor-lib.sh fm-session-lock-lib.sh fm-agent-process-lib.sh fm-gemini-lib.sh
       ;;
     herdr)
-      siblings="fm-composer-lib.sh fm-transition-lib.sh fm-agent-process-lib.sh fm-session-lock-lib.sh fm-gemini-lib.sh"
+      set -- fm-composer-lib.sh fm-transition-lib.sh fm-agent-process-lib.sh fm-session-lock-lib.sh fm-gemini-lib.sh
       ;;
     zellij)
-      siblings="fm-backend-hometag-lib.sh fm-composer-lib.sh"
+      set -- fm-backend-hometag-lib.sh fm-composer-lib.sh
       ;;
     orca)
-      siblings="fm-composer-lib.sh"
+      set -- fm-composer-lib.sh
       ;;
     cmux)
-      siblings="fm-backend-hometag-lib.sh fm-composer-lib.sh"
+      set -- fm-backend-hometag-lib.sh fm-composer-lib.sh
       ;;
     *)
       return 1
       ;;
   esac
   fm_backend_source_readable "$adapter" || return 1
-  # shellcheck disable=SC2086 # sibling names are a fixed space-separated list
-  for rel in $siblings; do
-    path="$FM_BACKEND_LIB_DIR/$rel"
-    fm_backend_source_readable "$path" || return 1
+  for rel in "$@"; do
+    sibling="$FM_BACKEND_LIB_DIR/$rel"
+    fm_backend_source_readable "$sibling" || return 1
   done
   case "$name" in
     tmux)
@@ -790,6 +791,46 @@ fm_backend_visible_capture() {  # <backend> <target> [expected-label]
   }
   fm_backend_source "$backend" || return 1
   "fm_backend_${backend}_visible_capture" "$@"
+}
+
+# fm_backend_endpoint_foreign: true (0) only when <target> provably holds an
+# agent that Firstmate did not launch for the task recorded in <meta-file>, so
+# no text or key may be sent to it. Every sender of text or keys to a recorded
+# task asks this first: the steering doorbell (bin/fm-task-inbox-lib.sh), the
+# typed and key planes of bin/fm-send.sh, and every lifecycle verb of
+# bin/fm-control.sh.
+#
+# Only ship and scout tasks carry the FM_TASK_ID launch marker
+# (bin/fm-spawn.sh), so only they are checked; a secondmate, a missing or
+# unreadable record, and every backend without an identity read answer false,
+# exactly as before this guard existed. The backend owns the evidence: Herdr
+# reads the marker from the pane's process tree (fm_backend_herdr_task_identity
+# in bin/backends/herdr.sh), and only its positive `foreign` verdict counts.
+# tmux, zellij, orca, and cmux never restore an agent into a recorded endpoint,
+# so they have no identity read.
+fm_backend_endpoint_foreign() {  # <backend> <target> <meta-file>
+  local backend=$1 target=$2 meta=$3 kind task
+  [ -f "$meta" ] || return 1
+  kind=$(fm_meta_get "$meta" kind)
+  case "${kind:-ship}" in ship|scout) ;; *) return 1 ;; esac
+  task=${meta##*/}
+  task=${task%.meta}
+  [ -n "$task" ] || return 1
+  case "$backend" in
+    herdr)
+      fm_backend_source herdr || return 1
+      [ "$(fm_backend_herdr_task_identity "$target" "$task")" = foreign ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_backend_foreign_endpoint_reason: the one sentence every refusal of a
+# foreign endpoint embeds, so the doorbell, steer, and control refusals name the
+# same cause and the same recovery.
+fm_backend_foreign_endpoint_reason() {  # <target> <task-id>
+  printf 'the agent in %s was not launched for task %s (its process tree lacks FM_TASK_ID=%s, so it is most likely a session Herdr resumed after a server restart, running in the directory the pane was created in rather than the task worktree); stop that agent and recover the task with stuck-crewmate-recovery' \
+    "$1" "$2" "$2"
 }
 
 # fm_backend_send_key: one backend-supported named special key.
