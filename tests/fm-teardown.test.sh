@@ -29,9 +29,11 @@
 #   (d) no-mistakes + pushed real content + open PR        -> REFUSE (merge proof, both actors)
 #   (d2) no-mistakes/direct-PR + pushed + merged PR w/ HEAD  -> ALLOW  (merge proof)
 #   (d3) direct-PR + merged stack-base PR, stale PR head      -> ALLOW  (stack-base content proof)
+#   (d3b) direct-PR + OPEN stack-base PR, base has content    -> REFUSE (base match never proves a merge)
 #   (d4) direct-PR + stack base content differs               -> REFUSE (control for d3)
 #   (d5) no-mistakes + missing worktree, no recorded PR      -> REFUSE (missing copy proves nothing)
 #   (d6) no-mistakes + missing worktree + recorded MERGED PR  -> ALLOW  (recorded proof)
+#   (d6b) no-mistakes + missing WT, current PR open, earlier merged -> REFUSE (current PR is authoritative)
 #   (d7) direct-PR + slot reassigned, no recorded PR         -> REFUSE (records-only still proves)
 #   (d8) direct-PR + slot reassigned + recorded MERGED PR     -> ALLOW  (records-only proceeds)
 #   (e) no-mistakes + unpushed, no PR, content not in default  -> REFUSE (safety)
@@ -971,17 +973,18 @@ land_on_branch() {
   rm -rf "$tmp"
 }
 
-# GitHub lookup shape for a stack PR: MERGED, but its head does NOT contain
-# the local work, and its base is the stack base rather than main.
-# Args: case_dir stale-head stack-base
-add_gh_stack_pr_merged() {
-  local case_dir=$1 stale_head=$2 base=$3
+# GitHub lookup shape for a stack PR: the given state, a head that does NOT
+# contain the local work, and a base that is the stack base rather than main.
+# Args: case_dir stale-head stack-base state
+add_gh_stack_pr() {
+  local case_dir=$1 stale_head=$2 base=$3 state=$4
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
-      *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' 'MERGED' '$stale_head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
+      *"state,baseRefName"*) printf '%s\t%s\n' '$state' '$base' ; exit 0 ;;
+      *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' '$state' '$stale_head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
       *"baseRefName"*) printf '%s\n' '$base' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$stale_head' ; exit 0 ;;
     esac
@@ -1012,7 +1015,7 @@ test_stack_base_merge_counts_as_landed() {
     git -C "$case_dir/project" fetch -q origin
     land_on_branch "$case_dir" feat/reforma-sistemas feature.txt "$content"
     stale_head=$(git -C "$case_dir/project" rev-parse main)
-    add_gh_stack_pr_merged "$case_dir" "$stale_head" feat/reforma-sistemas
+    add_gh_stack_pr "$case_dir" "$stale_head" feat/reforma-sistemas MERGED
 
     set +e
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -1028,6 +1031,88 @@ test_stack_base_merge_counts_as_landed() {
     fi
   done
   pass "a merge into the PR's stack base counts as landed work"
+}
+
+# The P1 companion to the case above: an OPEN stacked PR whose base already
+# carries the task content must still refuse. The base match alone never proves
+# a merge; only a merged-state verdict lets the stack-base fallback through.
+test_open_stacked_pr_with_base_content_refuses() {
+  local case_dir rc stale_head head
+  case_dir=$(make_case stack-base-open)
+  write_meta "$case_dir" direct-PR ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  git -C "$case_dir/project" push -q origin "main:refs/heads/feat/reforma-sistemas"
+  git -C "$case_dir/wt" fetch -q origin
+  git -C "$case_dir/wt" checkout -q -B fm/task-x1 origin/feat/reforma-sistemas
+  wt_commit_file "$case_dir" feature.txt hello "stacked work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  land_on_branch "$case_dir" feat/reforma-sistemas feature.txt hello
+  stale_head=$(git -C "$case_dir/project" rev-parse main)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_stack_pr "$case_dir" "$stale_head" feat/reforma-sistemas OPEN
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "stack-base-open: teardown should refuse an open stacked PR even when its base carries the content"
+  grep -q "no merged PR containing its HEAD" "$case_dir/stderr" \
+    || fail "stack-base-open: refusal did not cite the missing merged PR: $(cat "$case_dir/stderr")"
+  assert_refusal_retained_task_state "$case_dir" stack-base-open "$head"
+  pass "an open stacked PR refuses even when its base carries the content"
+}
+
+# .state answers per recorded PR: PR 7 is MERGED, PR 8 is OPEN, anything else errors.
+add_gh_pr_state_split() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *".state"*)
+        case " $* " in
+          *"/pull/8"*) printf '%s\n' 'OPEN' ; exit 0 ;;
+          *"/pull/7"*) printf '%s\n' 'MERGED' ; exit 0 ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
+# The P1 companion to the missing-worktree proof: with no copy left, an
+# earlier merged pr_merged= never proves the current pr='s work landed. When
+# the current PR is still open, teardown refuses even though PR 7 merged.
+test_missing_worktree_current_pr_open_refuses() {
+  local case_dir rc
+  case_dir=$(make_case missing-wt-current-open)
+  write_direct_meta "$case_dir" no-mistakes ship "$case_dir/missing-wt"
+  printf '%s\n' \
+    'pr=https://github.com/example/repo/pull/8' \
+    'pr_merged=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  seed_backlog_in_flight "$case_dir"
+  add_gh_pr_state_split "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "missing-wt-current-open: an earlier merge must not close a task whose current PR is open"
+  grep -q "current PR https://github.com/example/repo/pull/8 does not report MERGED" "$case_dir/stderr" \
+    || fail "missing-wt-current-open: refusal did not name the open current PR: $(cat "$case_dir/stderr")"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "missing-wt-current-open: the refusal erased the durable task record"
+  [ "$(backlog_row_state "$case_dir")" = in_flight ] \
+    || fail "missing-wt-current-open: the refusal closed the backlog item anyway"
+  pass "a missing worktree refuses when the current PR is open despite an earlier merge"
 }
 
 # A bare MERGED/OPEN state answer for the recorded PR, for copies with no
@@ -1867,6 +1952,10 @@ test_windowless_leftover_retries_its_retained_legacy_stamp_without_the_flag() {
   write_windowless_legacy_meta "$case_dir" no-mistakes ship "$case_dir/missing-wt"
   printf '%s\n' 'pr=not-a-valid-url' 'pr_merged=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   seed_backlog_in_flight "$case_dir"
+  # The mock answers MERGED to any .state query, including the unresolvable
+  # pr= target: this case exercises the stamp/rollback path, not proof, so
+  # the merge proof passes here while the backlog close still fails on the
+  # invalid --pr link below.
   add_gh_pr_state "$case_dir" MERGED
   add_failing_truncate_perl "$case_dir"
 
@@ -4738,7 +4827,9 @@ test_local_only_merged_to_local_main_allows
 test_no_mistakes_pushed_branch_without_merge_refuses
 test_no_mistakes_pushed_merged_pr_allows
 test_stack_base_merge_counts_as_landed
+test_open_stacked_pr_with_base_content_refuses
 test_missing_worktree_needs_merge_proof
+test_missing_worktree_current_pr_open_refuses
 test_reassigned_slot_needs_merge_proof
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed

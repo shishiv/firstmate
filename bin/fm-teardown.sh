@@ -126,7 +126,7 @@
 # inspection of it, no branch or hook removal in it, no Treehouse return, and
 # never the other task's claim. The one exception to the skipped inspection is
 # a PR task (no-mistakes or direct-PR ship): its records-only cleanup still
-# refuses unless a recorded PR reports MERGED, so an unmerged reassignment
+# refuses unless its current recorded PR reports MERGED, so an unmerged reassignment
 # cannot close the backlog as done. Skipping the inspection discards nothing of this
 # task's: whatever unlanded work it had in that slot was already destroyed when
 # the pool handed the slot on. Refusing instead would strand the record, because
@@ -1673,18 +1673,27 @@ MERGED
 # Is HEAD's content already present on a candidate PR's own base branch?
 # Covers stack merges (bin/fm-pr-merge.sh --stack-base): the content lands on
 # the stack base, not the default branch, so content_in_default cannot see it.
+# The base content only proves landing when the PR itself merged: an open
+# stacked PR whose base already carries the content must still refuse.
 # A base that is the default branch is skipped (already tried); an unreadable
 # base refuses, so the caller falls through to its own refusal.
 content_in_pr_base() {
-  local branch=$1 target base default candidates
+  local branch=$1 target base default candidates view state
   candidates=$(pr_targets_for_branch "$branch")
   [ -n "$candidates" ] || return 1
   default=$(default_branch) || default=
   while IFS= read -r target; do
     [ -n "$target" ] || continue
-    base=$(cd "$WT" && gh pr view "$target" --json baseRefName -q '.baseRefName' 2>/dev/null) || continue
-    [ -n "$base" ] || continue
-    [ "$base" != "$default" ] || continue
+    view=$(cd "$WT" && gh pr view "$target" --json state,baseRefName -q '.state + "\t" + .baseRefName' 2>/dev/null) || continue
+    state=${view%%$'\t'*}
+    base=${view#*$'\t'}
+    [ "$state" != "$view" ] || continue
+    [ "$base" != "$view" ] || continue
+    case "$state" in
+      MERGED|merged) ;;
+      *) continue ;;
+    esac
+    [ -n "$base" ] && [ "$base" != "$default" ] || continue
     content_in_branch "$base" && return 0
   done <<CANDIDATES
 $candidates
@@ -1704,29 +1713,45 @@ work_is_landed() {
   content_in_pr_base "$branch"
 }
 
-# Merge proof without a usable copy: every candidate recorded PR (pr=, then
-# each pr_merged=) is asked for its state from the project clone, and one
-# MERGED verdict proves it. There is no HEAD left to test containment against,
-# so this is only the recorded-PR-merged check: a missing worktree and a slot
-# reassigned to another task both refuse without it. Prints the refusal (which
-# names the --force discard path) and returns non-zero when nothing recorded
-# proves a merge.
-pr_record_proves_merged() {
-  local why=$1 target state candidates
-  candidates=$(pr_targets_for_branch "${TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY:-HEAD}")
-  while IFS= read -r target; do
-    [ -n "$target" ] || continue
-    if [ -n "${PROJ:-}" ] && [ -d "$PROJ" ]; then
-      state=$(cd "$PROJ" && gh pr view "$target" --json state -q '.state' 2>/dev/null) || continue
-    else
-      state=$(gh pr view "$target" --json state -q '.state' 2>/dev/null) || continue
+# Merge proof without a usable copy: the recorded current PR (pr=) is
+# authoritative when present - only its own MERGED verdict proves landing, and
+# an earlier merged PR never proves the current PR's work landed. With no
+# current PR recorded, any pr_merged= entry reporting MERGED proves it (every
+# such entry is written only after the forge accepts that merge). There is no
+# HEAD left to test containment against, so this is only the recorded-PR-merged
+# check: a missing worktree and a slot reassigned to another task both refuse
+# without it. Prints the refusal (which names the --force discard path) and
+# returns non-zero when nothing recorded proves a merge.
+record_target_reports_merged() {  # <target>
+  local target=$1 state
+  [ -n "$target" ] || return 1
+  if [ -n "${PROJ:-}" ] && [ -d "$PROJ" ]; then
+    state=$(cd "$PROJ" && gh pr view "$target" --json state -q '.state' 2>/dev/null) || return 1
+  else
+    state=$(gh pr view "$target" --json state -q '.state' 2>/dev/null) || return 1
+  fi
+  case "$state" in
+    MERGED|merged) return 0 ;;
+  esac
+  return 1
+}
+
+pr_record_proves_merged() {  # <why>
+  local why=$1 merged_url
+  if [ -n "$PR_URL" ]; then
+    if ! record_target_reports_merged "$PR_URL"; then
+      echo "REFUSED: task $ID $why, and its current PR $PR_URL does not report MERGED." >&2
+      echo "Land its PR first, or get the captain's explicit OK to discard, then --force." >&2
+      return 1
     fi
-    case "$state" in
-      MERGED|merged) return 0 ;;
-    esac
-  done <<CANDIDATES
-$candidates
-CANDIDATES
+    return 0
+  fi
+  while IFS= read -r merged_url; do
+    [ -n "$merged_url" ] || continue
+    record_target_reports_merged "$merged_url" && return 0
+  done <<MERGED
+$(grep '^pr_merged=' "$META" 2>/dev/null | cut -d= -f2- || true)
+MERGED
   echo "REFUSED: task $ID $why, and none of its recorded PRs reports MERGED." >&2
   echo "Land its PR first, or get the captain's explicit OK to discard, then --force." >&2
   return 1
