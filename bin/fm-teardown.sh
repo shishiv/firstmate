@@ -55,7 +55,9 @@
 # upstream-contribution PRs pushed to a fork satisfy this), or when it is merged
 # into the local default branch. This recognizes the common
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
-# on a remote yet the change is fully in main.
+# on a remote yet the change is fully in main. A task whose meta records
+# base_branch= (bin/fm-spawn.sh) runs that content check against origin's copy of
+# its base branch instead of the default branch.
 # Squash merges collapse the branch's commits, so per-commit patch ids against main
 # no longer match, and a pipeline rebase can leave the local worktree diverged from
 # the PR head. A diverged copy is not treated as landed: path-set coverage, git
@@ -303,6 +305,12 @@
 #     root still exists, so the account's healthy LaunchAgent worker and every
 #     live remote secondmate worker are out of scope. Best effort: a sweep
 #     failure never blocks this teardown.
+# After Fix 1 and Fix 2, when config/pipeline-spend opts this home in, a ship
+# task whose local copy this teardown owns has its no-mistakes pipeline spend
+# recorded by bin/fm-pipeline-spend.sh, which owns the attribution and the
+# ledger. It runs before the task branch it attributes runs by is deleted and
+# before state/<id>.meta is removed, and is best effort: a failure warns and
+# never blocks cleanup.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1169,6 +1177,7 @@ elif [ "$TREEHOUSE_SLOT_LOCK_REQUIRED" = 1 ]; then
 fi
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
+BASE_BRANCH=$(grep '^base_branch=' "$META" | cut -d= -f2- || true)
 
 # A record accepted as a legacy incarnation (no spawn_gen, and either
 # --legacy-record given or the record is windowless) may be torn down only
@@ -1644,10 +1653,11 @@ content_in_branch() {
 
 # Is the branch's content already present in the up-to-date default branch?
 # This is content_in_branch on the default branch (e.g. its change landed via
-# squash); see there for the inconclusive-refusal contract.
+# squash), or on the recorded base_branch= when the task has one; see there for
+# the inconclusive-refusal contract.
 content_in_default() {
-  local name
-  name=$(default_branch) || return 1
+  local name=${BASE_BRANCH:-}
+  [ -n "$name" ] || name=$(default_branch) || return 1
   content_in_branch "$name"
 }
 
@@ -1675,13 +1685,14 @@ MERGED
 # the stack base, not the default branch, so content_in_default cannot see it.
 # The base content only proves landing when the PR itself merged: an open
 # stacked PR whose base already carries the content must still refuse.
-# A base that is the default branch is skipped (already tried); an unreadable
+# A base that content_in_default already tried is skipped; an unreadable
 # base refuses, so the caller falls through to its own refusal.
 content_in_pr_base() {
   local branch=$1 target base default candidates view state
   candidates=$(pr_targets_for_branch "$branch")
   [ -n "$candidates" ] || return 1
-  default=$(default_branch) || default=
+  default=${BASE_BRANCH:-}
+  [ -n "$default" ] || default=$(default_branch) || default=
   while IFS= read -r target; do
     [ -n "$target" ] || continue
     view=$(cd "$WT" && gh pr view "$target" --json state,baseRefName -q '.state + "\t" + .baseRefName' 2>/dev/null) || continue
@@ -3788,6 +3799,11 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
+fi
+if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    "$SCRIPT_DIR/fm-pipeline-spend.sh" record "$ID" >/dev/null \
+    || echo "warning: could not record $ID's no-mistakes pipeline spend; cleanup continues" >&2
 fi
 
 # Fix 3 (see script header): sweep remote job workers abandoned by an already
