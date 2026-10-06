@@ -3763,8 +3763,10 @@ test_teardown_records_unavailable_spend_for_a_gone_worktree() {
   local case_dir rc=0 ledger
   case_dir=$(make_case pipeline-spend-gone)
   write_windowless_legacy_meta "$case_dir" no-mistakes ship "$case_dir/missing-wt"
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   : > "$case_dir/config/pipeline-spend"
   seed_backlog_in_flight "$case_dir"
+  add_gh_pr_state "$case_dir" MERGED
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" "pipeline-spend-gone: teardown should succeed"
   ledger=$case_dir/data/pipeline-spend.jsonl
