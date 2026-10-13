@@ -1259,6 +1259,22 @@ test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does() {
       || fail "kind '$kind' must not be told about an oracle"
   done
   pass "fm-kiro-lib: ship and scout workers get a read-only Opus oracle; primary, secondmate, and unnamed kinds do not"
+  id="kiro-oracle-off-$$"; ws="$TMP_ROOT/oracle-off-ws"; kh="$TMP_ROOT/oracle-off-home"
+  mkdir -p "$ws" "$kh" "$TMP_ROOT/oracle-off-config"
+  printf 'off\n' >"$TMP_ROOT/oracle-off-config/kiro-oracle"
+  for kind in ship scout; do
+    rm -rf "$ws" "$kh"; mkdir -p "$ws" "$kh"
+    fm_kiro_install_v3_project_config "$ws" "$id" "$kh" "$kind" "$TMP_ROOT/oracle-off-config" || fail "install with the oracle off failed ($kind)"
+    assert_absent "$ws/.kiro/agents/firstmate-oracle-$id.json" "an off home must not install an oracle for a $kind"
+    assert_absent "$kh/project/.kiro/agents/firstmate-oracle-$id.json" "an off home must not publish an oracle payload for a $kind"
+    jq -e '((.tools + .allowedTools) | index("invoke_sub_agent") == null) and (.prompt | contains("oracle") | not)' "$ws/.kiro/agents/firstmate-kiro-$id.json" >/dev/null \
+      || fail "an off home's $kind worker must carry no sub-agent tool and no oracle rule"
+  done
+  printf 'on\n' >"$TMP_ROOT/oracle-off-config/kiro-oracle"
+  rm -rf "$ws" "$kh"; mkdir -p "$ws" "$kh"
+  fm_kiro_install_v3_project_config "$ws" "$id" "$kh" ship "$TMP_ROOT/oracle-off-config" || fail "install with the oracle setting on failed"
+  [ -f "$ws/.kiro/agents/firstmate-oracle-$id.json" ] || fail "any setting other than off must keep the oracle"
+  pass "fm-kiro-lib: config/kiro-oracle off removes the oracle and its tool; any other content keeps it"
 }
 
 test_kiro_project_skills_resolve_to_the_firstmate_skill_tree() {

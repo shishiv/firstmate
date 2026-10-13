@@ -49,6 +49,8 @@ The rule that tells the worker when to consult it rides in the task agent's `pro
 The oracle runs on `claude-opus-5.5` and names V3 tool ids (`read_file`, `list_directory`, `file_search`, `grep_search`, `code`, `web_fetch`, `remote_web_search`), because a sub-agent that listed the aliases `fs_read`, `grep`, and `glob` received none of them.
 It carries no write, shell, or sub-agent tool, and permission rules deny the `shell`, `fs_write`, and `subagent` capabilities on top, which hold under `-a`.
 A secondmate and the primary get no oracle.
+A home whose `config/kiro-oracle` first line is `off` gets no oracle for any worker: no oracle agent, no `invoke_sub_agent` in the worker tool list, and no oracle rule in the prompt.
+Absent or any other content keeps the oracle on, and the file is home-local and not inherited ([`docs/configuration.md`](../../../../../docs/configuration.md) "Kiro worker oracle").
 `../../../../../docs/verification/runtime-backends.md` records the live run and its Opus dispatch evidence, and `tests/fm-kiro-harness.test.sh` pins the grants.
 
 ## Hook commands
