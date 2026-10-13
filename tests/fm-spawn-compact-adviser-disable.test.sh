@@ -8,6 +8,11 @@
 # the harness binary replaced by a probe that prints the environment it was
 # started with. What the probe prints is what a real agent would have received.
 #
+# The worker shell contract (pipefail through BASH_ENV, bin/fm-worker-bash-env.sh)
+# rides the same launch and is pinned the same way: the probe agent runs the bash
+# commands a Kiro or Pi bash tool runs (`bash -c <command>`) and reports what
+# they saw.
+#
 # The remote second-mate route never reaches this path; its coverage lives in
 # tests/fm-spawn-compact-adviser-disable-remote.test.sh.
 set -u
@@ -382,6 +387,123 @@ SH
   pass "a compound raw launch-command still starts its agent with the compact-adviser switch on"
 }
 
+# --- worker shell pipefail ----------------------------------------------------
+#
+# The probe stands in for the harness. It runs the commands a Kiro or Pi bash
+# tool runs (`bash -c <command>`) from its own environment, and prints one
+# result per line: a plain pipeline, the same pipeline inside a bash script, the
+# same pipeline in a nested `bash -c`, and a variable only a chained BASH_ENV
+# sets.
+install_shell_probe() {  # <fakebin> <harness>
+  cat > "$1/$2" <<'SH'
+#!/bin/sh
+bash -c 'false | true; echo "tool=$?"'
+printf '%s\n' '#!/usr/bin/env bash' 'false | true; echo script=$?' > "$0.script"
+bash -c "bash '$0.script'"
+bash -c 'bash -c "false | true; echo nested=\$?"'
+bash -c 'echo prior=${FM_TEST_PRIOR_MARK-unset}'
+bash -c 'false | true; set +o pipefail; false | true; echo cleared=$?'
+SH
+  chmod +x "$1/$2"
+}
+
+# Replay a spawn's launch in a synthetic pane that carries a captain-style
+# BASH_ENV; extra NAME=value words become the pane's own environment.
+shell_probe_result() {  # <fakebin> <launch-log> <pane-log> [NAME=value ...]
+  local fakebin=$1 launchlog=$2 panelog=$3 launch preamble
+  shift 3
+  launch=$(cat "$launchlog")
+  preamble=$(grep '^export ' "$panelog")
+  env -i HOME="$TMP_ROOT/pane-home" PATH="$fakebin:$PATH" TERM=xterm \
+    TMUX=synthetic-pane "$@" \
+    /bin/sh -c "$preamble
+$launch"
+}
+
+make_prior_bash_env() {  # <path>
+  printf '%s\n' 'FM_TEST_PRIOR_MARK=chained' 'export FM_TEST_PRIOR_MARK' > "$1"
+}
+
+assert_pipefail_on() {  # <result> <label>
+  assert_contains "$1" 'tool=1' "$2: a failed first command in a pipeline must fail the worker's bash command"
+  assert_contains "$1" 'cleared=0' "$2: set +o pipefail must clear it for one command"
+  assert_contains "$1" 'script=0' "$2: a bash script run by the worker must keep plain pipeline status"
+  assert_contains "$1" 'nested=0' "$2: a nested bash -c must keep plain pipeline status"
+}
+
+test_ship_and_scout_bash_tool_runs_with_pipefail() {
+  local kind setting rec id out status result prior
+  prior="$TMP_ROOT/prior-bash-env.sh"
+  make_prior_bash_env "$prior"
+  for kind in ship scout; do
+    for setting in absent enabled; do
+      id="pipefail-$kind-$setting-a1"
+      rec=$(make_case "pipefail-$kind-$setting" codex "$id")
+      read_case "$rec"
+      [ "$setting" = absent ] || : > "$HOME_DIR/config/launch-env-allowlist"
+      if [ "$kind" = ship ]; then
+        out=$(run_case_spawn "$id" "$PROJ_DIR" --mode no-mistakes --yolo off)
+      else
+        out=$(run_case_spawn "$id" "$PROJ_DIR" --scout)
+      fi
+      status=$?
+      expect_code 0 "$status" "$kind spawn with allowlist=$setting should succeed: $out"
+      install_shell_probe "$FAKEBIN_DIR" codex
+      result=$(shell_probe_result "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
+        || fail "$kind, allowlist $setting: the emitted launch failed to run"
+      assert_pipefail_on "$result" "$kind, allowlist $setting"
+      assert_contains "$result" 'prior=unset' \
+        "$kind, allowlist $setting: with no captain BASH_ENV nothing else may be chained"
+      if [ "$setting" = absent ]; then
+        result=$(shell_probe_result "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG" BASH_ENV="$prior") \
+          || fail "$kind: the emitted launch failed to run under a captain BASH_ENV"
+        assert_pipefail_on "$result" "$kind with a captain BASH_ENV"
+        assert_contains "$result" 'prior=chained' \
+          "$kind: a captain-set BASH_ENV must still be sourced by the worker's bash tool"
+        result=$(shell_probe_result "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG" \
+          BASH_ENV="$ROOT/bin/fm-worker-bash-env.sh" FM_PRIOR_BASH_ENV="$prior") \
+          || fail "$kind: the emitted launch failed to run on a pane that already held the worker BASH_ENV"
+        assert_contains "$result" 'prior=chained' \
+          "$kind: a relaunch into a pane that already exported the worker BASH_ENV must keep the captain chain"
+      fi
+    done
+  done
+  pass "ship and scout bash tools run with pipefail, chain a captain BASH_ENV, and leave scripts alone"
+}
+
+test_pipefail_opt_out_and_secondmate_exclusion() {
+  local rec out status result sm
+  rec=$(make_case pipefail-off codex pipefail-off-a1)
+  read_case "$rec"
+  printf 'off\n' > "$HOME_DIR/config/worker-pipefail"
+  out=$(run_case_spawn pipefail-off-a1 "$PROJ_DIR" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "ship spawn with config/worker-pipefail off should succeed: $out"
+  install_shell_probe "$FAKEBIN_DIR" codex
+  result=$(shell_probe_result "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
+    || fail "pipefail off: the emitted launch failed to run"
+  assert_contains "$result" 'tool=0' "config/worker-pipefail off must leave the worker's bash tool without pipefail"
+  assert_contains "$result" 'prior=unset' "config/worker-pipefail off must install no BASH_ENV"
+
+  rec=$(make_case pipefail-sm codex pipefail-sm-a1)
+  read_case "$rec"
+  sm="$CASE_DIR/secondmate-home"
+  mkdir -p "$sm/bin" "$sm/data"
+  printf '# Firstmate\n' > "$sm/AGENTS.md"
+  printf '%s\n' pipefail-sm-a1 > "$sm/.fm-secondmate-home"
+  printf 'charter for pipefail-sm-a1\n' > "$sm/data/charter.md"
+  printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$sm/.gitignore"
+  git -C "$sm" init -q -b main
+  out=$(run_case_spawn pipefail-sm-a1 "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "secondmate spawn should succeed: $out"
+  install_shell_probe "$FAKEBIN_DIR" codex
+  result=$(shell_probe_result "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
+    || fail "secondmate: the emitted launch failed to run"
+  assert_contains "$result" 'tool=0' "a secondmate's bash tool must keep plain pipeline status"
+  pass "config/worker-pipefail off and a secondmate launch both leave the bash tool without pipefail"
+}
+
 test_ship_allowlist_absent
 test_ship_allowlist_enabled
 test_launch_command_carries_the_switch_without_the_pane_export
@@ -389,3 +511,5 @@ test_secondmate_launch
 test_launch_exports_task_inbox
 test_relaunch_rebuilds_the_switch
 test_raw_compound_launch_command_carries_the_switch
+test_ship_and_scout_bash_tool_runs_with_pipefail
+test_pipefail_opt_out_and_secondmate_exclusion
