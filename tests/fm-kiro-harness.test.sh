@@ -222,6 +222,7 @@ test_kiro_control_wiring_and_token_paths() {
   assert_contains "$wiring" "/state/k1.kiro-turnend-token" "wiring must list the state token"
   assert_contains "$wiring" "/wt/.kiro/agents/firstmate-kiro-k1.json"     "wiring must list the task-specific V3 project agent"
   assert_contains "$wiring" "/wt/.kiro/hooks/fm-firstmate-k1.json"     "wiring must list the task-specific V3 project hook"
+  assert_contains "$wiring" "/wt/.kiro/agents/firstmate-oracle-k1.json"     "wiring must list the task-specific V3 oracle agent"
   token=$(fm_control_harness_turnend_token_path kiro-cli /state k1)
   [ "$token" = "/state/k1.kiro-turnend-token" ] || fail "token path wrong: '$token'"
   auth=$(fm_control_harness_turnend_auth_path kiro-cli fm.abc123def456)
@@ -1204,6 +1205,62 @@ test_kiro_v3_project_files_are_regular_copies_and_refuse_different_existing() {
   pass "fm-kiro-lib: Kiro uses regular isolated-home copies and refuses a different file"
 }
 
+test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does() {
+  # A ship or scout worker may call a read-only Opus advisor through Kiro's V3
+  # sub-agent tool. The primary, the secondmate, and a caller that names no kind
+  # must keep the base tool list, so the fleet-dispatch rule stays whole for
+  # supervisors. The oracle must read and search but never write, run shell, or
+  # delegate, by tool list AND by permission rule (a rule holds under -a; verified
+  # live on kiro-cli 2.29.0).
+  local kind ws kh id agent oracle primary base
+  . "$ROOT/bin/fm-kiro-lib.sh"
+  primary="$ROOT/.kiro/agents/firstmate-kiro.json"
+  jq -e '(.tools + .allowedTools) | index("invoke_sub_agent") == null' "$primary" >/dev/null \
+    || fail "the tracked primary agent must never gain the sub-agent tool"
+  for kind in ship scout; do
+    id="kiro-oracle-$kind-$$"; ws="$TMP_ROOT/oracle-$kind-ws"; kh="$TMP_ROOT/oracle-$kind-home"
+    mkdir -p "$ws" "$kh"
+    fm_kiro_install_v3_project_config "$ws" "$id" "$kh" "$kind" || fail "$kind V3 project config install failed"
+    agent="$ws/.kiro/agents/firstmate-kiro-$id.json"
+    oracle="$ws/.kiro/agents/firstmate-oracle-$id.json"
+    jq -e '(.tools == .allowedTools) and (.tools | index("invoke_sub_agent") != null and all(. != "*"))' "$agent" >/dev/null \
+      || fail "a $kind worker must be granted the sub-agent tool in a concrete list: $(jq -c .tools "$agent")"
+    base=$(jq -c '[.tools[] | select(. != "invoke_sub_agent")] | sort' "$agent")
+    [ "$base" = "$(jq -c '.tools | sort' "$primary")" ] \
+      || fail "a $kind worker must differ from the primary only by the sub-agent tool: $base"
+    jq -e --arg o "firstmate-oracle-$id" '.prompt | contains("Call invoke_sub_agent with name " + $o) and contains("hard architecture question") and contains("never for routine coding")' "$agent" >/dev/null \
+      || fail "a $kind worker's prompt must carry the oracle rule naming its oracle agent"
+    [ -f "$oracle" ] && [ ! -L "$oracle" ] || fail "a $kind worker's oracle must be a regular project copy"
+    cmp -s "$oracle" "$kh/project/.kiro/agents/firstmate-oracle-$id.json" \
+      || fail "the $kind oracle copy must match its isolated-home payload"
+    jq -e --arg n "firstmate-oracle-$id" '.name == $n and .model == "claude-opus-5.5"' "$oracle" >/dev/null \
+      || fail "the $kind oracle must be named for its task and run on claude-opus-5.5"
+    jq -e '(.tools == .allowedTools) and ((.tools | index("read_file") != null and index("grep_search") != null and index("file_search") != null and index("web_fetch") != null and index("remote_web_search") != null)) and ((.tools + .allowedTools) | all(. != "*" and . != "execute_bash" and . != "fs_write" and . != "invoke_sub_agent" and . != "write_file" and . != "str_replace"))' "$oracle" >/dev/null \
+      || fail "the $kind oracle must read and search but carry no write, shell, or sub-agent tool: $(jq -c .tools "$oracle")"
+    jq -e '[.permissions.rules[] | select(.effect == "deny") | .capability] | sort == ["fs_write", "shell", "subagent"]' "$oracle" >/dev/null \
+      || fail "the $kind oracle must deny shell, fs_write, and subagent by permission rule"
+    if command -v kiro-cli >/dev/null 2>&1 && case "$(kiro-cli --version 2>/dev/null)" in 'kiro-cli '*) true ;; *) false ;; esac; then
+      KIRO_HOME="$kh" kiro-cli agent validate --path "$oracle" >"$TMP_ROOT/oracle-validate.log" 2>&1 \
+        || fail "installed kiro-cli rejected the generated $kind oracle: $(cat "$TMP_ROOT/oracle-validate.log")"
+      KIRO_HOME="$kh" kiro-cli agent validate --path "$agent" >"$TMP_ROOT/oracle-validate.log" 2>&1 \
+        || fail "installed kiro-cli rejected the generated $kind worker agent: $(cat "$TMP_ROOT/oracle-validate.log")"
+    fi
+    fm_kiro_remove_v3_project_config "$ws" "$id" || fail "$kind cleanup should succeed"
+    assert_absent "$oracle" "cleanup must remove the $kind oracle copy"
+  done
+  for kind in secondmate ''; do
+    id="kiro-nooracle-${kind:-none}-$$"; ws="$TMP_ROOT/nooracle-${kind:-none}-ws"; kh="$TMP_ROOT/nooracle-${kind:-none}-home"
+    mkdir -p "$ws" "$kh"
+    fm_kiro_install_v3_project_config "$ws" "$id" "$kh" $kind || fail "install without an oracle failed (kind='$kind')"
+    assert_absent "$ws/.kiro/agents/firstmate-oracle-$id.json" "kind '$kind' must not receive an oracle"
+    jq -e '(.tools + .allowedTools) | index("invoke_sub_agent") == null' "$ws/.kiro/agents/firstmate-kiro-$id.json" >/dev/null \
+      || fail "kind '$kind' must not be granted the sub-agent tool"
+    jq -e '.prompt | contains("oracle") | not' "$ws/.kiro/agents/firstmate-kiro-$id.json" >/dev/null \
+      || fail "kind '$kind' must not be told about an oracle"
+  done
+  pass "fm-kiro-lib: ship and scout workers get a read-only Opus oracle; primary, secondmate, and unnamed kinds do not"
+}
+
 test_kiro_project_skills_resolve_to_the_firstmate_skill_tree() {
   local kiro_skills agents_skills
   kiro_skills=$(cd "$ROOT/.kiro/skills" 2>/dev/null && pwd -P) \
@@ -1299,6 +1356,8 @@ test_kiro_secondmate_uses_v3_project_scope_and_isolated_home() {
   assert_contains "$launch" "chat --v3 -a --agent 'firstmate-kiro-$id'"     "secondmate did not launch trusted through its task-specific V3 project agent"
   assert_present "$mate/.kiro/agents/firstmate-kiro-$id.json"     "secondmate home lacks its project-scoped V3 agent"
   assert_present "$mate/.kiro/hooks/fm-firstmate-$id.json"     "secondmate home lacks its project-scoped V3 hook"
+  assert_absent "$mate/.kiro/agents/firstmate-oracle-$id.json" "a secondmate must not receive the worker oracle"
+  jq -e '(.tools + .allowedTools) | index("invoke_sub_agent") == null' "$mate/.kiro/agents/firstmate-kiro-$id.json" >/dev/null     || fail "a secondmate must not be granted the sub-agent tool"
   assert_grep '"chat.enableKnowledge": false'     "$HOME_DIR/state/$id.kiro-home/settings/cli.json"     "secondmate Kiro home did not disable knowledge"
   assert_grep 'kind=secondmate' "$HOME_DIR/state/$id.meta"     "successful Kiro launch did not record secondmate kind"
   pass "fm-spawn: Kiro secondmate uses V3 project scope plus an isolated knowledge-disabled home"
@@ -1384,6 +1443,7 @@ test_kiro_teardown_removes_every_artifact() {
   assert_present "$kh" "spawn must create the per-task KIRO_HOME before teardown"
   assert_present "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" "spawn must create its V3 project agent copy"
   assert_present "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" "spawn must create its V3 project hook copy"
+  assert_present "$WT_DIR/.kiro/agents/firstmate-oracle-$id.json" "spawn must create a ship's oracle agent copy"
   [ -f "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" ] && [ ! -L "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" ] || fail "teardown fixture must use a regular isolated-home agent copy"
   [ -f "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" ] && [ ! -L "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" ] || fail "teardown fixture must use a regular isolated-home hook copy"
   HOME="$HOME_DIR" FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
@@ -1396,6 +1456,7 @@ test_kiro_teardown_removes_every_artifact() {
   assert_absent "$HOME_DIR/state/$id.kiro-turnend-token" "teardown must remove the state token"
   assert_absent "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" "teardown must remove the V3 project agent"
   assert_absent "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" "teardown must remove the V3 project hook"
+  assert_absent "$WT_DIR/.kiro/agents/firstmate-oracle-$id.json" "teardown must remove the oracle agent"
   assert_absent "$HOME_DIR/state/$id.meta" "teardown must remove the task record"
   pass "fm-spawn+fm-teardown: a full kiro-cli cycle removes every artifact"
 }
@@ -1446,6 +1507,7 @@ test_kiro_effort_xhigh_and_max_ride_the_launch
 test_kiro_v2_is_only_an_explicit_compatibility_fallback
 test_kiro_v3_project_files_are_regular_copies_and_refuse_different_existing
 test_kiro_v3_agents_grant_concrete_tools_never_a_wildcard
+test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does
 test_kiro_project_skills_resolve_to_the_firstmate_skill_tree
 test_kiro_primary_launcher_defaults_v3_and_persists_its_home
 test_kiro_secondmate_uses_v3_project_scope_and_isolated_home

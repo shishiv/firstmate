@@ -32,6 +32,29 @@ ok - live primary: a resumed primary retakes its dead owner's lock on the first 
 ok - Kiro resume continuity passed on kiro-cli 2.22.1
 ```
 
+A ship or scout worker consults a read-only Opus oracle through the V3 sub-agent tool.
+The run used kiro-cli 2.29.0 on 2026-10-13 with a worker on `claude-sonnet-5.5`, headless for the model and permission checks, and once through the interactive TUI on a pseudo-terminal for the hook check (`--no-interactive` runs no workspace hooks).
+The agents came from `fm_kiro_build_task_home` and `fm_kiro_install_v3_project_config <workspace> <id> <kiro-home> ship` in `bin/fm-kiro-lib.sh`, launched as the isolated-home worker:
+
+```sh
+KIRO_HOME=<home> KIRO_DATA_DIR=<home>/data kiro-cli chat --v3 -a --no-interactive --model claude-sonnet-5.5 --agent firstmate-kiro-<id> "<hard architecture question; do not write files>"
+```
+
+Observed: the worker called `invoke_sub_agent` with `name` `firstmate-oracle-<id>` on its own, from the prompt rule alone, and answered with the oracle's advice.
+The login `~/.kiro/logs/<run>/kiro.log` recorded the worker dispatch and the oracle dispatch:
+
+```text
+q.converse.dispatch {"modelId":"claude-sonnet-5.5","agentMode":"custom"}
+invoke_subagent.starting {"subagentId":"firstmate-oracle-<id>","modelId":"claude-opus-5.5","modelOverride":true,"effortLevel":"high"}
+q.converse.dispatch {"modelId":"claude-opus-5.5","agentMode":"vibe"}
+```
+
+Asked to create a file and run `id`, the oracle did neither and no file appeared.
+A negative control listed `fs_write` and `execute_bash` in a sub-agent's tools beside the oracle's deny rules, under `-a`; both calls came back `Tool call denied by user's permissions. Rule: deny fs_write matching "*" Source: subagent-profile.` and the same for `shell`, so the permission rules, not only the tool list, hold the oracle read-only.
+In the interactive run, a probe hook file logged each hook payload: one `UserPromptSubmit`, the worker's `invoke_sub_agent` and the oracle's own `read_file` and `subagent_response` calls as `PreToolUse` and `PostToolUse` events under the worker's one `session_id`, and a single `Stop` after the worker's answer.
+The oracle's turn therefore adds progress events but no early idle.
+A sub-agent that listed the CLI aliases `fs_read`, `grep`, and `glob` received none of them; it received `read_file`, `grep_search`, and `file_search` when it listed those ids, which is why the oracle names V3 tool ids.
+
 ## Harness detection precedence
 
 Firstmate's own harness comes from two kinds of evidence, and `bin/fm-harness.sh` owns how they combine: an environment marker names its harness, and the nearest harness process in the parent chain proves who owns the process tree.

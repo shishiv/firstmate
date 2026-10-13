@@ -439,6 +439,8 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
       printf '\n'
       fm_kiro_v3_hook_path "$wt" "$id"
       printf '\n'
+      fm_kiro_v3_oracle_path "$wt" "$id"
+      printf '\n'
       ;;
     muse)
       # muse installs no hook: its busy source is its own session event log,

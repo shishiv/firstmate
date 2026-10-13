@@ -31,7 +31,8 @@ Everything Firstmate needs lives inside a per-task `KIRO_HOME` at `state/<id>.ki
 
 - `settings/cli.json` carries `chat.disableTrustAllConfirmation=true`, which suppresses the `--trust-all-tools` startup confirmation dialog `--trust-all-tools` otherwise raises, plus `chat.allowAnimations=false` for a stable screen-scrape baseline.
   The suppression is REQUIRED, not cosmetic: without it the dialog renders `Warning: Kiro is running in trust all tools mode` with its default selection on `No, exit` and the positional brief does NOT run until it is answered, which Firstmate's arrow-less key plane cannot do (verified live on 2026-09-20).
-- `agents/firstmate-kiro-v2-<id>.json` exists only for the explicit V2 fallback: the Firstmate-owned embedded-hook agent selected by `--agent`. On V3 the agent and hook payloads live under `KIRO_HOME/project/.kiro/`, while cwd-local `.kiro/agents/firstmate-kiro-<id>.json` and `.kiro/hooks/fm-firstmate-<id>.json` are regular byte-for-byte copies required by Kiro's workspace discovery, which ignores symlinked payloads. `../../../../../bin/fm-kiro-lib.sh` generates the same concrete tool list as the tracked primary agent `.kiro/agents/firstmate-kiro.json` (`execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `tool_search`; `knowledge` excluded).
+- `agents/firstmate-kiro-v2-<id>.json` exists only for the explicit V2 fallback: the Firstmate-owned embedded-hook agent selected by `--agent`. On V3 the agent and hook payloads live under `KIRO_HOME/project/.kiro/`, while cwd-local `.kiro/agents/firstmate-kiro-<id>.json` and `.kiro/hooks/fm-firstmate-<id>.json` are regular byte-for-byte copies required by Kiro's workspace discovery, which ignores symlinked payloads. `../../../../../bin/fm-kiro-lib.sh` generates the same concrete tool list as the tracked primary agent `.kiro/agents/firstmate-kiro.json` for a secondmate (`execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `tool_search`; `knowledge` excluded).
+  A ship or scout worker's list adds `invoke_sub_agent`, and only that, for the oracle below; the primary and the secondmate never carry it.
 - `agents/fm-turn-end.d/<token>` is the registry entry naming `state/<id>.turn-ended`, minted per task.
 - `.fm-kiro-session` records the generation and Kiro session id of the launched incarnation's latest accepted event; a conversation resumed without `FM_KIRO_BUSY_GEN` writes busy state only under that generation and only for that session id.
 - `../../../../../bin/fm-kiro-turnend-hook.sh` is the tracked, shared hook.
@@ -39,6 +40,16 @@ Everything Firstmate needs lives inside a per-task `KIRO_HOME` at `state/<id>.ki
   For a PRIMARY or SECONDMATE session the same hook additionally keeps the doorbell owner running (falling back to one plain watcher re-arm when no owner can run), which acts only in primary scope (`../../../../../bin/fm-primary-scope-lib.sh`'s `fm_primary_scope_matches`) for the session that owns that home's lock, so a worker's hook stops after its task updates.
 
 `../../../../../bin/fm-teardown.sh` retires the whole `state/<id>.kiro-home` directory with `rm -rf` and it is rewritten fresh on relaunch, so no shared global registry cleanup is needed; `../../../../../bin/fm-control-lib.sh`'s turn-end auth path is therefore empty for kiro-cli, while its wiring paths list the isolated-home `.fm-kiro-turnend` pointer and the `state/<id>.kiro-turnend-token`.
+
+## Opus oracle
+
+A ship or scout worker can ask one hard architecture question of a read-only Opus advisor through Kiro's V3 sub-agent tool (`invoke_sub_agent`, verified on 2.29.0).
+Its `name` argument selects a workspace agent by agent-file name, so `../../../../../bin/fm-kiro-lib.sh` installs `firstmate-oracle-<id>` beside the task agent, as a regular copy under `KIRO_HOME/project/.kiro/agents` and the worktree's `.kiro/agents`; `../../../../../bin/fm-spawn.sh` excludes it from git and `../../../../../bin/fm-teardown.sh` removes it with the task agent.
+The rule that tells the worker when to consult it rides in the task agent's `prompt`, the one Kiro-specific worker guidance surface.
+The oracle runs on `claude-opus-5.5` and names V3 tool ids (`read_file`, `list_directory`, `file_search`, `grep_search`, `code`, `web_fetch`, `remote_web_search`), because a sub-agent that listed the aliases `fs_read`, `grep`, and `glob` received none of them.
+It carries no write, shell, or sub-agent tool, and permission rules deny the `shell`, `fs_write`, and `subagent` capabilities on top, which hold under `-a`.
+A secondmate and the primary get no oracle.
+`../../../../../docs/verification/runtime-backends.md` records the live run and its Opus dispatch evidence, and `tests/fm-kiro-harness.test.sh` pins the grants.
 
 ## Hook commands
 

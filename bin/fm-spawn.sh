@@ -5428,12 +5428,15 @@ kiro-cli)
     exit 1
   fi
   if [ "$KIRO_ENGINE" = v3 ]; then
-    if ! fm_kiro_install_v3_project_config "$WT" "$ID" "$KIRO_HOME_DIR"; then
+    if ! fm_kiro_install_v3_project_config "$WT" "$ID" "$KIRO_HOME_DIR" "$KIND"; then
       echo "error: could not install Kiro V3's isolated-home project agent and hooks without replacing existing project material under $WT/.kiro" >&2
       exit 1
     fi
     exclude_path "$(fm_kiro_v3_agent_relpath "$ID")"
     exclude_path "$(fm_kiro_v3_hook_relpath "$ID")"
+    if fm_kiro_kind_consults_oracle "$KIND"; then
+      exclude_path "$(fm_kiro_v3_oracle_relpath "$ID")"
+    fi
   fi
   printf '%s\n' "$KIRO_TURNEND_TOKEN" >"$STATE_REAL/$ID.kiro-turnend-token"
   exclude_path '.fm-kiro-turnend'
