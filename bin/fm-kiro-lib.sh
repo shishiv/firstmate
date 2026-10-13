@@ -239,9 +239,17 @@ FM_KIRO_V3_WORKER_TOOLS_JSON='["execute_bash", "fs_read", "fs_write", "code", "g
 FM_KIRO_V3_ORACLE_TOOLS_JSON='["read_file", "list_directory", "file_search", "grep_search", "code", "web_fetch", "remote_web_search"]'
 FM_KIRO_V3_ORACLE_MODEL=claude-opus-5.5
 
-# Only a ship or scout worker consults the oracle.
-fm_kiro_kind_consults_oracle() {  # <kind>
-  case "${1:-}" in ship|scout) return 0 ;; esac
+# Only a ship or scout worker consults the oracle, and only in a home whose
+# config/kiro-oracle does not say `off`. The setting is home-local and is not in
+# the inherited-config list, so each home chooses for itself.
+fm_kiro_oracle_enabled() {  # [<config-dir>]
+  local setting=
+  [ -n "${1:-}" ] && [ -f "$1/kiro-oracle" ] && IFS= read -r setting <"$1/kiro-oracle" || true
+  [ "$setting" != off ]
+}
+
+fm_kiro_kind_consults_oracle() {  # <kind> [<config-dir>]
+  case "${1:-}" in ship|scout) fm_kiro_oracle_enabled "${2:-}"; return ;; esac
   return 1
 }
 
@@ -251,8 +259,8 @@ fm_kiro_oracle_rule() {  # <oracle-agent-name>
   printf 'Consult the oracle only for a hard architecture question (module or owner boundaries, cross-subsystem design, concurrency or migration shape), never for routine coding. Call invoke_sub_agent with name %s and a self-contained question. The oracle only advises: you keep the decision and the work.' "$1"
 }
 
-fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kind>]
-  local workspace=$1 id=$2 home=$3 kind=${4:-} agent agent_path hook_path agent_home hook_home command
+fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kind> [<config-dir>]]
+  local workspace=$1 id=$2 home=$3 kind=${4:-} config=${5:-} agent agent_path hook_path agent_home hook_home command
   local tools=$FM_KIRO_V3_TOOLS_JSON prompt='Follow the active Firstmate task or secondmate instructions exactly.'
   local oracle oracle_path oracle_home
   [ -d "$workspace" ] && [ ! -L "$workspace" ] || return 1
@@ -272,7 +280,7 @@ fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kin
   hook_path=$(fm_kiro_v3_hook_path "$workspace" "$id") || return 1
   agent_home=$(fm_kiro_v3_agent_home_path "$home" "$id") || return 1
   hook_home=$(fm_kiro_v3_hook_home_path "$home" "$id") || return 1
-  if fm_kiro_kind_consults_oracle "$kind"; then
+  if fm_kiro_kind_consults_oracle "$kind" "$config"; then
     oracle=$(fm_kiro_v3_oracle_name "$id") || return 1
     oracle_path=$(fm_kiro_v3_oracle_path "$workspace" "$id") || return 1
     oracle_home=$(fm_kiro_v3_oracle_home_path "$home" "$id") || return 1
