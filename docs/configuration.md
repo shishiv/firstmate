@@ -1019,6 +1019,26 @@ When stripping is enabled, the hooks directory is read-only, so a hook manager r
 The flag is a home-wide attribution choice, so it is inherited into secondmate homes under the [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) inherited-local-material contract and a secondmate's own workers keep AI trailers too.
 Per-machine Cursor `cli-config.json` attribution-off is not this contract: it does not travel with Firstmate, defaults back to on when unset, and only feeds the CLI's request to the server, so it suppresses the trailer rather than preventing it.
 
+## Worker shell pipefail (config/worker-pipefail)
+
+Every ship and scout worker's bash tool runs its commands with `set -o pipefail`, so `cmd | tail` reports a failure of `cmd` instead of the exit code of `tail`.
+`fm-spawn.sh` exports `BASH_ENV=bin/fm-worker-bash-env.sh` in front of the launch.
+That file sets pipefail only for the outermost `bash -c <command>` string, which is how the Kiro and Pi bash tools run every worker command.
+Bash scripts, and any `bash -c` those commands start in turn, keep plain bash behavior.
+A `BASH_ENV` the launching shell already carries is kept and sourced first.
+A secondmate is never given `BASH_ENV`.
+
+A pipeline whose reader exits early, such as `cmd | head` or `cmd | grep -q`, can report exit code 141 (128 plus SIGPIPE) although its output is complete.
+This is the accepted cost.
+The worker clears pipefail for one command with `set +o pipefail`, or reads `${PIPESTATUS[0]}`.
+
+A home that cannot accept the cost writes `off` as the first line of the local, gitignored `config/worker-pipefail`.
+With `off`, `fm-spawn.sh` exports no `BASH_ENV` for any worker of that home.
+An absent file, or any other content, keeps pipefail on.
+`fm-spawn.sh` reads the file on every spawn and relaunch, so a change applies to the next launch and leaves running workers unchanged.
+The setting is local to each home and is not inherited into secondmate homes.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, [`tests/fm-spawn-compact-adviser-disable.test.sh`](../tests/fm-spawn-compact-adviser-disable.test.sh) pins the launch environment, and [the runtime verification record](verification/runtime-backends.md) owns the live Kiro and Pi evidence.
+
 ## Kiro worker oracle (config/kiro-oracle)
 
 By default every Kiro ship and scout worker can ask a read-only Opus advisor one hard architecture question through `invoke_sub_agent`.

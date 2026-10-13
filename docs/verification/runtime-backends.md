@@ -687,6 +687,29 @@ skip-runner: pi-signed is not installed, so its pin check was not exercised
 
 The guard submits no prompt and spends no tokens, so it runs by default wherever a runner is installed; rerun it after every Claude or Pi upgrade.
 
+## Worker shell pipefail
+
+`bin/fm-spawn.sh` exports `BASH_ENV=bin/fm-worker-bash-env.sh` in front of every ship and scout launch, so the worker's bash tool runs each command with `set -o pipefail`.
+The guarantee holds only while the vendor's bash tool keeps running `bash -c <command>` with the launch environment.
+`tests/fm-worker-shell-live-e2e.test.sh` builds each worker's launch with the real `fm-spawn.sh` (fake pane, no worktree pool), starts that launch with the real binary in a real tmux pane, and asks the worker to run `false | true; echo "PIPEFAIL_RC=$?" > <result>` with its own shell tool.
+The file must read `PIPEFAIL_RC=1`.
+With `config/worker-pipefail` set to `off`, the same guard reads `PIPEFAIL_RC=0` and fails, so the check is not vacuous.
+
+Verified 2026-10-13 on kiro-cli 2.29.0 (model `claude-sonnet-5.5` through Kiro's default routing, effort `low`) and pi 1.2.0 (model `ollama-cloud/gpt-oss:20b`, effort `low`) on Linux.
+
+```sh
+FM_WORKER_SHELL_LIVE=1 FM_WORKER_SHELL_LIVE_PI_MODEL=ollama-cloud/gpt-oss:20b bash tests/fm-worker-shell-live-e2e.test.sh
+```
+
+```
+ok - live: the kiro-cli worker's bash tool ran 'false | true' with pipefail on
+ok - live: the pi worker's bash tool ran 'false | true' with pipefail on
+ok - worker shell pipefail live guard passed for kiro-cli and pi
+```
+
+The guard submits prompts, so it is opt-in; rerun it after every kiro-cli or pi upgrade.
+Other harnesses receive the same `BASH_ENV` export and are unverified.
+
 ## Codex hook trust
 
 Verified 2026-09-16 on codex-cli 0.151.0, macOS arm64, in a fresh linked worktree of this repository.

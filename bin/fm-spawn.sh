@@ -322,6 +322,22 @@
 #   This is an exec environment boundary, not a sandbox for the pane's startup
 #   shell, credential files, same-user processes, or later shell initialization.
 #   See docs/configuration.md for provider/Git setup and supported limits.
+# Worker shell pipefail (config/worker-pipefail):
+#   Every ship and scout worker's bash tool runs its commands with
+#   `set -o pipefail`, so `cmd | tail` reports a failure of `cmd` instead of the
+#   exit code of `tail`. The launch exports BASH_ENV=bin/fm-worker-bash-env.sh
+#   (that file's header owns the scope: only the outermost `bash -c` command
+#   string, never a bash script) and keeps a captain-set BASH_ENV in
+#   FM_PRIOR_BASH_ENV, which the file sources first. Both the Kiro and Pi bash
+#   tools run `bash -c <command>` with the launch environment, so no per-harness
+#   setting is needed; other harnesses receive the same export unverified.
+#   A pipeline whose reader exits early (`cmd | head`, `cmd | grep -q`) can then
+#   report 141 (128 + SIGPIPE) although its output is complete. That is the
+#   accepted cost: the worker clears it per command with `set +o pipefail` or
+#   reads `${PIPESTATUS[0]}`, and a home that cannot accept it writes `off` as the
+#   first line of the local, gitignored config/worker-pipefail. The file is read
+#   on every spawn and relaunch, is not inherited into secondmate homes, and a
+#   secondmate itself is never given BASH_ENV.
 # Claude permission mode (config/claude-permission-mode):
 #   One token selecting the permission flag every claude launch (ship, scout,
 #   secondmate, and relaunch) carries. Absent or `bypass` keeps today's
@@ -629,6 +645,10 @@ if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
 fi
 if ! KEEP_AI_TRAILERS=$(fm_config_source_present "$CONFIG/keep-ai-trailers"); then
   exit 1
+fi
+WORKER_PIPEFAIL_SETTING=
+if [ -f "$CONFIG/worker-pipefail" ]; then
+  IFS= read -r WORKER_PIPEFAIL_SETTING <"$CONFIG/worker-pipefail" || true
 fi
 SUB_HOME_MARKER=".fm-secondmate-home"
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
@@ -5562,6 +5582,10 @@ fi
 # launch and the launch-env-allowlist `env -i` wrapper.
 LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
+if [ "$KIND" != secondmate ] && [ "$WORKER_PIPEFAIL_SETTING" != off ]; then
+  WORKER_BASH_ENV_Q=$(shell_quote "$SCRIPT_DIR/fm-worker-bash-env.sh")
+  LAUNCH="case \"\${BASH_ENV-}\" in $WORKER_BASH_ENV_Q) ;; *) export FM_PRIOR_BASH_ENV=\"\${BASH_ENV-}\" ;; esac; export BASH_ENV=$WORKER_BASH_ENV_Q; $LAUNCH"
+fi
 # When the live-harness gate has exported DISABLE_AUTOUPDATER into this spawn's
 # own environment, carry it into the launch command text so Claude Code's
 # auto-updater cannot rewrite the shared binary during a live run. Embedding the
