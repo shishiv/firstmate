@@ -35,6 +35,7 @@
 FM_KIRO_V3_AGENT_PREFIX=firstmate-kiro
 FM_KIRO_V2_AGENT_PREFIX=firstmate-kiro-v2
 FM_KIRO_V3_HOOK_PREFIX=fm-firstmate
+FM_KIRO_V3_ORACLE_PREFIX=firstmate-oracle
 
 fm_kiro_slug_valid() {
   case "${1:-}" in
@@ -57,6 +58,15 @@ fm_kiro_v3_agent_relpath() {  # <task-id>
   printf '.kiro/agents/%s.json' "$(fm_kiro_v3_agent_name "$1")"
 }
 
+fm_kiro_v3_oracle_name() {  # <task-id>
+  fm_kiro_slug_valid "$1" || return 1
+  printf '%s-%s' "$FM_KIRO_V3_ORACLE_PREFIX" "$1"
+}
+
+fm_kiro_v3_oracle_relpath() {  # <task-id>
+  printf '.kiro/agents/%s.json' "$(fm_kiro_v3_oracle_name "$1")"
+}
+
 fm_kiro_v3_hook_relpath() {  # <task-id>
   fm_kiro_slug_valid "$1" || return 1
   printf '.kiro/hooks/%s-%s.json' "$FM_KIRO_V3_HOOK_PREFIX" "$1"
@@ -66,12 +76,20 @@ fm_kiro_v3_agent_path() {  # <workspace> <task-id>
   printf '%s/%s' "${1%/}" "$(fm_kiro_v3_agent_relpath "$2")"
 }
 
+fm_kiro_v3_oracle_path() {  # <workspace> <task-id>
+  printf '%s/%s' "${1%/}" "$(fm_kiro_v3_oracle_relpath "$2")"
+}
+
 fm_kiro_v3_hook_path() {  # <workspace> <task-id>
   printf '%s/%s' "${1%/}" "$(fm_kiro_v3_hook_relpath "$2")"
 }
 
 fm_kiro_v3_agent_home_path() {  # <kiro-home> <task-id>
   printf '%s/project/.kiro/agents/%s.json' "${1%/}" "$(fm_kiro_v3_agent_name "$2")"
+}
+
+fm_kiro_v3_oracle_home_path() {  # <kiro-home> <task-id>
+  printf '%s/project/.kiro/agents/%s.json' "${1%/}" "$(fm_kiro_v3_oracle_name "$2")"
 }
 
 fm_kiro_v3_hook_home_path() {  # <kiro-home> <task-id>
@@ -203,12 +221,40 @@ EOF
 # dialog, which stalled two scouts on 2026-09-21. A concrete list is what the
 # operator's own working agents carry and what `kiro-cli agent validate`
 # accepts. The tracked .kiro/agents/firstmate-kiro.json carries the same list
-# for the primary; tests/fm-kiro-harness.test.sh pins the two equal and
-# wildcard-free.
+# for the primary, and a secondmate gets it too; tests/fm-kiro-harness.test.sh
+# pins them equal and wildcard-free. A ship or scout worker gets the worker
+# list below instead, which adds only the oracle's sub-agent tool.
 FM_KIRO_V3_TOOLS_JSON='["execute_bash", "fs_read", "fs_write", "code", "grep", "glob", "web_fetch", "web_search", "introspect", "session", "report", "tool_search"]'
 
-fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home>
-  local workspace=$1 id=$2 home=$3 agent agent_path hook_path agent_home hook_home command
+# The Opus oracle: a read-only advisor a ship or scout worker reaches through
+# Kiro's V3 sub-agent tool, `invoke_sub_agent`, whose `name` argument selects a
+# workspace agent by its agent-file name (verified live on kiro-cli 2.29.0).
+# The worker list is the shared base plus that one tool; the primary and the
+# secondmate never get it, so the fleet-dispatch rule stays whole for them.
+# The oracle names V3 tool ids, not the CLI aliases above: a sub-agent that
+# listed `fs_read`, `grep`, and `glob` received none of them (2.29.0). Its
+# permission rules deny shell, write, and sub-agent capabilities on top of the
+# tool list, so a later widened list still cannot write or delegate.
+FM_KIRO_V3_WORKER_TOOLS_JSON='["execute_bash", "fs_read", "fs_write", "code", "grep", "glob", "web_fetch", "web_search", "introspect", "session", "report", "tool_search", "invoke_sub_agent"]'
+FM_KIRO_V3_ORACLE_TOOLS_JSON='["read_file", "list_directory", "file_search", "grep_search", "code", "web_fetch", "remote_web_search"]'
+FM_KIRO_V3_ORACLE_MODEL=claude-opus-5.5
+
+# Only a ship or scout worker consults the oracle.
+fm_kiro_kind_consults_oracle() {  # <kind>
+  case "${1:-}" in ship|scout) return 0 ;; esac
+  return 1
+}
+
+# The worker rule, carried in the generated agent's prompt: the one Kiro-specific
+# worker guidance surface.
+fm_kiro_oracle_rule() {  # <oracle-agent-name>
+  printf 'Consult the oracle only for a hard architecture question (module or owner boundaries, cross-subsystem design, concurrency or migration shape), never for routine coding. Call invoke_sub_agent with name %s and a self-contained question. The oracle only advises: you keep the decision and the work.' "$1"
+}
+
+fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kind>]
+  local workspace=$1 id=$2 home=$3 kind=${4:-} agent agent_path hook_path agent_home hook_home command
+  local tools=$FM_KIRO_V3_TOOLS_JSON prompt='Follow the active Firstmate task or secondmate instructions exactly.'
+  local oracle oracle_path oracle_home
   [ -d "$workspace" ] && [ ! -L "$workspace" ] || return 1
   [ -d "$home" ] && [ ! -L "$home" ] || return 1
   fm_kiro_slug_valid "$id" || return 1
@@ -226,13 +272,41 @@ fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home>
   hook_path=$(fm_kiro_v3_hook_path "$workspace" "$id") || return 1
   agent_home=$(fm_kiro_v3_agent_home_path "$home" "$id") || return 1
   hook_home=$(fm_kiro_v3_hook_home_path "$home" "$id") || return 1
+  if fm_kiro_kind_consults_oracle "$kind"; then
+    oracle=$(fm_kiro_v3_oracle_name "$id") || return 1
+    oracle_path=$(fm_kiro_v3_oracle_path "$workspace" "$id") || return 1
+    oracle_home=$(fm_kiro_v3_oracle_home_path "$home" "$id") || return 1
+    tools=$FM_KIRO_V3_WORKER_TOOLS_JSON
+    prompt="$prompt $(fm_kiro_oracle_rule "$oracle")"
+    fm_kiro_publish_owned "$oracle_home" <<EOF || return 1
+{
+  "name": "$oracle",
+  "description": "Read-only Opus advisor for one hard architecture question. Reads and searches files, code, and the web; cannot write files, run shell commands, or call another agent.",
+  "prompt": "You are a read-only architecture advisor consulted by a Firstmate worker. Answer the one self-contained question you are given: name the trade-offs, give one recommendation with its reason, and cite the files you read. You cannot write files, run shell commands, or call another agent. The worker keeps the decision and the work.",
+  "model": "$FM_KIRO_V3_ORACLE_MODEL",
+  "effortLevel": "high",
+  "tools": $FM_KIRO_V3_ORACLE_TOOLS_JSON,
+  "allowedTools": $FM_KIRO_V3_ORACLE_TOOLS_JSON,
+  "excludedTools": ["knowledge", "execute_bash", "fs_write", "invoke_sub_agent"],
+  "includeMcpJson": false,
+  "includePowers": false,
+  "permissions": {
+    "rules": [
+      { "capability": "shell", "effect": "deny" },
+      { "capability": "fs_write", "effect": "deny" },
+      { "capability": "subagent", "effect": "deny" }
+    ]
+  }
+}
+EOF
+  fi
   fm_kiro_publish_owned "$agent_home" <<EOF || return 1
 {
   "name": "$agent",
   "description": "Firstmate-owned Kiro CLI V3 worker agent.",
-  "prompt": "Follow the active Firstmate task or secondmate instructions exactly.",
-  "tools": $FM_KIRO_V3_TOOLS_JSON,
-  "allowedTools": $FM_KIRO_V3_TOOLS_JSON,
+  "prompt": "$prompt",
+  "tools": $tools,
+  "allowedTools": $tools,
   "excludedTools": ["knowledge"],
   "includeMcpJson": true,
   "includePowers": false,
@@ -284,13 +358,17 @@ EOF
 EOF
   fm_kiro_publish_project_copy "$agent_path" "$agent_home" || return 1
   fm_kiro_publish_project_copy "$hook_path" "$hook_home" || return 1
+  if [ -n "${oracle:-}" ]; then
+    fm_kiro_publish_project_copy "$oracle_path" "$oracle_home" || return 1
+  fi
 }
 
 fm_kiro_remove_v3_project_config() {  # <workspace> <task-id>
-  local workspace=$1 id=$2 agent_path hook_path
+  local workspace=$1 id=$2 agent_path hook_path oracle_path
   agent_path=$(fm_kiro_v3_agent_path "$workspace" "$id") || return 1
   hook_path=$(fm_kiro_v3_hook_path "$workspace" "$id") || return 1
-  rm -f -- "$agent_path" "$hook_path" || return 1
+  oracle_path=$(fm_kiro_v3_oracle_path "$workspace" "$id") || return 1
+  rm -f -- "$agent_path" "$hook_path" "$oracle_path" || return 1
   rmdir "$workspace/.kiro/agents" "$workspace/.kiro/hooks" "$workspace/.kiro" 2>/dev/null || true
 }
 
