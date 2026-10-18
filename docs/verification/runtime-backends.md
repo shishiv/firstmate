@@ -90,6 +90,29 @@ ok - kiro-cli live crewmate signals (turn-end, detection, busy/idle, control, te
 
 `SHELL=/bin/sh` keeps a login-shell prompt hook from swallowing the `treehouse get` line `bin/fm-spawn.sh` types into a fresh pane on this machine; without it the spawn stops with `treehouse get did not enter an isolated worktree within 60s` before Kiro starts.
 
+### Kiro second mate and primary on the default agent, 2026-10-18
+
+Verified against kiro-cli 2.32.0 (`@kiro/agent` 0.66.43) with model `claude-sonnet-5.5` and effort `low`, in marked lab homes (`bin/fm-lab-home.sh create`) holding firstmate checkouts of the change, with no project clones, on a private tmux server under `bin/fm-lab-home.sh tmux-dir`; no production home, second mate, or primary was touched.
+The second mate was scaffolded with `bin/fm-brief.sh <id> --secondmate --no-projects`, seeded with `bin/fm-home-seed.sh <id> <home> --no-projects`, and its charter carried an eight-step probe naming one tool per step.
+The cells ran:
+
+```sh
+FM_HOME=<parent> FM_BACKEND=tmux bin/fm-spawn.sh <id> --secondmate kiro-cli --model claude-sonnet-5.5 --effort low
+FM_HOME=<parent> FM_BACKEND=tmux bin/fm-control.sh <id> relaunch
+KIRO_DUMP_REQUESTS=1 KIRO_DUMP_REQUESTS_DIR=<dir> bin/fm-kiro-primary.sh --model claude-sonnet-5.5 --effort low "<probe>"
+```
+
+| Launch | Launch line | Tools the model received | Image text read back | Knowledge | Hooks that fired |
+| --- | --- | --- | --- | --- | --- |
+| second mate, fresh spawn | `kiro-cli chat --v3 -a --model claude-sonnet-5.5 --effort low <brief>` | `code`, `createHook`, `delete_file`, `disclose_context`, `execute_bash`, `file_search`, `fs_append`, `fs_write`, `grep_search`, `invoke_sub_agent`, `kiro_powers`, `list_directory`, `read_file`, `remote_web_search`, `str_replace`, `update_session_information`, `web_fetch` | `ORCA 4917`, correct | off | session start, prompt submit, pre-tool, post-tool, and stop, each from both the home's tracked hook and the task hook |
+| second mate, relaunch | the same | the same seventeen | correct | off | the same |
+| primary through `bin/fm-kiro-primary.sh` | `kiro-cli chat --v3 -a --model claude-sonnet-5.5 --effort low <probe>` | the same seventeen | correct | off | session start, prompt submit, pre-tool, post-tool, and stop from the tracked hook |
+
+Every session record said `agentMode=vibe`, the default agent, and `knowledge.enabled=false`, and no session was offered a `knowledge` tool.
+No cell had a `--agent` flag or a generated `.kiro/agents/firstmate-kiro-<id>.json`, and the second mate's tool check recorded both sessions in `.fm-kiro-tools-ok` with the list above and appended no `blocked:` line.
+The tracked session-start hook ran the digest and published `state/.primary-endpoint` in the second mate's home and in the primary's.
+Neither the second mate nor the primary has a Firstmate oracle; both are offered Kiro's own `invoke_sub_agent`.
+
 
 ### Kiro in-turn steering delivery, 2026-10-18
 
