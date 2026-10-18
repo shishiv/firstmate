@@ -546,7 +546,7 @@ Verified against kiro-cli 2.22.1 (`/home/shiv/.local/bin/kiro-cli`) with the V3 
 
 Trust and tool grants: `allowedTools: ["*"]` is not trust.
 Two production V3 scouts launched with that wildcard agent and no trust flag read files and ran shell without asking, then parked on `fs_write`'s Replace in File with `Replace in File requires approval · trust [session]` (`Allow / Always allow / Deny`) until the operator answered by hand.
-The tracked primary agent and the per-task generator in `bin/fm-kiro-lib.sh` now name concrete tools (`execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `tool_search`; `knowledge` excluded), and every Firstmate V3 launch carries `-a` (`kiro-cli chat --v3 -a --agent ...`), the same flag the operator's own working launch uses; `kiro-cli agent validate --path <generated agent>` accepts the generated file (run inside `tests/fm-kiro-harness.test.sh` whenever the CLI is installed).
+The tracked primary agent and the per-task generator in `bin/fm-kiro-lib.sh` now name concrete tools (V3 tool ids since 2026-10-18, when the CLI aliases first listed here were found to resolve to no tool; see `docs/verification/runtime-backends.md`; `knowledge` excluded), and every Firstmate V3 launch carries `-a` (`kiro-cli chat --v3 -a --agent ...`), the same flag the operator's own working launch uses; `kiro-cli agent validate --path <generated agent>` accepts the generated file (run inside `tests/fm-kiro-harness.test.sh` whenever the CLI is installed).
 
 Live worker proof, all ten steps green:
 

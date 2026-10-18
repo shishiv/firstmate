@@ -406,6 +406,8 @@
 #                   firstmate-owned settings, turn-end agent config, and registry
 #     __KIRODATADIR__ per-task KIRO_DATA_DIR under that KIRO_HOME
 #     __KIROCHATLOG__ per-task KIRO_CHAT_LOG_FILE under that KIRO_HOME
+#     __KIRODUMPENV__ a V3 ship or scout's KIRO_DUMP_REQUESTS assignments, else empty
+#     __KIROAGENTFLAG__ `--agent <name> ` for a kind with a generated agent, else empty
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -2177,7 +2179,7 @@ launch_template() {
   # agy exposes no hook surface, so busy state is a rendered-tail fallback
   # (bin/fm-busy-lib.sh) and nothing is armed below.
   agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __AGYBIN__ --prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)" __MODELFLAG____EFFORTFLAG__--dangerously-skip-permissions' ;;
-  # kiro-cli (Kiro CLI): `chat --trust-all-tools --agent __KIROAGENT__ "<brief>"`
+  # kiro-cli (Kiro CLI): `chat --trust-all-tools [--agent <name>] "<brief>"`
   # starts the supervised INTERACTIVE TUI with a firstmate-encoded positional
   # brief that auto-submits with no send gate and stays steerable (verified live,
   # kiro-cli 2.22.1: an 18 KB multi-line brief ran its first turn, the pane
@@ -2207,6 +2209,10 @@ launch_template() {
   # log to firstmate-owned per-task paths. FM_KIRO_BUSY_GEN is the incarnation
   # token the hook prefers over any recorded generation, and FM_KIRO_TASK_ID and
   # FM_KIRO_STATE must agree with the registry entry the hook binds to.
+  # __KIROAGENTFLAG__ is empty for a V3 ship or scout, which runs on Kiro's
+  # default agent, and __KIRODUMPENV__ then sets KIRO_DUMP_REQUESTS so the hook's
+  # worker tool check can read the tools Kiro sent the model (bin/fm-kiro-lib.sh,
+  # bin/fm-kiro-turnend-hook.sh).
   # The foreign primary markers are cleared for the same reason cursor clears
   # them: kiro-cli does not scrub an inherited CLAUDECODE, and bin/fm-harness.sh
   # must not read a kiro-cli worker as its launcher (though its anchored ancestry
@@ -2214,7 +2220,7 @@ launch_template() {
   # supported (effort low|medium|high|xhigh|max, verified in chat --help). Busy
   # state comes from those generation-bound hooks, with the rendered tail as the
   # fallback (bin/fm-busy-lib.sh).
-  kiro-cli) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u KIRO_ACP_NATIVE -u KIRO_ACP_PERMISSION_MODE -u KIRO_CLI_ACP_CLIENT_NAME -u KIRO_SESSION_ID FM_KIRO_TASK_ID=__KIROTASK__ FM_KIRO_STATE=__KIROSTATE__ FM_KIRO_BUSY_GEN=__KIROBUSYGEN__ KIRO_HOME=__KIROHOME__ KIRO_DATA_DIR=__KIRODATADIR__ KIRO_CHAT_LOG_FILE=__KIROCHATLOG__ __KIROBIN__ chat __KIROENGINEFLAG____KIROTRUSTFLAG__--agent __KIROAGENT__ __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+  kiro-cli) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u KIRO_ACP_NATIVE -u KIRO_ACP_PERMISSION_MODE -u KIRO_CLI_ACP_CLIENT_NAME -u KIRO_SESSION_ID -u KIRO_DUMP_REQUESTS -u KIRO_DUMP_REQUESTS_DIR FM_KIRO_TASK_ID=__KIROTASK__ FM_KIRO_STATE=__KIROSTATE__ FM_KIRO_BUSY_GEN=__KIROBUSYGEN__ KIRO_HOME=__KIROHOME__ KIRO_DATA_DIR=__KIRODATADIR__ KIRO_CHAT_LOG_FILE=__KIROCHATLOG__ __KIRODUMPENV____KIROBIN__ chat __KIROENGINEFLAG____KIROTRUSTFLAG____KIROAGENTFLAG____MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   # grok (Grok Build TUI): a positional prompt starts the supervised interactive
   # session. --always-approve auto-approves every tool execution (verified: the
   # crewmate runs fully autonomously, no permission gate), which an unattended
@@ -2923,9 +2929,10 @@ case "$LAUNCH" in
     exit 1
   }
   KIRO_ENGINE=${FM_KIRO_ENGINE:-v3}
+  KIRO_AGENT_NAME=
   case "$KIRO_ENGINE" in
     v3)
-      KIRO_AGENT_NAME=$(fm_kiro_v3_agent_name "$ID") || exit 1
+      fm_kiro_kind_runs_default_agent "$KIND" || { KIRO_AGENT_NAME=$(fm_kiro_v3_agent_name "$ID") || exit 1; }
       KIRO_ENGINE_FLAG='--v3 '
       KIRO_TRUST_FLAG='-a '
       ;;
@@ -2941,7 +2948,11 @@ case "$LAUNCH" in
   esac
   LAUNCH=${LAUNCH//__KIROENGINEFLAG__/$KIRO_ENGINE_FLAG}
   LAUNCH=${LAUNCH//__KIROTRUSTFLAG__/$KIRO_TRUST_FLAG}
-  LAUNCH=${LAUNCH//__KIROAGENT__/$(shell_quote "$KIRO_AGENT_NAME")}
+  if [ -n "$KIRO_AGENT_NAME" ]; then
+    LAUNCH=${LAUNCH//__KIROAGENTFLAG__/--agent $(shell_quote "$KIRO_AGENT_NAME") }
+  else
+    LAUNCH=${LAUNCH//__KIROAGENTFLAG__/}
+  fi
   ;;
 esac
 
@@ -3288,6 +3299,9 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   BRIEF_TMP="$DATA/$ID/.launch-brief.md.${BASHPID:-$$}"
   {
     fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" &&
+      if [ "$HARNESS" = kiro-cli ] && [ "${FM_KIRO_ENGINE:-v3}" = v3 ]; then
+        fm_kiro_worker_brief_section "$ID" "$KIND" "$CONFIG"
+      fi &&
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
@@ -5452,6 +5466,8 @@ kiro-cli)
       echo "error: could not install Kiro V3's isolated-home project agent and hooks without replacing existing project material under $WT/.kiro" >&2
       exit 1
     fi
+    # A ship or scout gets no generated agent, but one spawned before workers
+    # moved to Kiro's default agent may still hold the file until its cleanup.
     exclude_path "$(fm_kiro_v3_agent_relpath "$ID")"
     exclude_path "$(fm_kiro_v3_hook_relpath "$ID")"
     if fm_kiro_kind_consults_oracle "$KIND" "$CONFIG"; then
@@ -5466,6 +5482,11 @@ kiro-cli)
   LAUNCH=${LAUNCH//__KIROHOME__/"$(shell_quote "$KIRO_HOME_DIR")"}
   LAUNCH=${LAUNCH//__KIRODATADIR__/"$(shell_quote "$KIRO_HOME_DIR/data")"}
   LAUNCH=${LAUNCH//__KIROCHATLOG__/"$(shell_quote "$KIRO_HOME_DIR/chat.log")"}
+  KIRO_DUMP_ENV=
+  if [ "$KIRO_ENGINE" = v3 ] && fm_kiro_kind_runs_default_agent "$KIND"; then
+    KIRO_DUMP_ENV="KIRO_DUMP_REQUESTS=1 KIRO_DUMP_REQUESTS_DIR=$(shell_quote "$(fm_kiro_request_record_dir "$KIRO_HOME_DIR")") "
+  fi
+  LAUNCH=${LAUNCH//__KIRODUMPENV__/$KIRO_DUMP_ENV}
   ;;
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}

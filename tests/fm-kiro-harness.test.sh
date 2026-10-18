@@ -330,9 +330,11 @@ test_kiro_hooks_drive_semantic_busy_idle_and_progress() {
     }
   ' "$manifest" || fail "V3 project hook manifest lost a semantic lifecycle trigger"
 
+  # This session already passed the worker tool check.
+  printf 'sess_semantic read_file\n' > "$kh/.fm-kiro-tools-ok"
   drive_kiro_hook() {  # <event> <generation>
     local event=$1 event_gen=$2
-    printf '{"hook_event_name":"%s","cwd":"%s"}
+    printf '{"session_id":"sess_semantic","hook_event_name":"%s","cwd":"%s"}
 ' "$event" "$WT_DIR" |       (cd "$WT_DIR" && FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$state"         KIRO_HOME="$kh" KIRO_WORKSPACE_ROOT="$WT_DIR"         FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$state" FM_KIRO_BUSY_GEN="$event_gen"         bash "$hook")
   }
 
@@ -380,9 +382,11 @@ test_kiro_pretool_denies_a_backgrounded_worker_command() {
   hook="$ROOT/bin/fm-kiro-turnend-hook.sh"
   gen=$(cat "$state/$id.busy-gen" 2>/dev/null) || fail "Kiro spawn did not arm a busy generation"
 
+  # This session already passed the worker tool check.
+  printf 'sess_background read_file\n' > "$kh/.fm-kiro-tools-ok"
   drive_kiro_pretool() {  # <command>
     local cmd=$1
-    printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_input":{"command":"%s"}}
+    printf '{"session_id":"sess_background","hook_event_name":"PreToolUse","cwd":"%s","tool_input":{"command":"%s"}}
 ' "$WT_DIR" "$cmd" |       (cd "$WT_DIR" && FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$state"         KIRO_HOME="$kh" KIRO_WORKSPACE_ROOT="$WT_DIR"         FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$state" FM_KIRO_BUSY_GEN="$gen"         bash "$hook") 2>&1
   }
 
@@ -401,6 +405,79 @@ test_kiro_pretool_denies_a_backgrounded_worker_command() {
   [ "$rc" -eq 0 ] || fail "an ordinary foreground worker command should be allowed, got exit $rc"
   assert_present "$state/$id.progress" "an allowed PreToolUse call must still publish native progress"
   pass "Kiro PreToolUse denies a self-detaching worker command before recording progress"
+}
+
+# A V3 ship runs on Kiro's default agent, and its first tool call checks the
+# tool list Kiro actually sent the model against the tools the worker cannot do
+# without. The list a generated agent of CLI aliases produced on kiro-cli 2.32.0
+# (no read, list, or search tool) must stop the worker with a message naming the
+# missing tools; a full list passes once per session and is not re-read.
+test_kiro_worker_tool_check_stops_a_session_without_its_tools() {
+  local id rec state kh hook gen rc out record
+  id="kiro-tools-z7-$$"
+  rec=$(make_kiro_spawn_case tools "$id")
+  read_kiro_spawn_record "$rec"
+  run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" --model auto >/dev/null 2>&1
+  state="$HOME_DIR/state"
+  kh="$state/$id.kiro-home"
+  hook="$ROOT/bin/fm-kiro-turnend-hook.sh"
+  gen=$(cat "$state/$id.busy-gen" 2>/dev/null) || fail "Kiro spawn did not arm a busy generation"
+  assert_contains "$(cat "$HOME_DIR/data/$id/launch-brief.md")" "Call invoke_sub_agent with name firstmate-oracle-$id" \
+    "a Kiro ship's launch brief must carry its oracle rule"
+
+  write_kiro_request() {  # <session> <tool>...
+    local session=$1 tools
+    shift
+    tools=$(printf '%s\n' "$@" | jq -R '{toolSpecification: {name: .}}' | jq -s -c .)
+    mkdir -p "$kh/requests/$session"
+    printf '{"request":{"conversationState":{"currentMessage":{"userInputMessage":{"userInputMessageContext":{"tools":%s}}}}}}\n' "$tools" \
+      > "$kh/requests/$session/0000-1.json"
+  }
+  drive_kiro_tool_call() {  # <session> [<dump-env>]
+    printf '{"session_id":"%s","hook_event_name":"PreToolUse","cwd":"%s","tool_name":"read_file","tool_input":{"path":"x"}}\n' "$1" "$WT_DIR" |
+      (cd "$WT_DIR" && env FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$state" \
+        KIRO_HOME="$kh" KIRO_WORKSPACE_ROOT="$WT_DIR" \
+        FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$state" FM_KIRO_BUSY_GEN="$gen" \
+        ${2:+KIRO_DUMP_REQUESTS=1 KIRO_DUMP_REQUESTS_DIR="$kh/requests"} PATH="$FAKEBIN_DIR:$BASE_PATH" \
+        bash "$hook") 2>&1
+  }
+
+  : > "$state/$id.status"
+  write_kiro_request sess_alias code disclose_context execute_bash fs_write invoke_sub_agent web_fetch
+  out=$(drive_kiro_tool_call sess_alias dump); rc=$?
+  [ "$rc" -eq 2 ] || fail "a session without its read and search tools must be stopped, got exit $rc"
+  assert_contains "$out" "lacks required tools: read_file, list_directory, file_search, grep_search" \
+    "the stop message must name every missing tool"
+  assert_contains "$(cat "$state/$id.status")" "blocked [at=" "firstmate must be told the worker was stopped"
+  assert_contains "$(cat "$state/$id.status")" "lacks required tools: read_file, list_directory, file_search, grep_search" \
+    "the blocked status must name the missing tools"
+  drive_kiro_tool_call sess_alias dump >/dev/null; rc=$?
+  [ "$rc" -eq 2 ] || fail "every later tool call of a stopped session must be denied too, got exit $rc"
+  [ "$(grep -c '^blocked' "$state/$id.status")" -eq 1 ] || fail "a stopped session must report once, not per tool call"
+
+  out=$(drive_kiro_tool_call sess_norecord dump); rc=$?
+  [ "$rc" -eq 2 ] || fail "a session whose request record is missing must be stopped, got exit $rc"
+  assert_contains "$out" "wrote no request record" "a missing request record must be named, not passed silently"
+
+  write_kiro_request sess_full read_file list_directory file_search grep_search fs_write fs_append str_replace delete_file execute_bash code web_fetch remote_web_search invoke_sub_agent
+  rm -f "$state/$id.progress"
+  drive_kiro_tool_call sess_full dump >/dev/null; rc=$?
+  [ "$rc" -eq 0 ] || fail "a session offered every required tool must pass, got exit $rc"
+  assert_present "$state/$id.progress" "a passing tool call must still publish native progress"
+  [ -z "$(find "$kh/requests" -name '*.json' 2>/dev/null)" ] || fail "a passing check must delete the request records it read"
+  grep -q '^sess_full code,delete_file,execute_bash,file_search,fs_append,fs_write,grep_search,invoke_sub_agent,list_directory,read_file,remote_web_search,str_replace,web_fetch$' "$kh/.fm-kiro-tools-ok" \
+    || fail "a passing check must record the session and the tools Kiro offered: $(cat "$kh/.fm-kiro-tools-ok" 2>/dev/null)"
+  drive_kiro_tool_call sess_full dump >/dev/null; rc=$?
+  [ "$rc" -eq 0 ] || fail "a checked session must pass later tool calls without a request record, got exit $rc"
+
+  out=$(drive_kiro_tool_call sess_plain); rc=$?
+  [ "$rc" -eq 2 ] || fail "a session started outside Firstmate's launch cannot be checked and must be stopped, got exit $rc"
+  assert_contains "$out" "not started by Firstmate's launch" "an unchecked session must be told why it was stopped"
+
+  rm -f "$kh/.fm-kiro-required-tools"
+  drive_kiro_tool_call sess_secondmate >/dev/null; rc=$?
+  [ "$rc" -eq 0 ] || fail "a session with no required-tools list (a secondmate) is not checked, got exit $rc"
+  pass "Kiro worker tool check stops a session missing read, list, or search tools and passes a full one"
 }
 
 # --- launch / spawn ---------------------------------------------------------
@@ -474,7 +551,7 @@ case "${1:-}" in
           ;;
       esac
       case "$literal" in
-        *'--agent'*'firstmate-kiro'*)
+        *"kiro-cli' chat --v"*)
           printf '%s\n' "$literal" >> "$FM_FAKE_LAUNCH_LOG"
           # The launch command carries the positional brief, so the TUI comes up
           # already working. The literal only TYPES the command; the following
@@ -614,8 +691,13 @@ test_kiro_launch_is_the_interactive_tui_with_brief_model_effort_and_scope() {
 
   launch=$(cat "$CASE_DIR/launch.log")
   assert_contains "$launch" "$FAKEBIN_DIR/kiro-cli" "launch did not pin the resolved absolute binary"
-  assert_contains "$launch" "chat --v3 -a --agent 'firstmate-kiro-$id'" \
-    "launch did not carry the V3 engine, the trust flag, and the task-specific project agent"
+  assert_contains "$launch" "kiro-cli' chat --v3 -a --model" \
+    "launch did not carry the V3 engine and the trust flag"
+  assert_not_contains "$launch" "--agent" "a V3 ship must run on Kiro's default agent, not a generated one"
+  assert_contains "$launch" "KIRO_DUMP_REQUESTS=1 KIRO_DUMP_REQUESTS_DIR='$HOME_DIR/state/$id.kiro-home/requests'" \
+    "a V3 ship must record its model requests where the worker tool check reads them"
+  assert_not_contains "$launch" "__KIROAGENTFLAG__" "launch left its agent placeholder unsubstituted"
+  assert_not_contains "$launch" "__KIRODUMPENV__" "launch left its request-record placeholder unsubstituted"
   assert_not_contains "$launch" "--no-interactive" "launch must be the interactive steerable TUI, not the one-shot"
   assert_contains "$launch" "--model 'auto'" "launch did not carry the requested model"
   assert_contains "$launch" "--effort 'low'" "launch did not carry the requested effort"
@@ -629,7 +711,6 @@ test_kiro_launch_is_the_interactive_tui_with_brief_model_effort_and_scope() {
   assert_contains "$launch" "encode launch-brief" "launch must carry the brief positionally"
   assert_not_contains "$launch" "__KIROBIN__" "launch left its binary placeholder unsubstituted"
   assert_not_contains "$launch" "__KIROHOME__" "launch left its KIRO_HOME placeholder unsubstituted"
-  assert_not_contains "$launch" "__KIROAGENT__" "launch left its agent placeholder unsubstituted"
   assert_not_contains "$launch" "__KIROENGINEFLAG__" "launch left its engine placeholder unsubstituted"
   assert_not_contains "$launch" "__BRIEF__" "launch left its brief placeholder unsubstituted"
   # The unified launch never types a pointer into the composer.
@@ -791,18 +872,13 @@ test_kiro_turn_end_wiring_lands_in_a_per_task_kiro_home() {
   v3_hook="$WT_DIR/.kiro/hooks/fm-firstmate-$id.json"
   home_agent="$kh/project/.kiro/agents/firstmate-kiro-$id.json"
   home_hook="$kh/project/.kiro/hooks/fm-firstmate-$id.json"
-  assert_present "$v3_agent" "the task-specific V3 project agent is missing"
+  assert_absent "$v3_agent" "a V3 ship runs on Kiro's default agent and must get no generated project agent"
+  assert_absent "$home_agent" "a V3 ship must get no generated agent payload in KIRO_HOME"
   assert_present "$v3_hook" "the task-specific V3 project hook is missing"
-  [ -f "$v3_agent" ] && [ ! -L "$v3_agent" ] || fail "the task-specific V3 project agent must be a regular isolated-home copy"
   [ -f "$v3_hook" ] && [ ! -L "$v3_hook" ] || fail "the task-specific V3 project hook must be a regular isolated-home copy"
-  assert_present "$home_agent" "the task-specific V3 agent payload is missing from KIRO_HOME"
   assert_present "$home_hook" "the task-specific V3 hook payload is missing from KIRO_HOME"
-  node -e '
-    const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
-    if(!j.excludedTools?.includes("knowledge")) process.exit(1);
-    if(j.includePowers !== false) process.exit(1);
-    if(!j.permissions?.rules?.some(r => r.capability === "all" && r.effect === "allow")) process.exit(1);
-  ' "$home_agent" || fail "V3 project agent lost knowledge containment or capability trust"
+  [ "$(cat "$kh/.fm-kiro-required-tools" 2>/dev/null | paste -sd' ' -)" = "read_file list_directory file_search grep_search fs_write execute_bash invoke_sub_agent" ] \
+    || fail "a V3 ship's KIRO_HOME must list the tools the worker tool check requires, got: $(cat "$kh/.fm-kiro-required-tools" 2>/dev/null)"
   hook_command=$(node -e '
     const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
     const h=j.hooks?.find(x => x.trigger === "Stop");
@@ -968,7 +1044,7 @@ EOF
       [ -n "$cmd" ] || continue
       before=$(grep -c '^at=' "$probe")
       rc=0
-      printf '{"session_id":"sess_anyfolder","hook_event_name":"PreToolUse","cwd":"%s"}' "$workspace" \
+      printf '{"session_id":"sess_anyfolder","hook_event_name":"PostToolUse","cwd":"%s"}' "$workspace" \
         | (cd "$foreign" && env -i HOME="$foreign" PATH="$BASE_PATH" \
           FM_KIRO_HOOK_PROBE_FILE="$probe" FM_STATE_OVERRIDE="$foreign/no-state" /bin/sh -c "$cmd") \
         >/dev/null 2>&1 || rc=$?
@@ -1005,6 +1081,9 @@ test_kiro_resumed_worker_hooks_bind_only_through_the_recorded_session() {
   foreign="$CASE_DIR/foreign"
   mkdir -p "$foreign"
   launched=(FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$state" FM_KIRO_BUSY_GEN="$gen" KIRO_HOME="$kh")
+  # The launched incarnation of sess_a passed the worker tool check, so its
+  # resumed conversation keeps its tools.
+  printf 'sess_a read_file\n' > "$kh/.fm-kiro-tools-ok"
   fire() {  # <trigger> <session-id> [launch environment...]
     local trigger=$1 session=$2 cmd
     shift 2
@@ -1206,13 +1285,14 @@ test_kiro_v3_project_files_are_regular_copies_and_refuse_different_existing() {
 }
 
 test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does() {
-  # A ship or scout worker may call a read-only Opus advisor through Kiro's V3
-  # sub-agent tool. The primary, the secondmate, and a caller that names no kind
-  # must keep the base tool list, so the fleet-dispatch rule stays whole for
-  # supervisors. The oracle must read and search but never write, run shell, or
-  # delegate, by tool list AND by permission rule (a rule holds under -a; verified
-  # live on kiro-cli 2.29.0).
-  local kind ws kh id agent oracle primary base
+  # A ship or scout worker runs on Kiro's default agent and may call a
+  # read-only Opus advisor through Kiro's V3 sub-agent tool, which its tool
+  # check then requires. The primary, the secondmate, and a caller that names no
+  # kind keep the generated base agent without the sub-agent tool, so the
+  # fleet-dispatch rule stays whole for supervisors. The oracle must read and
+  # search but never write, run shell, or delegate, by tool list AND by
+  # permission rule (a rule holds under -a; verified live on kiro-cli 2.29.0).
+  local kind ws kh id agent oracle primary section
   . "$ROOT/bin/fm-kiro-lib.sh"
   primary="$ROOT/.kiro/agents/firstmate-kiro.json"
   jq -e '(.tools + .allowedTools) | index("invoke_sub_agent") == null' "$primary" >/dev/null \
@@ -1223,13 +1303,14 @@ test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does() {
     fm_kiro_install_v3_project_config "$ws" "$id" "$kh" "$kind" || fail "$kind V3 project config install failed"
     agent="$ws/.kiro/agents/firstmate-kiro-$id.json"
     oracle="$ws/.kiro/agents/firstmate-oracle-$id.json"
-    jq -e '(.tools == .allowedTools) and (.tools | index("invoke_sub_agent") != null and all(. != "*"))' "$agent" >/dev/null \
-      || fail "a $kind worker must be granted the sub-agent tool in a concrete list: $(jq -c .tools "$agent")"
-    base=$(jq -c '[.tools[] | select(. != "invoke_sub_agent")] | sort' "$agent")
-    [ "$base" = "$(jq -c '.tools | sort' "$primary")" ] \
-      || fail "a $kind worker must differ from the primary only by the sub-agent tool: $base"
-    jq -e --arg o "firstmate-oracle-$id" '.prompt | contains("Call invoke_sub_agent with name " + $o) and contains("hard architecture question") and contains("never for routine coding")' "$agent" >/dev/null \
-      || fail "a $kind worker's prompt must carry the oracle rule naming its oracle agent"
+    assert_absent "$agent" "a $kind worker runs on Kiro's default agent and must get no generated agent"
+    grep -qx invoke_sub_agent "$kh/.fm-kiro-required-tools" \
+      || fail "a $kind worker with an oracle must require the sub-agent tool"
+    section=$(fm_kiro_worker_brief_section "$id" "$kind")
+    case "$section" in
+      *"hard architecture question"*"never for routine coding"*"Call invoke_sub_agent with name firstmate-oracle-$id "*) ;;
+      *) fail "a $kind worker's launch brief section must carry the oracle rule naming its oracle agent: $section" ;;
+    esac
     [ -f "$oracle" ] && [ ! -L "$oracle" ] || fail "a $kind worker's oracle must be a regular project copy"
     cmp -s "$oracle" "$kh/project/.kiro/agents/firstmate-oracle-$id.json" \
       || fail "the $kind oracle copy must match its isolated-home payload"
@@ -1242,8 +1323,6 @@ test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does() {
     if command -v kiro-cli >/dev/null 2>&1 && case "$(kiro-cli --version 2>/dev/null)" in 'kiro-cli '*) true ;; *) false ;; esac; then
       KIRO_HOME="$kh" kiro-cli agent validate --path "$oracle" >"$TMP_ROOT/oracle-validate.log" 2>&1 \
         || fail "installed kiro-cli rejected the generated $kind oracle: $(cat "$TMP_ROOT/oracle-validate.log")"
-      KIRO_HOME="$kh" kiro-cli agent validate --path "$agent" >"$TMP_ROOT/oracle-validate.log" 2>&1 \
-        || fail "installed kiro-cli rejected the generated $kind worker agent: $(cat "$TMP_ROOT/oracle-validate.log")"
     fi
     fm_kiro_remove_v3_project_config "$ws" "$id" || fail "$kind cleanup should succeed"
     assert_absent "$oracle" "cleanup must remove the $kind oracle copy"
@@ -1258,7 +1337,7 @@ test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does() {
     jq -e '.prompt | contains("oracle") | not' "$ws/.kiro/agents/firstmate-kiro-$id.json" >/dev/null \
       || fail "kind '$kind' must not be told about an oracle"
   done
-  pass "fm-kiro-lib: ship and scout workers get a read-only Opus oracle; primary, secondmate, and unnamed kinds do not"
+  pass "fm-kiro-lib: ship and scout workers run on the default agent with a read-only Opus oracle; primary, secondmate, and unnamed kinds keep the generated agent without one"
   id="kiro-oracle-off-$$"; ws="$TMP_ROOT/oracle-off-ws"; kh="$TMP_ROOT/oracle-off-home"
   mkdir -p "$ws" "$kh" "$TMP_ROOT/oracle-off-config"
   printf 'off\n' >"$TMP_ROOT/oracle-off-config/kiro-oracle"
@@ -1267,8 +1346,11 @@ test_kiro_v3_workers_consult_a_read_only_opus_oracle_and_nobody_else_does() {
     fm_kiro_install_v3_project_config "$ws" "$id" "$kh" "$kind" "$TMP_ROOT/oracle-off-config" || fail "install with the oracle off failed ($kind)"
     assert_absent "$ws/.kiro/agents/firstmate-oracle-$id.json" "an off home must not install an oracle for a $kind"
     assert_absent "$kh/project/.kiro/agents/firstmate-oracle-$id.json" "an off home must not publish an oracle payload for a $kind"
-    jq -e '((.tools + .allowedTools) | index("invoke_sub_agent") == null) and (.prompt | contains("oracle") | not)' "$ws/.kiro/agents/firstmate-kiro-$id.json" >/dev/null \
-      || fail "an off home's $kind worker must carry no sub-agent tool and no oracle rule"
+    assert_absent "$ws/.kiro/agents/firstmate-kiro-$id.json" "an off home's $kind worker still runs on Kiro's default agent"
+    ! grep -qx invoke_sub_agent "$kh/.fm-kiro-required-tools" \
+      || fail "an off home's $kind worker must not require the sub-agent tool"
+    [ -z "$(fm_kiro_worker_brief_section "$id" "$kind" "$TMP_ROOT/oracle-off-config")" ] \
+      || fail "an off home's $kind worker must carry no oracle rule"
   done
   printf 'on\n' >"$TMP_ROOT/oracle-off-config/kiro-oracle"
   rm -rf "$ws" "$kh"; mkdir -p "$ws" "$kh"
@@ -1292,7 +1374,9 @@ test_kiro_v3_agents_grant_concrete_tools_never_a_wildcard() {
   # stopped on fs_write's Replace in File with a human approval dialog (two
   # stalled scouts, 2026-09-21). The per-task generator and the tracked primary
   # agent must both name concrete tools, agree with each other, and keep
-  # knowledge excluded; a returning wildcard fails here.
+  # knowledge excluded; a returning wildcard fails here. Entries must be V3
+  # tool ids: the CLI aliases below resolve to no tool on kiro-cli 2.32.0, and
+  # `kiro-cli agent validate` accepts an unknown id, so it cannot catch them.
   local ws id kh agent home_agent primary generated tracked list
   ws="$TMP_ROOT/v3-agent-ws"; id="kiro-tools-$$"; kh="$TMP_ROOT/v3-agent-kiro-home"
   mkdir -p "$ws" "$kh"
@@ -1306,8 +1390,10 @@ test_kiro_v3_agents_grant_concrete_tools_never_a_wildcard() {
   primary="$ROOT/.kiro/agents/firstmate-kiro.json"
   assert_present "$agent" "per-task V3 agent was not generated"
   for list in tools allowedTools; do
-    jq -e --arg l "$list" '.[$l] | type == "array" and length > 0 and all(. != "*") and index("fs_write") != null and index("execute_bash") != null and index("fs_read") != null' "$agent" >/dev/null \
-      || fail "generated V3 agent's $list must be a concrete, wildcard-free list carrying fs_write, fs_read, and execute_bash: $(jq -c --arg l "$list" '.[$l]' "$agent")"
+    jq -e --arg l "$list" '.[$l] | type == "array" and length > 0 and all(. != "*") and (["read_file", "list_directory", "file_search", "grep_search", "fs_write", "fs_append", "str_replace", "delete_file", "execute_bash", "code", "web_fetch", "remote_web_search"] - . == [])' "$agent" >/dev/null \
+      || fail "generated V3 agent's $list must be a concrete, wildcard-free list carrying the V3 read, search, write, shell, code, and web tool ids: $(jq -c --arg l "$list" '.[$l]' "$agent")"
+    jq -e --arg l "$list" '.[$l] - ["fs_read", "grep", "glob", "web_search", "introspect", "session", "report", "tool_search"] == .[$l]' "$agent" >/dev/null \
+      || fail "generated V3 agent's $list must name V3 tool ids, not CLI aliases that resolve to no tool: $(jq -c --arg l "$list" '.[$l]' "$agent")"
     jq -e --arg l "$list" '.[$l] | type == "array" and all(. != "*")' "$primary" >/dev/null \
       || fail "tracked primary V3 agent's $list must be a concrete, wildcard-free list"
   done
@@ -1457,10 +1543,11 @@ test_kiro_teardown_removes_every_artifact() {
   run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" --model auto >/dev/null 2>&1
   kh="$HOME_DIR/state/$id.kiro-home"
   assert_present "$kh" "spawn must create the per-task KIRO_HOME before teardown"
-  assert_present "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" "spawn must create its V3 project agent copy"
+  assert_absent "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" "a ship runs on Kiro's default agent and gets no generated agent"
   assert_present "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" "spawn must create its V3 project hook copy"
   assert_present "$WT_DIR/.kiro/agents/firstmate-oracle-$id.json" "spawn must create a ship's oracle agent copy"
-  [ -f "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" ] && [ ! -L "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" ] || fail "teardown fixture must use a regular isolated-home agent copy"
+  # A worker spawned before ships moved to the default agent still holds one.
+  printf '{}\n' > "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json"
   [ -f "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" ] && [ ! -L "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" ] || fail "teardown fixture must use a regular isolated-home hook copy"
   HOME="$HOME_DIR" FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
@@ -1470,7 +1557,7 @@ test_kiro_teardown_removes_every_artifact() {
     "$TEARDOWN" "$id" >/dev/null 2>&1 || fail "teardown of an idle kiro-cli task should succeed"
   assert_absent "$kh" "teardown must remove the per-task KIRO_HOME directory"
   assert_absent "$HOME_DIR/state/$id.kiro-turnend-token" "teardown must remove the state token"
-  assert_absent "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" "teardown must remove the V3 project agent"
+  assert_absent "$WT_DIR/.kiro/agents/firstmate-kiro-$id.json" "teardown must remove an earlier spawn's V3 project agent"
   assert_absent "$WT_DIR/.kiro/hooks/fm-firstmate-$id.json" "teardown must remove the V3 project hook"
   assert_absent "$WT_DIR/.kiro/agents/firstmate-oracle-$id.json" "teardown must remove the oracle agent"
   assert_absent "$HOME_DIR/state/$id.meta" "teardown must remove the task record"
@@ -1507,6 +1594,7 @@ test_kiro_classify_busy_on_anchor_unknown_when_scrolled_out
 test_kiro_semantic_busy_source_is_registered
 test_kiro_hooks_drive_semantic_busy_idle_and_progress
 test_kiro_pretool_denies_a_backgrounded_worker_command
+test_kiro_worker_tool_check_stops_a_session_without_its_tools
 test_kiro_launch_is_the_interactive_tui_with_brief_model_effort_and_scope
 test_kiro_trust_dialog_refuses_without_answering
 test_kiro_trust_decoy_does_not_block_the_launch
