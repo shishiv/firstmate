@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, PRESENTATION_UNAVAILABLE, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, HERDR_SERVER_CGROUP, HERDR_AGENT_RESUME, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy, or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, PRESENTATION_UNAVAILABLE, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, HERDR_SERVER_CGROUP, HERDR_AGENT_RESUME, TOOL_NEED, TOOL_UPDATE, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy, or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or any other BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -80,5 +80,9 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `HERDR_AGENT_RESUME: Herdr <version> resumes agents after a server restart ...` - after the next Herdr restart a worker can come back by itself in the project's primary checkout instead of its isolated copy.
   Firstmate refuses to type into such a resumed agent, but it keeps working on its own; recommend the captain add `[session] resume_agents_on_restore = false` to the named config file ([`docs/herdr-backend.md`](../../../docs/herdr-backend.md) "Agents resumed after a restart").
   Never edit that file yourself; it is the captain's machine configuration.
+- `TOOL_NEED: <project> needs <tool> <pin> (tools/<tool>.version): <gap> (fix: <command>)` - a registered project pins a tool this machine lacks, has only off `PATH`, has at another version, or cannot run; workers on that project will hit it, and a copy that is installed but off `PATH` is why a bare call fails while the project's own scripts still find it.
+  Tell the captain which project needs which tool and give the printed fix; changing the captain's shell profile or installing a tool is the captain's call, so never apply the fix yourself.
+- `TOOL_UPDATE: <tool> <installed> -> <latest> available (update: <command>)` - one of the fleet's own CLIs has a newer published release; nothing is broken.
+  Batch it into the captain's next natural reply with the printed command and apply it only with the captain's consent, because several of these tools are shared by every live worker and home.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.

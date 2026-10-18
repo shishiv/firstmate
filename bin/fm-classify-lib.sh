@@ -2076,6 +2076,59 @@ $snapshot
 EOF
 }
 
+# --- worker-reported tool gaps -----------------------------------------------
+#
+# A worker that finds a tool the task needs missing, unusable, at a version other
+# than the one the project pins, or printing an update notice reports it with one
+# informational line per tool (bin/fm-brief.sh owns that worker instruction):
+#   note [key=tool-<tool>] [at=<epoch>]: <tool> <missing|unusable|version|update>: <what it saw>; workaround: <what it did instead>
+# It is an ordinary `note:`, so it never opens a decision or blocker, is never
+# captain-relevant on its own, and reaches the drain's one-shot unread surface
+# like any other note. The `tool-<tool>` key is what makes it a tool gap: the
+# drain groups those lines per tool (bin/fm-wake-drain.sh) instead of listing
+# each one, so a gap several workers hit shows once with every worker named.
+# A missing tool with no workaround is a `blocked:` line instead, not this one.
+
+# 0 when <line> is a worker tool-gap report; the tool name goes to stdout, or to
+# <out-var> when one is given. The tool is read from the stated key, never from
+# the prose, so a note that merely mentions a tool is not a gap report.
+status_line_tool_gap() {  # <status-line> [<out-var>]
+  local __fm_tg_verb __fm_tg_key
+  [ -n "$1" ] || return 1
+  status_line_verb "$1" __fm_tg_verb
+  [ "$__fm_tg_verb" = note ] || return 1
+  __fm_tg_key=$(_fm_decision_key "$1" '') || return 1
+  case "$__fm_tg_key" in
+    tool-?*) __fm_tg_key=${__fm_tg_key#tool-} ;;
+    *) return 1 ;;
+  esac
+  if [ "$#" -gt 1 ]; then printf -v "$2" '%s' "$__fm_tg_key"; else printf '%s' "$__fm_tg_key"; fi
+}
+
+# Every task in <state> whose current status log carries a tool-gap report for
+# <tool>, one task id per line in glob order. This is the fleet-wide reporter
+# list a grouped presentation names next to the reports that are new this turn;
+# it reads only the status logs present now, so a torn-down task drops out.
+scan_tool_gap_reporters() {  # <state> <tool>
+  local state=$1 tool=$2 f task line found found_tool exclude
+  _fm_decision_slug_ok "$tool" || return 0
+  exclude=$(status_scan_parent_channel_exclude "$state")
+  for f in "$state"/*.status; do
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
+    [ "$f" = "$exclude" ] && continue
+    task=$(basename "$f"); task="${task%.status}"
+    found=0
+    while IFS= read -r line; do
+      status_line_tool_gap "$line" found_tool || continue
+      [ "$found_tool" = "$tool" ] || continue
+      found=1
+      break
+    done < <(LC_ALL=C grep -F -- "[key=tool-$tool]" "$f" 2>/dev/null)
+    [ "$found" -eq 1 ] && printf '%s\n' "$task"
+  done
+  return 0
+}
+
 # Fold material routed-work phases in the same keyed event stream.
 # A working or declared-pause event opens or replaces one phase for its key.
 # A later done, failed, needs-decision, blocked, or resolved event carrying that
