@@ -651,6 +651,67 @@ test_ring_ladder_policy() {
   pass "inbox: the re-ring ladder paces by grace, escalates once, and resets on ack"
 }
 
+# In-turn hook delivery: a record is claimed exactly once however many callers
+# race, a claimed record leaves the ring ladder, and one still unacknowledged
+# after the whole ladder budget since its claim escalates as stale.
+test_claimed_record_is_delivered_once_and_leaves_the_ladder() {
+  local state rec action wins i
+  state="$TMP_ROOT/claim/state"; mkdir -p "$state"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "stop and rebase")
+  wins=0
+  for i in 1 2 3 4 5 6; do
+    inbox_lib "$state" fm_task_inbox_claim_delivery "$rec" > "$state/claim.$i" 2>&1 &
+  done
+  wait
+  for i in 1 2 3 4 5 6; do
+    inbox_lib "$state" fm_task_inbox_claim_delivery "$rec" >/dev/null 2>&1 && wins=$((wins + 1))
+  done
+  [ "$wins" -eq 0 ] || fail "a claimed record must not be claimed again, got $wins more claims"
+  [ -f "$state/t1.inbox/.delivered/001.msg" ] || fail "a claim must leave its durable marker"
+  [ -f "$rec" ] || fail "a claim must leave the record unhandled for the worker's own mv"
+  age_path "$rec"
+  action=$(FM_TASK_INBOX_GRACE_SECS=60 FM_TASK_INBOX_RING_MAX=3 inbox_lib "$state" fm_task_inbox_due_action "$state" t1)
+  [ "$action" = quiet ] || fail "a freshly claimed record must not be rung, got: $action"
+  age_path "$state/t1.inbox/.delivered/001.msg"
+  action=$(FM_TASK_INBOX_GRACE_SECS=60 FM_TASK_INBOX_RING_MAX=3 inbox_lib "$state" fm_task_inbox_due_action "$state" t1)
+  [ "${action%% *}" = escalate ] || fail "a claimed record unacknowledged past the ladder budget must escalate, got: $action"
+  inbox_lib "$state" fm_task_inbox_claim_delivery "$state/t1.inbox/999.msg" >/dev/null 2>&1 \
+    && fail "a missing record must not be claimed"
+  pass "inbox: an in-turn delivery claim is won once, leaves the ladder, and still escalates when never acknowledged"
+}
+
+# A Kiro worker that takes steering through its hook is not typed into while
+# its turn is busy, because its next tool call delivers; idle, it is rung.
+test_ring_defers_to_hook_delivery_while_busy() {
+  local dir state rec log rc
+  dir="$TMP_ROOT/ring-hook"
+  state="$dir/state"
+  mkdir -p "$state/t1.kiro-home"
+  make_watch_stubs "$dir" >/dev/null
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "please continue")
+  log="$dir/send.log"; : > "$log"
+  printf 'g1\n' > "$state/t1.busy-gen"
+  printf 'v1 gen=g1 seq=1 state=busy source=kiro-hook event=user-prompt-submit ts=1\n' > "$state/t1.busy-state"
+  rc=0
+  PATH="$dir/fakebin:$PATH" FM_SEND_LOG="$log" FM_FAKE_TMUX_AGENT=kiro-cli \
+    inbox_lib "$state" fm_task_inbox_ring tmux sess:fm-t1 "$rec" fm-t1 || rc=$?
+  [ "$rc" = 0 ] || fail "a worker without hook delivery must still be rung while busy, got $rc"
+  : > "$log"
+  printf 'on\n' > "$state/t1.kiro-home/.fm-kiro-steer-inject"
+  rc=0
+  PATH="$dir/fakebin:$PATH" FM_SEND_LOG="$log" FM_FAKE_TMUX_AGENT=kiro-cli \
+    inbox_lib "$state" fm_task_inbox_ring tmux sess:fm-t1 "$rec" fm-t1 || rc=$?
+  [ "$rc" = 5 ] || fail "a busy hook-delivered worker must defer to its next tool call (5), got $rc"
+  [ ! -s "$log" ] || fail "a busy hook-delivered worker was typed into:"$'\n'"$(cat "$log")"
+  printf 'v1 gen=g1 seq=2 state=idle source=kiro-hook event=stop ts=2\n' > "$state/t1.busy-state"
+  rc=0
+  PATH="$dir/fakebin:$PATH" FM_SEND_LOG="$log" FM_FAKE_TMUX_AGENT=kiro-cli \
+    inbox_lib "$state" fm_task_inbox_ring tmux sess:fm-t1 "$rec" fm-t1 || rc=$?
+  [ "$rc" = 0 ] || fail "an idle hook-delivered worker must get the typed doorbell, got $rc"
+  grep -qF 'Firstmate instruction waiting' "$log" || fail "an idle hook-delivered worker did not receive the doorbell"
+  pass "inbox: the doorbell defers to in-turn hook delivery while busy and rings an idle worker"
+}
+
 setup_watch_case() {  # <name> -> echoes case dir; state in <dir>/state
   local name=$1 dir
   dir="$TMP_ROOT/$name"
@@ -1196,6 +1257,8 @@ test_fire_and_forget_records_never_enter_the_ladder
 test_fire_and_forget_retry_is_owed_once
 test_fire_and_forget_retry_is_quiet_without_the_flag
 test_ring_ladder_policy
+test_claimed_record_is_delivered_once_and_leaves_the_ladder
+test_ring_defers_to_hook_delivery_while_busy
 test_watcher_rerings_idle_pane_quietly
 test_watcher_waits_on_busy_pane
 test_watcher_busy_budget_resets_on_ring_and_ack

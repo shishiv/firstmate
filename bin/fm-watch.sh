@@ -610,6 +610,9 @@ inbox_steer_check() {  # <window> <task>
       triage_log "steer-inbox retry ring: $task ${rec##*/} result=$ring_rc"
       ;;
     escalate)
+      if [ -z "$reason" ] && fm_task_inbox_is_delivered "$rec"; then
+        reason="stale: $w (unread firstmate instruction: $rec was delivered mid-turn by the worker's hook but is still unhandled after the doorbell budget; inspect the worker)"
+      fi
       reason=${reason:-"stale: $w (unread firstmate instruction: $rec still unhandled after $count doorbell delivery attempts with an idle pane; inspect the worker)"}
       if [ ! -d "${rec%/*}" ] || [ ! -f "$rec" ]; then
         fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true

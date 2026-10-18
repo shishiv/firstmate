@@ -356,6 +356,8 @@ EOF
   if fm_kiro_kind_runs_default_agent "$kind"; then
     required=$(fm_kiro_worker_required_tools "$kind" "$config") || return 1
     printf '%s\n' "$required" | fm_kiro_publish_owned "$(fm_kiro_required_tools_path "$home")" || return 1
+    # In-turn steering delivery (bin/fm-kiro-turnend-hook.sh header).
+    printf 'on\n' | fm_kiro_publish_owned "$home/.fm-kiro-steer-inject" || return 1
   else
     fm_kiro_publish_owned "$agent_home" <<EOF || return 1
 {

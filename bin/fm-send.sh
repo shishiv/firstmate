@@ -1189,6 +1189,7 @@ else
     fi
     case "$ring_rc" in
     1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and $ring_retry" >&2 ;;
+    5) echo "fm-send: doorbell not typed because the worker is busy and its next tool call delivers the steer in-turn; the steer is durably recorded at $INBOX_RECORD and the watcher rings it if the turn ends first" >&2 ;;
     2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and $ring_retry" >&2 ;;
     3) echo "fm-send: doorbell not typed because the agent in $T has exited; the steer is durably recorded at $INBOX_RECORD for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane" >&2 ;;
     4) echo "fm-send: doorbell not typed because $(fm_backend_foreign_endpoint_reason "$T" "$INBOX_TASK_ID"); the steer is durably recorded at $INBOX_RECORD for recovery" >&2 ;;
