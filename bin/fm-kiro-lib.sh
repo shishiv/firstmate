@@ -10,10 +10,9 @@
 # reopens a Firstmate session without any of its launcher environment.
 # Firstmate therefore uses both boundaries together:
 #   - an isolated KIRO_HOME with chat.enableKnowledge=false;
-#   - for a ship or scout worker, Kiro's own default agent, as other harnesses'
-#     workers run on their defaults; for a secondmate or a caller naming no
-#     kind, a task-specific project agent with the knowledge tool excluded,
-#     Powers disabled, and capability `all` explicitly allowed;
+#   - Kiro's own default agent for every V3 session (ship, scout, secondmate,
+#     and the primary launcher), as other harnesses run on their defaults; no
+#     Firstmate agent file is generated or tracked for V3;
 #   - task-specific project lifecycle hooks whose command names the tracked
 #     adapter by the absolute path of this library's own bin directory and
 #     passes the task's absolute KIRO_HOME, so a hook reaches its task from any
@@ -21,8 +20,8 @@
 #     kiro-cli carries neither).
 #
 # V2 remains an explicit compatibility fallback only.
-# Its legacy embedded-hook agent receives a distinct name, so the V3 project
-# agent can never shadow it when an operator deliberately selects V2.
+# Its legacy embedded-hook agent receives a distinct name, so the retired V3
+# per-task agent name (firstmate-kiro-<id>) can never shadow it.
 #
 # Generated project files are task-specific and idempotent by exact bytes.
 # The Kiro workspace bridge is a regular copy of the isolated-home payload.
@@ -46,6 +45,9 @@ fm_kiro_slug_valid() {
   return 0
 }
 
+# The per-task V3 agent file (.kiro/agents/firstmate-kiro-<id>.json) is retired:
+# every V3 session runs on Kiro's default agent. Its name stays only so a
+# spawn, relaunch, or cleanup removes the copy an earlier launch left behind.
 fm_kiro_v3_agent_name() {  # <task-id>
   fm_kiro_slug_valid "$1" || return 1
   printf '%s-%s' "$FM_KIRO_V3_AGENT_PREFIX" "$1"
@@ -84,10 +86,6 @@ fm_kiro_v3_oracle_path() {  # <workspace> <task-id>
 
 fm_kiro_v3_hook_path() {  # <workspace> <task-id>
   printf '%s/%s' "${1%/}" "$(fm_kiro_v3_hook_relpath "$2")"
-}
-
-fm_kiro_v3_agent_home_path() {  # <kiro-home> <task-id>
-  printf '%s/project/.kiro/agents/%s.json' "${1%/}" "$(fm_kiro_v3_agent_name "$2")"
 }
 
 fm_kiro_v3_oracle_home_path() {  # <kiro-home> <task-id>
@@ -217,30 +215,22 @@ fm_kiro_write_v2_agent() {  # <kiro-home> <agent-name> <hook-command>
 EOF
 }
 
-# The concrete V3 tool set, declared once. Kiro's `allowedTools` grants no
-# useful wildcard: an agent declaring ["*"] reads files and runs shell without
-# asking, yet still stops on fs_write's Replace in File with a human approval
-# dialog, which stalled two scouts on 2026-09-21. A concrete list is what the
-# operator's own working agents carry and what `kiro-cli agent validate`
-# accepts. The tracked .kiro/agents/firstmate-kiro.json carries the same list
-# for the primary, and a secondmate gets it too; tests/fm-kiro-harness.test.sh
-# pins them equal and wildcard-free. A ship or scout worker gets no generated
-# agent and runs on Kiro's default agent, whose tool set the worker tool check
-# below enforces.
-# Every entry is a V3 tool id. V3 matches an entry only to a tool id or a tool
-# tag, so the CLI aliases `fs_read`, `grep`, `glob`, `web_search`, `introspect`,
-# `session`, `report`, and `tool_search` resolve to nothing: a worker listing
-# them got only shell, fs_write, code, web_fetch, and invoke_sub_agent, with no
-# file read, image read, search, append, replace, or delete (kiro-cli 2.32.0,
-# docs/verification/runtime-backends.md).
-FM_KIRO_V3_TOOLS_JSON='["read_file", "list_directory", "file_search", "grep_search", "fs_write", "fs_append", "str_replace", "delete_file", "execute_bash", "code", "web_fetch", "remote_web_search"]'
+# No V3 Firstmate session lists its own tools any more: every V3 kind runs on
+# Kiro's default agent, whose tool set the worker tool check below enforces.
+# A generated or tracked agent list had to name exact V3 tool ids, because V3
+# matches an entry only to a tool id or a tool tag, and the CLI aliases
+# `fs_read`, `grep`, `glob`, `web_search`, `introspect`, `session`, `report`,
+# and `tool_search` had resolved to nothing: a worker listing them got only
+# shell, fs_write, code, web_fetch, and invoke_sub_agent (kiro-cli 2.32.0,
+# docs/verification/runtime-backends.md). The oracle below is the one agent
+# file left, and it names V3 ids.
 
 # The Opus oracle: a read-only advisor a ship or scout worker reaches through
 # Kiro's V3 sub-agent tool, `invoke_sub_agent`, whose `name` argument selects a
 # workspace agent by its agent-file name (verified live on kiro-cli 2.29.0 and,
-# from the default agent, on 2.32.0). The primary and the secondmate never get
-# the sub-agent tool, so the fleet-dispatch rule stays whole for them.
-# The oracle gets only read-only ids from the shared base. Its
+# from the default agent, on 2.32.0). A secondmate and the primary get no
+# oracle; on the default agent they keep Kiro's own sub-agent tool.
+# The oracle gets only read-only V3 ids. Its
 # permission rules deny shell, write, and sub-agent capabilities on top of the
 # tool list, so a later widened list still cannot write or delegate.
 FM_KIRO_V3_ORACLE_TOOLS_JSON='["read_file", "list_directory", "file_search", "grep_search", "code", "web_fetch", "remote_web_search"]'
@@ -260,20 +250,21 @@ fm_kiro_kind_consults_oracle() {  # <kind> [<config-dir>]
   return 1
 }
 
-# A ship or scout worker runs on Kiro's default agent rather than a generated
-# one: on kiro-cli 2.32.0 the default agent gave a worker every file, search,
-# write, shell, code, web, and sub-agent tool on a fresh spawn and after a
-# relaunch, while the generated list had silently resolved to five tools
-# (docs/verification/runtime-backends.md).
-fm_kiro_kind_runs_default_agent() {  # <kind>
-  case "${1:-}" in ship|scout) return 0 ;; esac
+# Every kind fm-spawn launches (ship, scout, secondmate) gets the session tool
+# check: on kiro-cli 2.32.0 the default agent gave each of them every file,
+# image, search, write, shell, code, web, and sub-agent tool on a fresh spawn
+# and after a relaunch (docs/verification/runtime-backends.md), and the check
+# stops a session that was not given one. A library caller naming no kind gets
+# hooks only.
+fm_kiro_kind_checks_tools() {  # <kind>
+  case "${1:-}" in ship|scout|secondmate) return 0 ;; esac
   return 1
 }
 
-# The tools a ship or scout worker cannot do its job without. The worker tool
+# The tools a session of <kind> cannot do its job without. The session tool
 # check in bin/fm-kiro-turnend-hook.sh stops a session that was not given one.
 fm_kiro_worker_required_tools() {  # <kind> [<config-dir>]
-  fm_kiro_kind_runs_default_agent "${1:-}" || return 0
+  fm_kiro_kind_checks_tools "${1:-}" || return 0
   printf '%s\n' read_file list_directory file_search grep_search fs_write execute_bash
   if fm_kiro_kind_consults_oracle "$1" "${2:-}"; then
     printf '%s\n' invoke_sub_agent
@@ -307,8 +298,7 @@ fm_kiro_worker_brief_section() {  # <task-id> <kind> [<config-dir>]
 }
 
 fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kind> [<config-dir>]]
-  local workspace=$1 id=$2 home=$3 kind=${4:-} config=${5:-} agent agent_path hook_path agent_home hook_home command
-  local tools=$FM_KIRO_V3_TOOLS_JSON prompt='Follow the active Firstmate task or secondmate instructions exactly.'
+  local workspace=$1 id=$2 home=$3 kind=${4:-} config=${5:-} agent_path hook_path hook_home command
   local oracle oracle_path oracle_home required
   [ -d "$workspace" ] && [ ! -L "$workspace" ] || return 1
   [ -d "$home" ] && [ ! -L "$home" ] || return 1
@@ -322,11 +312,12 @@ fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kin
   fm_kiro_safe_dir "$home/project/.kiro" || return 1
   fm_kiro_safe_dir "$home/project/.kiro/agents" || return 1
   fm_kiro_safe_dir "$home/project/.kiro/hooks" || return 1
-  agent=$(fm_kiro_v3_agent_name "$id") || return 1
   agent_path=$(fm_kiro_v3_agent_path "$workspace" "$id") || return 1
   hook_path=$(fm_kiro_v3_hook_path "$workspace" "$id") || return 1
-  agent_home=$(fm_kiro_v3_agent_home_path "$home" "$id") || return 1
   hook_home=$(fm_kiro_v3_hook_home_path "$home" "$id") || return 1
+  # A session launched before every kind moved to Kiro's default agent left its
+  # generated agent here; drop it so the relaunched session cannot select it.
+  rm -f -- "$agent_path" || return 1
   if fm_kiro_kind_consults_oracle "$kind" "$config"; then
     oracle=$(fm_kiro_v3_oracle_name "$id") || return 1
     oracle_path=$(fm_kiro_v3_oracle_path "$workspace" "$id") || return 1
@@ -353,31 +344,16 @@ fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kin
 }
 EOF
   fi
-  if fm_kiro_kind_runs_default_agent "$kind"; then
+  if fm_kiro_kind_checks_tools "$kind"; then
     required=$(fm_kiro_worker_required_tools "$kind" "$config") || return 1
     printf '%s\n' "$required" | fm_kiro_publish_owned "$(fm_kiro_required_tools_path "$home")" || return 1
-    # In-turn steering delivery (bin/fm-kiro-turnend-hook.sh header).
-    printf 'on\n' | fm_kiro_publish_owned "$home/.fm-kiro-steer-inject" || return 1
-  else
-    fm_kiro_publish_owned "$agent_home" <<EOF || return 1
-{
-  "name": "$agent",
-  "description": "Firstmate-owned Kiro CLI V3 worker agent.",
-  "prompt": "$prompt",
-  "tools": $tools,
-  "allowedTools": $tools,
-  "excludedTools": ["knowledge"],
-  "includeMcpJson": true,
-  "includePowers": false,
-  "permissions": {
-    "rules": [
-      { "capability": "all", "effect": "allow" }
-    ]
-  }
-}
-EOF
-    fm_kiro_publish_project_copy "$agent_path" "$agent_home" || return 1
   fi
+  case "$kind" in
+    ship|scout)
+      # In-turn steering delivery (bin/fm-kiro-turnend-hook.sh header).
+      printf 'on\n' | fm_kiro_publish_owned "$home/.fm-kiro-steer-inject" || return 1
+      ;;
+  esac
   fm_kiro_publish_owned "$hook_home" <<EOF || return 1
 {
   "version": "v1",

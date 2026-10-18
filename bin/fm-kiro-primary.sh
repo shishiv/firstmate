@@ -5,24 +5,23 @@
 #   bin/fm-kiro-primary.sh [--v3] [kiro chat options...]
 #   bin/fm-kiro-primary.sh --v2 [kiro chat options...]
 #
-# V3 is the default and uses the tracked project-scoped
-# .kiro/agents/firstmate-kiro.json plus .kiro/hooks/fm-firstmate.json.
+# V3 is the default and runs on Kiro's own default agent (no --agent), with
+# the tracked project-scoped .kiro/hooks/fm-firstmate.json; no Firstmate agent
+# file is tracked or generated for it.
 # V2 is an explicit compatibility fallback; it uses a distinct legacy agent
 # generated inside the isolated home and retains --trust-all-tools.
 # Both hook registrations carry their own primary marker and reach
 # bin/fm-kiro-turnend-hook.sh without this launcher's environment, so a session
 # resumed with plain kiro-cli keeps its lifecycle hooks
 # (bin/fm-kiro-turnend-hook.sh header).
-# Both engines launch trusted (`-a` for V3, `--trust-all-tools` for V2): the
-# agent file declares its tool list, but a V3 agent still stops on `fs_write`'s
-# Replace in File with a human approval prompt, so the trust flag belongs to
-# the launch rather than to the agent declaration alone.
+# Both engines launch trusted (`-a` for V3, `--trust-all-tools` for V2), because
+# an agent's `allowedTools` grants no wildcard and a V3 session still stops on
+# `fs_write`'s Replace in File with a human approval prompt without the flag.
 #
 # Both engines persist under state/.kiro-primary-home for the effective FM_HOME.
 # The generated settings disable Kiro knowledge indexing, so Firstmate's data/
-# is never copied into Kiro's global knowledge store or hardlinked from it.
-# The V3 project agent also excludes the knowledge tool because KAS 0.66.4 can
-# discover operator-global ~/.kiro configuration even when KIRO_HOME is set.
+# is never copied into Kiro's global knowledge store or hardlinked from it, and
+# the default agent then offers no knowledge tool (docs/verification/runtime-backends.md).
 #
 # This launcher owns the engine, agent, home, and trust flags.
 # Model, effort, resume, and positional prompt options pass through unchanged.
@@ -83,21 +82,20 @@ fm_kiro_write_settings "$KIRO_HOME_DIR" || {
   exit 1
 }
 
-AGENT=firstmate-kiro
+AGENT_ARGS=()
 TRUST_ARGS=(-a)
 if [ "$ENGINE" = v2 ]; then
-  AGENT=firstmate-kiro-v2
-  fm_kiro_write_v2_agent "$KIRO_HOME_DIR" "$AGENT" "$(fm_kiro_primary_hook_command)" || {
+  AGENT_ARGS=(--agent firstmate-kiro-v2)
+  fm_kiro_write_v2_agent "$KIRO_HOME_DIR" firstmate-kiro-v2 "$(fm_kiro_primary_hook_command)" || {
     echo "error: could not prepare the Kiro V2 compatibility agent in $KIRO_HOME_DIR" >&2
     exit 1
   }
   TRUST_ARGS=(--trust-all-tools)
 else
-  [ -f "$FM_ROOT/.kiro/agents/firstmate-kiro.json" ] \
-    && [ -f "$FM_ROOT/.kiro/hooks/fm-firstmate.json" ] || {
-      echo "error: Kiro V3 project agent or hook is missing under $FM_ROOT/.kiro" >&2
-      exit 1
-    }
+  [ -f "$FM_ROOT/.kiro/hooks/fm-firstmate.json" ] || {
+    echo "error: Kiro V3 project hook is missing under $FM_ROOT/.kiro" >&2
+    exit 1
+  }
 fi
 
 export FM_HOME
@@ -109,4 +107,4 @@ unset KIRO_ACP_NATIVE KIRO_ACP_PERMISSION_MODE KIRO_CLI_ACP_CLIENT_NAME KIRO_SES
 
 cd "$FM_ROOT"
 exec "$KIRO_BIN" chat "--$ENGINE" "${TRUST_ARGS[@]+"${TRUST_ARGS[@]}"}" \
-  --agent "$AGENT" "$@"
+  "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}" "$@"

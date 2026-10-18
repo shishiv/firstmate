@@ -135,7 +135,7 @@ launch_worker() {  # <generation> <log> <prompt>
     KIRO_HOME="$KH" KIRO_DATA_DIR="$KH/data" KIRO_CHAT_LOG_FILE="$KH/chat.log" \
     python3 "$PTY" --cwd "$PROJ" --log "$2" --pid-file "$2.pid" --timeout "$TIMEOUT" \
       --until-file "$STATE/$ID.turn-ended" -- \
-      "$KIRO_BIN" chat --v3 -a --agent "firstmate-kiro-$ID" --effort low ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} "$3" \
+      "$KIRO_BIN" chat --v3 -a --effort low ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} "$3" \
     || diagnose_fail "$2" "the launched Kiro worker never ended its turn"
 }
 
