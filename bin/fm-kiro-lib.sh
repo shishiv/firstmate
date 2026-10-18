@@ -10,8 +10,10 @@
 # reopens a Firstmate session without any of its launcher environment.
 # Firstmate therefore uses both boundaries together:
 #   - an isolated KIRO_HOME with chat.enableKnowledge=false;
-#   - a task-specific project agent with the knowledge tool excluded, Powers
-#     disabled, and capability `all` explicitly allowed for unattended work;
+#   - for a ship or scout worker, Kiro's own default agent, as other harnesses'
+#     workers run on their defaults; for a secondmate or a caller naming no
+#     kind, a task-specific project agent with the knowledge tool excluded,
+#     Powers disabled, and capability `all` explicitly allowed;
 #   - task-specific project lifecycle hooks whose command names the tracked
 #     adapter by the absolute path of this library's own bin directory and
 #     passes the task's absolute KIRO_HOME, so a hook reaches its task from any
@@ -222,20 +224,25 @@ EOF
 # operator's own working agents carry and what `kiro-cli agent validate`
 # accepts. The tracked .kiro/agents/firstmate-kiro.json carries the same list
 # for the primary, and a secondmate gets it too; tests/fm-kiro-harness.test.sh
-# pins them equal and wildcard-free. A ship or scout worker gets the worker
-# list below instead, which adds only the oracle's sub-agent tool.
-FM_KIRO_V3_TOOLS_JSON='["execute_bash", "fs_read", "fs_write", "code", "grep", "glob", "web_fetch", "web_search", "introspect", "session", "report", "tool_search"]'
+# pins them equal and wildcard-free. A ship or scout worker gets no generated
+# agent and runs on Kiro's default agent, whose tool set the worker tool check
+# below enforces.
+# Every entry is a V3 tool id. V3 matches an entry only to a tool id or a tool
+# tag, so the CLI aliases `fs_read`, `grep`, `glob`, `web_search`, `introspect`,
+# `session`, `report`, and `tool_search` resolve to nothing: a worker listing
+# them got only shell, fs_write, code, web_fetch, and invoke_sub_agent, with no
+# file read, image read, search, append, replace, or delete (kiro-cli 2.32.0,
+# docs/verification/runtime-backends.md).
+FM_KIRO_V3_TOOLS_JSON='["read_file", "list_directory", "file_search", "grep_search", "fs_write", "fs_append", "str_replace", "delete_file", "execute_bash", "code", "web_fetch", "remote_web_search"]'
 
 # The Opus oracle: a read-only advisor a ship or scout worker reaches through
 # Kiro's V3 sub-agent tool, `invoke_sub_agent`, whose `name` argument selects a
-# workspace agent by its agent-file name (verified live on kiro-cli 2.29.0).
-# The worker list is the shared base plus that one tool; the primary and the
-# secondmate never get it, so the fleet-dispatch rule stays whole for them.
-# The oracle names V3 tool ids, not the CLI aliases above: a sub-agent that
-# listed `fs_read`, `grep`, and `glob` received none of them (2.29.0). Its
+# workspace agent by its agent-file name (verified live on kiro-cli 2.29.0 and,
+# from the default agent, on 2.32.0). The primary and the secondmate never get
+# the sub-agent tool, so the fleet-dispatch rule stays whole for them.
+# The oracle gets only read-only ids from the shared base. Its
 # permission rules deny shell, write, and sub-agent capabilities on top of the
 # tool list, so a later widened list still cannot write or delegate.
-FM_KIRO_V3_WORKER_TOOLS_JSON='["execute_bash", "fs_read", "fs_write", "code", "grep", "glob", "web_fetch", "web_search", "introspect", "session", "report", "tool_search", "invoke_sub_agent"]'
 FM_KIRO_V3_ORACLE_TOOLS_JSON='["read_file", "list_directory", "file_search", "grep_search", "code", "web_fetch", "remote_web_search"]'
 FM_KIRO_V3_ORACLE_MODEL=claude-opus-5.5
 
@@ -253,16 +260,56 @@ fm_kiro_kind_consults_oracle() {  # <kind> [<config-dir>]
   return 1
 }
 
-# The worker rule, carried in the generated agent's prompt: the one Kiro-specific
-# worker guidance surface.
+# A ship or scout worker runs on Kiro's default agent rather than a generated
+# one: on kiro-cli 2.32.0 the default agent gave a worker every file, search,
+# write, shell, code, web, and sub-agent tool on a fresh spawn and after a
+# relaunch, while the generated list had silently resolved to five tools
+# (docs/verification/runtime-backends.md).
+fm_kiro_kind_runs_default_agent() {  # <kind>
+  case "${1:-}" in ship|scout) return 0 ;; esac
+  return 1
+}
+
+# The tools a ship or scout worker cannot do its job without. The worker tool
+# check in bin/fm-kiro-turnend-hook.sh stops a session that was not given one.
+fm_kiro_worker_required_tools() {  # <kind> [<config-dir>]
+  fm_kiro_kind_runs_default_agent "${1:-}" || return 0
+  printf '%s\n' read_file list_directory file_search grep_search fs_write execute_bash
+  if fm_kiro_kind_consults_oracle "$1" "${2:-}"; then
+    printf '%s\n' invoke_sub_agent
+  fi
+}
+
+# Where Kiro records each model request for this task (KIRO_DUMP_REQUESTS_DIR),
+# the one place that names the tools Kiro actually sent the model, and the file
+# listing the tools the worker tool check requires.
+fm_kiro_request_record_dir() {  # <kiro-home>
+  printf '%s/requests' "${1%/}"
+}
+
+fm_kiro_required_tools_path() {  # <kiro-home>
+  printf '%s/.fm-kiro-required-tools' "${1%/}"
+}
+
+# The worker rule, carried in a ship or scout worker's launch brief: the one
+# Kiro-specific worker guidance surface.
 fm_kiro_oracle_rule() {  # <oracle-agent-name>
   printf 'Consult the oracle only for a hard architecture question (module or owner boundaries, cross-subsystem design, concurrency or migration shape), never for routine coding. Call invoke_sub_agent with name %s and a self-contained question. The oracle only advises: you keep the decision and the work.' "$1"
+}
+
+# The launch-brief section a Kiro ship or scout worker receives after its role
+# contract. It prints nothing when the worker has no oracle.
+fm_kiro_worker_brief_section() {  # <task-id> <kind> [<config-dir>]
+  local oracle
+  fm_kiro_kind_consults_oracle "${2:-}" "${3:-}" || return 0
+  oracle=$(fm_kiro_v3_oracle_name "$1") || return 1
+  printf '# Kiro oracle\n%s\n' "$(fm_kiro_oracle_rule "$oracle")"
 }
 
 fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kind> [<config-dir>]]
   local workspace=$1 id=$2 home=$3 kind=${4:-} config=${5:-} agent agent_path hook_path agent_home hook_home command
   local tools=$FM_KIRO_V3_TOOLS_JSON prompt='Follow the active Firstmate task or secondmate instructions exactly.'
-  local oracle oracle_path oracle_home
+  local oracle oracle_path oracle_home required
   [ -d "$workspace" ] && [ ! -L "$workspace" ] || return 1
   [ -d "$home" ] && [ ! -L "$home" ] || return 1
   fm_kiro_slug_valid "$id" || return 1
@@ -284,8 +331,6 @@ fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kin
     oracle=$(fm_kiro_v3_oracle_name "$id") || return 1
     oracle_path=$(fm_kiro_v3_oracle_path "$workspace" "$id") || return 1
     oracle_home=$(fm_kiro_v3_oracle_home_path "$home" "$id") || return 1
-    tools=$FM_KIRO_V3_WORKER_TOOLS_JSON
-    prompt="$prompt $(fm_kiro_oracle_rule "$oracle")"
     fm_kiro_publish_owned "$oracle_home" <<EOF || return 1
 {
   "name": "$oracle",
@@ -308,7 +353,11 @@ fm_kiro_install_v3_project_config() {  # <workspace> <task-id> <kiro-home> [<kin
 }
 EOF
   fi
-  fm_kiro_publish_owned "$agent_home" <<EOF || return 1
+  if fm_kiro_kind_runs_default_agent "$kind"; then
+    required=$(fm_kiro_worker_required_tools "$kind" "$config") || return 1
+    printf '%s\n' "$required" | fm_kiro_publish_owned "$(fm_kiro_required_tools_path "$home")" || return 1
+  else
+    fm_kiro_publish_owned "$agent_home" <<EOF || return 1
 {
   "name": "$agent",
   "description": "Firstmate-owned Kiro CLI V3 worker agent.",
@@ -325,6 +374,8 @@ EOF
   }
 }
 EOF
+    fm_kiro_publish_project_copy "$agent_path" "$agent_home" || return 1
+  fi
   fm_kiro_publish_owned "$hook_home" <<EOF || return 1
 {
   "version": "v1",
@@ -364,7 +415,6 @@ EOF
   ]
 }
 EOF
-  fm_kiro_publish_project_copy "$agent_path" "$agent_home" || return 1
   fm_kiro_publish_project_copy "$hook_path" "$hook_home" || return 1
   if [ -n "${oracle:-}" ]; then
     fm_kiro_publish_project_copy "$oracle_path" "$oracle_home" || return 1

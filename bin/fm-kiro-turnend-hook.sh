@@ -16,12 +16,29 @@
 #
 # Worker/scout lifecycle, generation-bound to the current task incarnation:
 #   UserPromptSubmit  -> busy kiro-hook
-#   PreToolUse        -> denies a shell command that backgrounds itself
-#                        (trailing &, nohup, disown, setsid; see
+#   PreToolUse        -> the worker tool check (below), then denies a shell
+#                        command that backgrounds itself (trailing &, nohup,
+#                        disown, setsid; see
 #                        bin/fm-kiro-worker-background-pretool-check.sh) before
 #                        recording the native progress marker
 #   PostToolUse       -> native progress marker
 #   Stop              -> idle kiro-hook plus the guarded turn-ended notification
+#
+# Worker tool check: a ship or scout worker runs on Kiro's default agent, and
+# its KIRO_HOME lists the tools it cannot work without (.fm-kiro-required-tools,
+# bin/fm-kiro-lib.sh). Its launch sets KIRO_DUMP_REQUESTS, so Kiro records each
+# model request, including the exact tool list it sent the model, under
+# KIRO_HOME/requests/<session_id>/. The session's first tool call compares that
+# list with the required one. A session missing a tool, or one whose request
+# record cannot be read, gets this and every later tool call denied with a
+# message naming what is missing, and one `blocked:` status line for firstmate;
+# a session that passes is recorded in .fm-kiro-tools-ok as `<session_id>
+# <offered tools, comma-separated>`. Every worker event
+# deletes the request records it no longer needs, because each one holds the
+# whole conversation. A session started without KIRO_DUMP_REQUESTS, such as a
+# plain `kiro-cli chat --resume` after a Herdr restart, cannot be checked and
+# is stopped the same way: on kiro-cli 2.32.0 it is a new conversation without
+# the worker's history, the oracle tool, or the isolated knowledge setting.
 #
 # Task binding: the per-task KIRO_HOME (--kiro-home, else the inherited
 # KIRO_HOME) holds the isolated-home pointer whose token must match its
@@ -354,12 +371,74 @@ kiro_busy_progress() {
     --gen "$KIRO_GEN" >/dev/null 2>&1 && kiro_record_session
 }
 
+KIRO_REQUIRED_TOOLS=${KIRO_HOME_DIR:+$KIRO_HOME_DIR/.fm-kiro-required-tools}
+KIRO_REQUEST_RECORDS=${KIRO_HOME_DIR:+$KIRO_HOME_DIR/requests}
+
+# Delete the request records Kiro wrote for this task. Each holds the whole
+# conversation, and the check needs only the newest one, once per session.
+kiro_prune_request_records() {
+  [ -n "$KIRO_REQUEST_RECORDS" ] && [ -d "$KIRO_REQUEST_RECORDS" ] && [ ! -L "$KIRO_REQUEST_RECORDS" ] || return 0
+  find "$KIRO_REQUEST_RECORDS" -mindepth 1 -maxdepth 2 -name '*.json' -type f -delete 2>/dev/null || true
+}
+
+# Whether this session already passed the worker tool check.
+kiro_session_passed() {
+  local ok=$KIRO_HOME_DIR/.fm-kiro-tools-ok
+  [ -n "$HOOK_SESSION_ID" ] && [ -f "$ok" ] && awk -v s="$HOOK_SESSION_ID" '$1 == s { f = 1 } END { exit !f }' "$ok" 2>/dev/null
+}
+
+# Deny this tool call and, once per session, tell firstmate why. A parallel
+# tool call of the same session may have passed the check and deleted the
+# record this one was reading, so a session that passed meanwhile returns 0.
+kiro_worker_tools_refuse() {  # <reason>
+  local failed=$KIRO_HOME_DIR/.fm-kiro-tools-failed version
+  if kiro_session_passed; then
+    return 0
+  fi
+  if ! { [ -f "$failed" ] && grep -qxF -- "${HOOK_SESSION_ID:-unknown}" "$failed" 2>/dev/null; }; then
+    printf '%s\n' "${HOOK_SESSION_ID:-unknown}" >> "$failed" 2>/dev/null || true
+    version=$(kiro-cli --version 2>/dev/null | head -1)
+    printf 'blocked [at=%s]: kiro worker session %s stopped: %s (%s); relaunch it with bin/fm-control.sh %s relaunch\n' "$(date +%s)" "${HOOK_SESSION_ID:-unknown}" "$1" "${version:-kiro-cli version unknown}" "$KIRO_TASK_ID" \
+      >> "$KIRO_TASK_STATE/$KIRO_TASK_ID.status" 2>/dev/null || true
+  fi
+  printf 'Firstmate stopped this worker before its tool ran: %s. Do not continue the task or try other tools; end your turn now. Firstmate has been told.\n' "$1" >&2
+  exit 2
+}
+
+# The worker tool check described in the header.
+kiro_worker_tool_check() {
+  local record offered missing tool
+  [ "$KIRO_TASK_BOUND" = 1 ] && [ -n "$KIRO_REQUIRED_TOOLS" ] && [ -f "$KIRO_REQUIRED_TOOLS" ] || return 0
+  if kiro_session_passed; then
+    kiro_prune_request_records
+    return 0
+  fi
+  [ -n "${KIRO_DUMP_REQUESTS:-}" ] || { kiro_worker_tools_refuse "this session was not started by Firstmate's launch, which records the tools Kiro offers, so they cannot be checked; a plain kiro-cli resume opens a new session without the worker's conversation or its tools"; return 0; }
+  [ -n "$HOOK_SESSION_ID" ] || { kiro_worker_tools_refuse "the hook payload named no session, so the tools Kiro offered could not be checked"; return 0; }
+  command -v jq >/dev/null 2>&1 || { kiro_worker_tools_refuse "jq is not installed, so the tools Kiro offered could not be checked"; return 0; }
+  record=$(find "$KIRO_REQUEST_RECORDS/$HOOK_SESSION_ID" -maxdepth 1 -name '*.json' -type f 2>/dev/null | LC_ALL=C sort | tail -1)
+  [ -n "$record" ] || { kiro_worker_tools_refuse "Kiro wrote no request record under $KIRO_REQUEST_RECORDS/$HOOK_SESSION_ID, so the tools it offered could not be checked"; return 0; }
+  offered=$(jq -r '.request.conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[]? | (.toolSpecification.name // empty)' "$record" 2>/dev/null) \
+    || { kiro_worker_tools_refuse "the request record $record could not be read as a Kiro request"; return 0; }
+  [ -n "$offered" ] || { kiro_worker_tools_refuse "the request record $record lists no tools"; return 0; }
+  missing=
+  while IFS= read -r tool; do
+    [ -n "$tool" ] || continue
+    printf '%s\n' "$offered" | grep -qxF -- "$tool" || missing="${missing:+$missing, }$tool"
+  done < "$KIRO_REQUIRED_TOOLS"
+  offered=$(printf '%s\n' "$offered" | LC_ALL=C sort -u | paste -sd, -)
+  [ -z "$missing" ] || { kiro_worker_tools_refuse "the session lacks required tools: $missing; Kiro offered: ${offered//,/, }"; return 0; }
+  kiro_session_passed || printf '%s %s\n' "$HOOK_SESSION_ID" "$offered" >> "$KIRO_HOME_DIR/.fm-kiro-tools-ok" 2>/dev/null || true
+  kiro_prune_request_records
+}
+
 case "$EVENT_KIND" in
   user-prompt-submit)
     kiro_busy_apply busy user-prompt-submit
     exit 0
     ;;
   pre-tool-use)
+    kiro_worker_tool_check
     # A worker's own shell command, checked for self-detachment (trailing &,
     # nohup, disown, setsid) before progress is recorded; a denied call never
     # ran, so it carries no progress to record.
@@ -379,6 +458,7 @@ case "$EVENT_KIND" in
     if [ "$KIRO_TASK_BOUND" = 1 ]; then
       touch "$KIRO_TASK_TURNEND" 2>/dev/null || true
       kiro_busy_apply idle stop
+      kiro_prune_request_records
     fi
     ;;
 esac

@@ -55,6 +55,42 @@ In the interactive run, a probe hook file logged each hook payload: one `UserPro
 The oracle's turn therefore adds progress events but no early idle.
 A sub-agent that listed the CLI aliases `fs_read`, `grep`, and `glob` received none of them; it received `read_file`, `grep_search`, and `file_search` when it listed those ids, which is why the oracle names V3 tool ids.
 
+### Kiro worker tools on the default agent, 2026-10-18
+
+Verified against kiro-cli 2.32.0 (KAS 2.32.0, `@kiro/agent` 0.66.43) with model `claude-sonnet-5.5` and effort `low`, in scratch projects with their own worktree pools and a private tmux server; no production home or worker was touched.
+V3 matches an agent `tools` entry only to an exact tool id, a tool tag, or the `execute_bash`/`execute_pwsh` and `control_bash_process`/`control_pwsh_process` pairs, and so do the installed 2.27.1 and 2.29.0 bundles; `kiro-cli agent validate` exits 0 for an agent listing `bogus_tool_xyz`, so it cannot catch an unknown id.
+A ship worker on the generated agent that listed `fs_read`, `grep`, `glob`, `web_search`, `introspect`, `session`, `report`, and `tool_search` received only `execute_bash`, `fs_write`, `code`, `web_fetch`, and `invoke_sub_agent` (plus `disclose_context`): no file read, image read, directory list, search, append, replace, or delete.
+`KIRO_DUMP_REQUESTS=1 KIRO_DUMP_REQUESTS_DIR=<dir>` makes Kiro record each model request, and the root request's `.request.conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[].toolSpecification.name` is the exact tool list the model received.
+
+Each cell ran a fourteen-step probe brief naming one dedicated tool per step, read back from the session record, `.fm-kiro-tools-ok`, and `state/<id>.turn-ended`:
+
+| Launch | Agent | Tools the model received | Image text read back | Knowledge | Oracle reached | Turn-end hook |
+| --- | --- | --- | --- | --- | --- | --- |
+| `bin/fm-spawn.sh` (ship) | default | `code`, `createHook`, `delete_file`, `disclose_context`, `execute_bash`, `file_search`, `fs_append`, `fs_write`, `grep_search`, `invoke_sub_agent`, `kiro_powers`, `list_directory`, `read_file`, `remote_web_search`, `str_replace`, `update_session_information`, `web_fetch` | `ORCA 4917`, correct | off | yes | fired |
+| `bin/fm-control.sh <id> relaunch` | default | the same seventeen | correct | off | yes | fired |
+| plain `kiro-cli chat -a --v3 --resume` in the worktree, no `KIRO_HOME` | default | a new empty session without `invoke_sub_agent` | correct | on | no | fired |
+
+A generated agent listing the V3 ids passed the first two rows identically and also became a new default-agent session on the plain resume, so that row does not depend on the agent file.
+On 2.32.0 V3 conversations live under the launch's `KIRO_HOME/sessions`, which is why the plain resume does not find the worker's conversation.
+The worker tool check in `bin/fm-kiro-turnend-hook.sh` passed the first two rows and stopped the third at its first tool call with `blocked [at=<epoch>]: kiro worker session <session> stopped: this session was not started by Firstmate's launch, which records the tools Kiro offers, so they cannot be checked; ...`.
+
+The live guard ran green on the same version:
+
+```sh
+SHELL=/bin/sh FM_KIRO_LIVE_E2E=1 FM_KIRO_LIVE_MODEL=claude-sonnet-5.5 FM_KIRO_LIVE_TIMEOUT=300 bash tests/fm-kiro-signals-live-e2e.test.sh
+```
+
+```text
+ok - live: V3 ship runs on Kiro's default agent
+ok - live: the worker tool check found every required tool in the request Kiro sent (sess_<id> code,createHook,delete_file,disclose_context,execute_bash,file_search,fs_append,fs_write,grep_search,invoke_sub_agent,kiro_powers,list_directory,read_file,remote_web_search,str_replace,update_session_information,web_fetch)
+ok - live: the real V3 launch carries the trust flag on Kiro's default agent
+ok - live: a fresh V3 worker read, ran shell, and replaced file content with no approval dialog
+ok - kiro-cli live crewmate signals (turn-end, detection, busy/idle, control, teardown) passed
+```
+
+`SHELL=/bin/sh` keeps a login-shell prompt hook from swallowing the `treehouse get` line `bin/fm-spawn.sh` types into a fresh pane on this machine; without it the spawn stops with `treehouse get did not enter an isolated worktree within 60s` before Kiro starts.
+
+
 ## Harness detection precedence
 
 Firstmate's own harness comes from two kinds of evidence, and `bin/fm-harness.sh` owns how they combine: an environment marker names its harness, and the nearest harness process in the parent chain proves who owns the process tree.

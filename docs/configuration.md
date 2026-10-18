@@ -1043,7 +1043,7 @@ The setting is local to each home and is not inherited into secondmate homes.
 
 By default every Kiro ship and scout worker can ask a read-only Opus advisor one hard architecture question through `invoke_sub_agent`.
 A home that must not spend Opus on its workers writes `off` as the first line of the local, gitignored `config/kiro-oracle`.
-With `off`, `fm-spawn.sh` installs no oracle agent, adds no `invoke_sub_agent` to the worker tool list, and appends no oracle rule to the worker prompt.
+With `off`, `fm-spawn.sh` installs no oracle agent, does not require `invoke_sub_agent` in the worker tool check, and adds no oracle rule to the worker's launch brief.
 An absent file, or any other content, keeps the oracle on.
 `fm-spawn.sh` reads the file on every spawn and relaunch, so a change applies to the next launch and leaves running workers unchanged.
 The setting is local to each home and is not inherited into secondmate homes, so each home sets its own.

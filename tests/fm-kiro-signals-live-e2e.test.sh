@@ -143,12 +143,10 @@ WT=$(sed -n 's/^worktree=//p' "$META")
 KIRO_HOME_DIR="$FMHOME/state/$ID.kiro-home"
 PROJECT_AGENT="$WT/.kiro/agents/firstmate-kiro-$ID.json"
 PROJECT_HOOK="$WT/.kiro/hooks/fm-firstmate-$ID.json"
-[ -f "$PROJECT_AGENT" ] || fail "real V3 spawn did not install its project-scoped agent"
+[ ! -e "$PROJECT_AGENT" ] || fail "a real V3 ship must run on Kiro's default agent, but a generated agent was installed"
 [ -f "$PROJECT_HOOK" ] || fail "real V3 spawn did not install its project-scoped hook"
 grep -q '"chat.enableKnowledge": false' "$KIRO_HOME_DIR/settings/cli.json" \
   || fail "real V3 spawn did not disable Kiro knowledge in its isolated home"
-jq -e '.excludedTools | index("knowledge") != null' "$PROJECT_AGENT" >/dev/null 2>&1 \
-  || fail "real V3 project agent did not exclude the global knowledge tool"
 TARGET=$(sed -n 's/^window=//p' "$META")
 [ -n "$TARGET" ] || fail "no endpoint recorded"
 
@@ -185,8 +183,8 @@ esac
 #    doorbell, so the worker acknowledgement is covered too.
 TAIL=$(env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$SOCK" capture-pane -p -t "$TARGET" 2>/dev/null || true)
 case "$TAIL" in
-  *"firstmate-kiro-$ID"*) pass "live: V3 selected the generated project-scoped Firstmate agent" ;;
-  *) fail "live: V3 pane did not name the generated project agent (possible silent fallback); tail was:"$'\n'"$TAIL" ;;
+  *"firstmate-kiro-$ID"*) fail "live: V3 pane named a generated agent; a ship must run on Kiro's default agent; tail was:"$'\n'"$TAIL" ;;
+  *) pass "live: V3 ship runs on Kiro's default agent" ;;
 esac
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
@@ -235,19 +233,23 @@ semantic=$(fm_busy_classify_meta "$META" "$ID" "$FMHOME/state")
 [ "$semantic" = 'idle kiro-hook' ]   || fail "Stop did not close the semantic second turn, got '$semantic'"
 find "$FMHOME/state/$ID.inbox/handled" -type f -name '*.msg' -print -quit 2>/dev/null | grep -q .   || fail "the real Kiro worker did not acknowledge its durable steering record"
 pass "live: Kiro hooks bracket a steered tool turn as busy/progress/idle"
+SESSION_OK=$(cat "$KIRO_HOME_DIR/.fm-kiro-tools-ok" 2>/dev/null || true)
+[ -n "$SESSION_OK" ] || fail "live: the worker tool check never passed the real session (no .fm-kiro-tools-ok); status: $(cat "$FMHOME/state/$ID.status" 2>/dev/null)"
+pass "live: the worker tool check found every required tool in the request Kiro sent ($SESSION_OK)"
 
-# 3b) Trust: the V3 launch carries -a and the generated agent names concrete
-#     tools, so a fresh worker reads, runs shell, and REPLACES file content
+# 3b) Trust: the V3 launch carries -a on Kiro's default agent, so a fresh
+#     worker reads, runs shell, and REPLACES file content
 #     through fs_write with no approval dialog. Before this, an agent declaring
 #     allowedTools ["*"] and a trust-less launch parked here on "Replace in
 #     File requires approval" until a human answered, and the stalled pane was
 #     escalated as a blocked worker.
-KIRO_PID=$(pgrep -f -- "--agent firstmate-kiro-$ID" | head -1 || true)
-[ -n "$KIRO_PID" ] || fail "live: no kiro-cli process selecting firstmate-kiro-$ID is running"
+KIRO_PID=$(pgrep -f -- "chat --v3 -a .*$ID" | head -1 || true)
+[ -n "$KIRO_PID" ] || fail "live: no kiro-cli chat process for $ID is running"
 KIRO_ARGS=$(tr '\0' ' ' < "/proc/$KIRO_PID/cmdline" 2>/dev/null || true)
 case " $KIRO_ARGS" in
-  *' chat --v3 -a --agent '*) pass "live: the real V3 launch carries the trust flag" ;;
-  *) fail "live: the real V3 launch did not carry 'chat --v3 -a --agent': '${KIRO_ARGS:0:200}'" ;;
+  *' --agent '*) fail "live: the real V3 ship launch selected an agent: '${KIRO_ARGS:0:200}'" ;;
+  *' chat --v3 -a '*) pass "live: the real V3 launch carries the trust flag on Kiro's default agent" ;;
+  *) fail "live: the real V3 launch did not carry 'chat --v3 -a': '${KIRO_ARGS:0:200}'" ;;
 esac
 rm -f "$FMHOME/state/$ID.turn-ended"
 spawn_env "$ROOT/bin/fm-send.sh" "$ID" \
