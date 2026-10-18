@@ -91,6 +91,34 @@ ok - kiro-cli live crewmate signals (turn-end, detection, busy/idle, control, te
 `SHELL=/bin/sh` keeps a login-shell prompt hook from swallowing the `treehouse get` line `bin/fm-spawn.sh` types into a fresh pane on this machine; without it the spawn stops with `treehouse get did not enter an isolated worktree within 60s` before Kiro starts.
 
 
+### Kiro in-turn steering delivery, 2026-10-18
+
+Verified against kiro-cli 2.32.0 (`@kiro/agent` 0.66.43) with model `claude-sonnet-5.5` and effort `low`, in scratch projects; no production home or worker was touched.
+A probe workspace hook printed a marker on every `PreToolUse` and `PostToolUse` while a `--no-interactive` session ran three `echo` tool calls, and the session was asked for every non-command text it saw:
+
+| Hook output | Reached the model |
+| --- | --- |
+| `PreToolUse` exit 0, plain stdout | no |
+| `PreToolUse` exit 0, stdout `{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"..."}}` | no |
+| `PostToolUse` exit 0, plain stdout | no |
+| `PreToolUse` exit 2 on the second call, stderr | yes, as `Tool "execute_bash" was intercepted by PreToolUse hooks before execution` with a `HOOK_INSTRUCTION` block; the model then re-issued the held call |
+
+The bundle's hook policy agrees: only `SessionStart`, `UserPromptSubmit`, and `PreTaskExec` forward exit-0 stdout, and `UserPromptSubmit`, `PreToolUse`, and `PreTaskExec` forward exit-2 stderr while blocking.
+Text typed into a busy interactive pane and submitted with Enter showed `1 message queued` and reached the model as a live steering message after the running tool call finished.
+
+A real ship spawned through `bin/fm-spawn.sh` ran ten one-at-a-time `sleep 12 && echo step-N` shell calls, and `bin/fm-send.sh` sent a stop instruction after `step-2` printed:
+
+```text
+fm-send: doorbell not typed because the worker is busy and its next tool call delivers the steer in-turn; ...
+13:00:03Z  steer recorded (001.msg)
+13:00:06Z  the next tool call (step 3) was held; .delivered/001.msg claimed
+13:00:09Z  the worker moved 001.msg into handled/ and skipped steps 3 to 10 in the same turn
+13:00:16Z  second steer to the now idle worker: the typed doorbell started a turn, the worker read 002.msg and moved it into handled/, and the hook delivered nothing
+```
+
+Each record has exactly one `.delivered/` claim or none, and none was delivered twice.
+
+
 ## Harness detection precedence
 
 Firstmate's own harness comes from two kinds of evidence, and `bin/fm-harness.sh` owns how they combine: an environment marker names its harness, and the nearest harness process in the parent chain proves who owns the process tree.

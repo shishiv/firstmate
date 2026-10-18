@@ -16,13 +16,35 @@
 #
 # Worker/scout lifecycle, generation-bound to the current task incarnation:
 #   UserPromptSubmit  -> busy kiro-hook
-#   PreToolUse        -> the worker tool check (below), then denies a shell
+#   PreToolUse        -> the worker tool check (below), in-turn steering
+#                        delivery (below), then denies a shell
 #                        command that backgrounds itself (trailing &, nohup,
 #                        disown, setsid; see
 #                        bin/fm-kiro-worker-background-pretool-check.sh) before
 #                        recording the native progress marker
 #   PostToolUse       -> native progress marker
 #   Stop              -> idle kiro-hook plus the guarded turn-ended notification
+#
+# In-turn steering: a ship or scout worker's KIRO_HOME carries
+# .fm-kiro-steer-inject (bin/fm-kiro-lib.sh). After the worker tool check, each
+# PreToolUse looks for records in the task's steering inbox that no hook has
+# delivered yet. When there is one, it claims each such record for in-turn
+# delivery (bin/fm-task-inbox-lib.sh owns the claim, so concurrent tool calls
+# deliver a record exactly once), holds this one tool call, and prints the
+# records' text with an instruction to act on it, acknowledge it as the inbox
+# contract says, and re-issue the held call if it still applies. On kiro-cli
+# 2.32.0 a PreToolUse hook's exit-0 stdout, plain or as JSON, never reaches the
+# model; only the exit-2 stderr of a held call does (verified live,
+# docs/verification/runtime-backends.md), so a held call is the one in-turn
+# channel. Nothing is printed or held when no record is new. Tool calls made by
+# a sub-agent such as the oracle run under the worker's own session id, so
+# delivery waits while an invoke_sub_agent call is in flight
+# (.fm-kiro-subagents/, keyed by that call's input and cleared by its
+# PostToolUse and by every prompt and turn end). An idle worker makes no tool
+# calls; its doorbell stays the typed one (bin/fm-task-inbox-lib.sh). A turn
+# that a doorbell started (.fm-kiro-doorbell-turn, written by UserPromptSubmit
+# and cleared by Stop) already points the worker at every record older than
+# that prompt, so only records that arrive later in the turn are delivered.
 #
 # Worker tool check: a ship or scout worker runs on Kiro's default agent, and
 # its KIRO_HOME lists the tools it cannot work without (.fm-kiro-required-tools,
@@ -432,13 +454,77 @@ kiro_worker_tool_check() {
   kiro_prune_request_records
 }
 
+KIRO_STEER_INJECT=${KIRO_HOME_DIR:+$KIRO_HOME_DIR/.fm-kiro-steer-inject}
+KIRO_SUBAGENTS=${KIRO_HOME_DIR:+$KIRO_HOME_DIR/.fm-kiro-subagents}
+KIRO_DOORBELL_TURN=${KIRO_HOME_DIR:+$KIRO_HOME_DIR/.fm-kiro-doorbell-turn}
+
+# The key of one invoke_sub_agent call, equal in its PreToolUse and PostToolUse.
+kiro_subagent_key() {
+  printf '%s' "$PAYLOAD" | jq -cS '.tool_input // null' 2>/dev/null | cksum | awk '{print $1}'
+}
+
+kiro_subagents_clear() {
+  [ -n "$KIRO_SUBAGENTS" ] && [ -d "$KIRO_SUBAGENTS" ] && [ ! -L "$KIRO_SUBAGENTS" ] || return 0
+  find "$KIRO_SUBAGENTS" -mindepth 1 -maxdepth 1 -type f -delete 2>/dev/null || true
+}
+
+# The in-turn steering delivery described in the header.
+kiro_steer_inject() {
+  local tool inbox f n names='' out='' body key
+  [ "$KIRO_TASK_BOUND" = 1 ] && [ -n "$KIRO_STEER_INJECT" ] && [ -f "$KIRO_STEER_INJECT" ] || return 0
+  tool=$(payload_field tool_name)
+  inbox=$KIRO_TASK_STATE/$KIRO_TASK_ID.inbox
+  if [ -n "$KIRO_SUBAGENTS" ] && [ -d "$KIRO_SUBAGENTS" ] \
+    && [ -n "$(find "$KIRO_SUBAGENTS" -mindepth 1 -maxdepth 1 -type f -print -quit 2>/dev/null)" ]; then
+    return 0
+  fi
+  for f in "$inbox"/*.msg; do
+    [ -f "$f" ] || continue
+    [ -f "$inbox/.delivered/${f##*/}" ] && continue
+    [ -n "$KIRO_DOORBELL_TURN" ] && [ -f "$KIRO_DOORBELL_TURN" ] && ! [ "$f" -nt "$KIRO_DOORBELL_TURN" ] && continue
+    n=${f##*/}
+    names="$names${n%.msg} $n"$'\n'
+  done
+  if [ -n "$names" ]; then
+    # shellcheck source=bin/fm-task-inbox-lib.sh
+    . "$SCRIPT_DIR/fm-task-inbox-lib.sh" || names=
+  fi
+  while IFS=' ' read -r _ n; do
+    [ -n "$n" ] || continue
+    f=$inbox/$n
+    fm_task_inbox_claim_delivery "$f" || continue
+    body=$(fm_task_inbox_body "$f") || body='(the record could not be read; open it yourself)'
+    out="$out"$'\n'"--- Firstmate steering message ${n%.msg} ($f) ---"$'\n'"$body"$'\n'
+  done <<EOF
+$(printf '%s' "$names" | LC_ALL=C sort -n)
+EOF
+  if [ -n "$out" ]; then
+    printf 'Firstmate held this %s call only to deliver steering that arrived while you were working; the call did not run.\n%s\nAct on this steering now. When you have acted on a message, move its file into %s/handled/ as your inbox contract says. Then re-issue the held %s call only if it still fits the steering.\n' \
+      "${tool:-tool}" "$out" "$inbox" "${tool:-tool}" >&2
+    exit 2
+  fi
+  if [ "$tool" = invoke_sub_agent ] && [ -n "$KIRO_SUBAGENTS" ] && key=$(kiro_subagent_key) && [ -n "$key" ]; then
+    mkdir -p "$KIRO_SUBAGENTS" 2>/dev/null && : > "$KIRO_SUBAGENTS/$key" 2>/dev/null || true
+  fi
+}
+
 case "$EVENT_KIND" in
   user-prompt-submit)
     kiro_busy_apply busy user-prompt-submit
+    if [ "$KIRO_TASK_BOUND" = 1 ]; then
+      kiro_subagents_clear
+      if [ -n "$KIRO_DOORBELL_TURN" ] && [ -f "$KIRO_STEER_INJECT" ]; then
+        case "$PAYLOAD" in
+          *'Firstmate instruction waiting'*) : > "$KIRO_DOORBELL_TURN" 2>/dev/null || true ;;
+          *) rm -f -- "$KIRO_DOORBELL_TURN" 2>/dev/null || true ;;
+        esac
+      fi
+    fi
     exit 0
     ;;
   pre-tool-use)
     kiro_worker_tool_check
+    kiro_steer_inject
     # A worker's own shell command, checked for self-detachment (trailing &,
     # nohup, disown, setsid) before progress is recorded; a denied call never
     # ran, so it carries no progress to record.
@@ -448,6 +534,10 @@ case "$EVENT_KIND" in
     exit 0
     ;;
   post-tool-use)
+    if [ "$KIRO_TASK_BOUND" = 1 ] && [ "$(payload_field tool_name)" = invoke_sub_agent ] \
+      && [ -n "$KIRO_SUBAGENTS" ] && [ -d "$KIRO_SUBAGENTS" ] && key=$(kiro_subagent_key) && [ -n "$key" ]; then
+      rm -f -- "$KIRO_SUBAGENTS/$key" 2>/dev/null || true
+    fi
     kiro_busy_progress
     exit 0
     ;;
@@ -459,6 +549,8 @@ case "$EVENT_KIND" in
       touch "$KIRO_TASK_TURNEND" 2>/dev/null || true
       kiro_busy_apply idle stop
       kiro_prune_request_records
+      kiro_subagents_clear
+      rm -f -- "$KIRO_DOORBELL_TURN" 2>/dev/null || true
     fi
     ;;
 esac

@@ -33,6 +33,9 @@
 #                              so later polls suppress another escalation
 #   <task>.inbox/.retry-ring   name of a fire-and-forget record still owed its
 #                              one retry ring (fm_task_inbox_mark_retry)
+#   <task>.inbox/.delivered/NNN.msg  an in-turn delivery claim: a harness hook
+#                              already put that record's text in front of the
+#                              busy worker (fm_task_inbox_claim_delivery)
 #
 # Record format (fm_task_inbox_write / fm_task_inbox_body):
 #   schema=fm-task-inbox.v1
@@ -81,6 +84,16 @@
 # acknowledged record drops its mark. The remote steer leg has no watcher
 # ladder and owes no retry.
 #
+# In-turn delivery (fm_task_inbox_claim_delivery): a harness whose hooks can put
+# text in front of a busy worker mid-turn (Kiro, bin/fm-kiro-turnend-hook.sh)
+# claims each record it delivers with one atomic marker, so concurrent hook
+# calls deliver it exactly once. A claimed record is still unhandled until the
+# worker's own `mv` into handled/. The doorbell is skipped while that harness's
+# worker is busy, because its next tool call delivers the text (fm_task_inbox_ring
+# return 5), and the ladder does not ring a claimed record; one that stays
+# unacknowledged for the whole ladder budget (grace times ring-max) after its
+# claim still escalates as stale.
+#
 # Inbox names containing bytes outside printable ASCII are unsupported. The
 # doorbell refuses them rather than sending terminal control bytes to a pane.
 #
@@ -101,6 +114,8 @@ _FM_TASK_INBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_TASK_INBOX_LIB_DIR/fm-wake-lib.sh"
 # shellcheck source=/dev/null
 . "$_FM_TASK_INBOX_LIB_DIR/fm-backend.sh"
+# shellcheck source=/dev/null
+. "$_FM_TASK_INBOX_LIB_DIR/fm-busy-lib.sh"
 
 FM_TASK_INBOX_SCHEMA='fm-task-inbox.v1'
 FM_TASK_INBOX_GRACE_DEFAULT=90
@@ -303,6 +318,37 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
   printf '%s' "$rec"
 }
 
+# The in-turn delivery marker of one record.
+fm_task_inbox_delivery_marker() {  # <record-path>
+  printf '%s/.delivered/%s' "${1%/*}" "${1##*/}"
+}
+
+# Claim one record for in-turn delivery. Succeeds for exactly one caller per
+# record, however many race; fails when it was already claimed or the claim
+# cannot be written.
+fm_task_inbox_claim_delivery() {  # <record-path>
+  local marker
+  marker=$(fm_task_inbox_delivery_marker "$1")
+  [ -f "$1" ] || return 1
+  mkdir -p "${marker%/*}" 2>/dev/null || return 1
+  ( set -o noclobber; printf '%s\n' "$(date +%s)" > "$marker" ) 2>/dev/null
+}
+
+fm_task_inbox_is_delivered() {  # <record-path>
+  [ -f "$(fm_task_inbox_delivery_marker "$1")" ]
+}
+
+# Whether this task's worker takes its steering text through in-turn hook
+# delivery, and a turn is in flight, so its next tool call will deliver. Only a
+# Kiro ship or scout opts in, through a marker in its isolated KIRO_HOME
+# (bin/fm-kiro-lib.sh); the busy record is bin/fm-busy-lib.sh's.
+fm_task_inbox_hook_delivers() {  # <state-dir> <task-id>
+  local verdict
+  [ -f "$1/$2.kiro-home/.fm-kiro-steer-inject" ] || return 1
+  verdict=$(fm_busy_record_read "$1" "$2" 2>/dev/null) || return 1
+  [ "${verdict%% *}" = busy ]
+}
+
 # The exact enqueued text back out of a record.
 fm_task_inbox_body() {  # <record-path>
   local line
@@ -346,7 +392,9 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory
 # composer pre-check, then the backend's submit machinery with a minimal retry
 # budget, verdict discarded.
-# Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
+# Returns 0 rang, 5 skipped because the worker is busy and takes this text
+# through in-turn hook delivery at its next tool call (see the header), 1
+# skipped because the composer PROVENLY holds pending text
 # other than our own doorbell (the watcher re-rings later), 2 the backend send
 # failed, 3 skipped because the endpoint is positively dead or missing (nothing
 # typed; recovery owns the record), 4 skipped because the endpoint provably
@@ -367,7 +415,7 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # rather than skipped; skipping it would block every later ring. On both paths
 # a lost first Enter gets one confirmed retry.
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label] [harness]
-  local backend=$1 target=$2 rec=$3 label=${4:-} harness=${5:-} line cstate verdict inbox
+  local backend=$1 target=$2 rec=$3 label=${4:-} harness=${5:-} line cstate verdict inbox task
   inbox=${rec%/*}
   inbox=${inbox%/handled}
   if fm_backend_endpoint_foreign "$backend" "$target" "${inbox%.inbox}.meta" 2>/dev/null; then
@@ -376,6 +424,10 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label] [har
   case "$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)" in
     dead|missing) return 3 ;;
   esac
+  task=${inbox##*/}
+  if fm_task_inbox_hook_delivers "${inbox%/*}" "${task%.inbox}"; then
+    return 5
+  fi
   if ! line=$(fm_task_inbox_doorbell_line "$rec"); then
     return 2
   fi
@@ -512,6 +564,14 @@ EOF
     return 0
   fi
   max=$(fm_task_inbox_ring_max)
+  if fm_task_inbox_is_delivered "$oldest"; then
+    if [ "$(fm_path_age "$(fm_task_inbox_delivery_marker "$oldest")")" -ge "$((grace * max))" ]; then
+      printf 'escalate %s %s' "$oldest" "$count"
+    else
+      printf 'quiet'
+    fi
+    return 0
+  fi
   if [ "$count" -ge "$max" ]; then
     printf 'escalate %s %s' "$oldest" "$count"
     return 0
