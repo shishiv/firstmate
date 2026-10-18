@@ -45,7 +45,6 @@ for path in \
   bin/fm-kiro-primary.sh \
   bin/fm-primary-doorbell.sh \
   bin/fm-primary-endpoint-lib.sh \
-  .kiro/agents/firstmate-kiro.json \
   .kiro/hooks/fm-firstmate.json; do
   mkdir -p "$PRIMARY/${path%/*}"
   cp "$ROOT/$path" "$PRIMARY/$path"

@@ -46,8 +46,8 @@
 # and cleared by Stop) already points the worker at every record older than
 # that prompt, so only records that arrive later in the turn are delivered.
 #
-# Worker tool check: a ship or scout worker runs on Kiro's default agent, and
-# its KIRO_HOME lists the tools it cannot work without (.fm-kiro-required-tools,
+# Worker tool check: a ship, scout, or secondmate runs on Kiro's default agent,
+# and its KIRO_HOME lists the tools it cannot work without (.fm-kiro-required-tools,
 # bin/fm-kiro-lib.sh). Its launch sets KIRO_DUMP_REQUESTS, so Kiro records each
 # model request, including the exact tool list it sent the model, under
 # KIRO_HOME/requests/<session_id>/. The session's first tool call compares that
