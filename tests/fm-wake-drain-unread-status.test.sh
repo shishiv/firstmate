@@ -33,6 +33,65 @@ prime_cursor() {  # <state> <status-file>
     || fail "bootstrap drain failed while priming the unread cursor"
 }
 
+test_tool_gap_reports_group_once_per_tool_with_every_worker() {
+  local dir state out
+  dir=$(make_case tool-gaps-grouped)
+  state="$dir/state"
+  out="$dir/drain.out"
+  prime_cursor "$state" "$state/wa.status"
+  prime_cursor "$state" "$state/wb.status"
+  prime_cursor "$state" "$state/wc.status"
+
+  printf 'note [key=tool-luacheck] [at=1700000000]: luacheck missing: luacheck: command not found; workaround: ran ./check\n' >> "$state/wa.status"
+  printf 'note [key=tool-luacheck] [at=1700000100]: luacheck missing: not on PATH; workaround: called ~/.luarocks/bin/luacheck\n' >> "$state/wb.status"
+  printf 'note [key=tool-xxd] [at=1700000200]: xxd missing: xxd: command not found; workaround: used od\n' >> "$state/wb.status"
+  printf 'note: an ordinary answer\n' >> "$state/wc.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with tool-gap notes"
+
+  grep -F 'TOOL GAPS' "$out" >/dev/null \
+    || fail "worker tool-gap notes produced no TOOL GAPS section: $(cat "$out")"
+  [ "$(grep -c '^luacheck \[' "$out")" -eq 1 ] \
+    || fail "two workers reporting luacheck did not collapse into one line: $(cat "$out")"
+  grep -F 'luacheck [reported by wa, wb]: luacheck missing: not on PATH; workaround: called ~/.luarocks/bin/luacheck' "$out" >/dev/null \
+    || fail "the luacheck line did not name both workers with the newest report: $(cat "$out")"
+  grep -F 'xxd [reported by wb]: xxd missing: xxd: command not found; workaround: used od' "$out" >/dev/null \
+    || fail "the xxd gap was not its own line: $(cat "$out")"
+  if grep -F 'wa note [key=tool-luacheck]' "$out" >/dev/null; then
+    fail "a tool-gap note was listed one by one under UNREAD STATUS as well: $(cat "$out")"
+  fi
+  grep -F 'wc note: an ordinary answer' "$out" >/dev/null \
+    || fail "an ordinary note next to tool gaps left UNREAD STATUS: $(cat "$out")"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a tool-gap note opened a decision: $(cat "$out")"
+  fi
+  pass "worker tool-gap notes print once per tool with every reporting worker, apart from ordinary notes"
+}
+
+test_repeated_tool_gap_names_earlier_reporters_and_is_not_replayed() {
+  local dir state out
+  dir=$(make_case tool-gaps-repeat)
+  state="$dir/state"
+  out="$dir/drain.out"
+  prime_cursor "$state" "$state/old.status"
+  prime_cursor "$state" "$state/new.status"
+  printf 'note [key=tool-treehouse] [at=1700000000]: treehouse update: A new version of treehouse is available: v3.1.3 -> v3.1.4; workaround: kept v3.1.3\n' >> "$state/old.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "first tool-gap drain failed"
+  grep -F 'treehouse [reported by old]' "$out" >/dev/null \
+    || fail "setup error: first treehouse report was not presented: $(cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "second drain failed"
+  if grep -F 'TOOL GAPS' "$out" >/dev/null; then
+    fail "an already-presented tool gap was replayed: $(cat "$out")"
+  fi
+
+  printf 'note [key=tool-treehouse] [at=1700000300]: treehouse update: notice again; workaround: none needed\n' >> "$state/new.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "third drain failed"
+  grep -F 'treehouse [reported by new; earlier: old]: treehouse update: notice again; workaround: none needed' "$out" >/dev/null \
+    || fail "a repeat of a known gap did not name the earlier reporter: $(cat "$out")"
+  pass "a repeated tool gap prints once more naming the earlier reporters, and a presented one is not replayed"
+}
+
 test_incident_note_answer_buried_under_routine_note_surfaces_both() {
   local dir state out status
   dir=$(make_case incident-buried-note)
@@ -449,6 +508,8 @@ test_routine_working_and_covered_done_stay_silent_on_the_empty_queue() {
   pass "routine working and branch-covered done lines print nothing on an empty-queue drain"
 }
 
+test_tool_gap_reports_group_once_per_tool_with_every_worker
+test_repeated_tool_gap_names_earlier_reporters_and_is_not_replayed
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced

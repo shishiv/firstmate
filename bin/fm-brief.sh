@@ -586,6 +586,22 @@ IFS= read -r -d '' SHARED_INFRA_RULE <<'EOF' || true
 EOF
 SHARED_INFRA_RULE=${SHARED_INFRA_RULE%$'\n'}
 
+# One shared string keeps the ship and scout tool-gap rule identical. The line
+# shape is an informational note keyed per tool, so the classifier never treats
+# it as a decision or blocker and the drain groups it per tool; bin/fm-classify-lib.sh
+# ("worker-reported tool gaps") owns how that line is read.
+IFS= read -r -d '' TOOL_GAP_RULE <<'EOF' || true
+8. When a tool this task needs is missing, unusable, at a different version than the project pins,
+   or prints an update notice, append one line for it with the rule 4 command BEFORE you work
+   around it, once per tool for the whole task:
+   `note [key=tool-<tool>] [at=<epoch>]: <tool> <missing|unusable|version|update>: {what you saw, quoting the error or notice}; workaround: {what you do instead}`
+   `<tool>` is the executable name (letters, digits, `.`, `_`, `-` only), for example
+   `note [key=tool-luacheck] [at=<epoch>]: luacheck missing: luacheck: command not found; workaround: ran ./check, which finds ~/.luarocks/bin/luacheck`.
+   This line does not stop your work: keep going with the workaround. When no workaround
+   exists, the tool is an obstacle instead: append `blocked:` under rule 5.
+EOF
+TOOL_GAP_RULE=${TOOL_GAP_RULE%$'\n'}
+
 if [ -n "$BASE_BRANCH" ]; then
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean copy of its base branch.
 Base branch: $BASE_BRANCH"
@@ -633,6 +649,7 @@ $CREWMATE_PAUSE_INSTRUCTIONS
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 $SHARED_INFRA_RULE
+$TOOL_GAP_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
@@ -714,6 +731,7 @@ $ASK_USER_BLOCK
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 $SHARED_INFRA_RULE
+$TOOL_GAP_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 

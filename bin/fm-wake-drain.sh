@@ -381,9 +381,10 @@ EOF
 # cursor-backed unread span as the annotation path, and runs on every drain -
 # including the empty-queue fast path - so a buried answer cannot be swallowed
 # when the fold later advances the cursor. Prints nothing when nothing is
-# unread, which is the common case.
+# unread, which is the common case. Worker tool-gap notes among those lines
+# print grouped in the TOOL GAPS section below instead of one by one here.
 print_unread_status_section() {
-  local snapshot=${1:-} unread task line shown=0
+  local snapshot=${1:-} unread task line tool gaps='' shown=0
 
   if [ -n "$snapshot" ]; then
     unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
@@ -395,6 +396,11 @@ print_unread_status_section() {
   while IFS=$(printf '\t') read -r task line; do
     [ -n "$task" ] || continue
     [ -n "$line" ] || continue
+    if status_line_tool_gap "$line" tool; then
+      gaps="$gaps$tool	$task	$(status_line_note "$line")
+"
+      continue
+    fi
     line="$task $line"
     if [ "$shown" -eq 0 ]; then
       printf 'UNREAD STATUS (new since last drain, not re-printed after this presentation):\n' || return 1
@@ -405,7 +411,63 @@ print_unread_status_section() {
 $unread
 EOF
 
-  [ "$shown" -gt 0 ] || return 0
+  [ -z "$gaps" ] || print_tool_gaps_section "$gaps" || return 1
+}
+
+# Print the TOOL GAPS section: the worker tool-gap reports among this drain's
+# unread lines (fm-classify-lib.sh's status_line_tool_gap owns that grammar),
+# grouped so each tool prints once. A line names every worker that reported the
+# tool this drain, the other workers whose current status logs already carry a
+# report for it, and the newest report's own text. The reports are consumed by
+# the same presentation cursor as UNREAD STATUS, so a tool reappears only when a
+# worker reports it again. Input rows are "<tool>\t<task>\t<note>".
+print_tool_gaps_section() {  # <rows>
+  local rows=$1 tools tool t task note new latest earlier reporter line
+  local output='' used=0 shown=0 omitted=0 bytes item_bytes=320 global_bytes=3000
+  tools=$(printf '%s' "$rows" | LC_ALL=C awk -F '\t' 'NF >= 2 && !seen[$1]++ { print $1 }')
+  while IFS= read -r tool; do
+    [ -n "$tool" ] || continue
+    new=''
+    latest=''
+    while IFS=$(printf '\t') read -r t task note; do
+      [ "$t" = "$tool" ] || continue
+      case " $new " in *" $task "*) ;; *) new="${new:+$new }$task" ;; esac
+      latest=$note
+    done <<EOF
+$rows
+EOF
+    earlier=''
+    while IFS= read -r reporter; do
+      [ -n "$reporter" ] || continue
+      case " $new " in *" $reporter "*) continue ;; esac
+      earlier="${earlier:+$earlier, }$reporter"
+    done <<EOF
+$(scan_tool_gap_reporters "$STATE" "$tool")
+EOF
+    line="$tool [reported by ${new// /, }"
+    [ -z "$earlier" ] || line="$line; earlier: $earlier"
+    line="$line]: $latest"
+    fm_cap_line_var "$line" $((item_bytes - 1))
+    line=$FM_LINE_CAP_LINE
+    bytes=$(( ${#line} + 1 ))
+    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+      omitted=$((omitted + 1))
+      continue
+    fi
+    output="$output$line
+"
+    used=$((used + bytes))
+    shown=$((shown + 1))
+  done <<EOF
+$tools
+EOF
+
+  [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0
+  printf 'TOOL GAPS (missing, unusable, mismatched, or outdated tools that workers reported and worked around, one line per tool):\n' || return 1
+  printf '%s' "$output" || return 1
+  if [ "$omitted" -gt 0 ]; then
+    printf 'TOOL GAPS: %d more omitted (byte cap)\n' "$omitted" || return 1
+  fi
 }
 
 # Print the consolidated OPEN DECISIONS section: every still-open
