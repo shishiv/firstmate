@@ -24,7 +24,13 @@
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "HERDR_SERVER_CGROUP: the default Herdr server (pid <pid>) runs in <cgroup>, under app.slice, ...",
 #                 "HERDR_AGENT_RESUME: Herdr <version> resumes agents after a server restart because <config.toml> does not set [session] resume_agents_on_restore = false; ...",
-#                 "FMX: X mode on ..." or "FMX: X mode off ...".
+#                 "FMX: X mode on ..." or "FMX: X mode off ...",
+#                 "TOOL_NEED: <project> needs <tool> <pin> (tools/<tool>.version): <gap> (fix: <command>)",
+#                 "TOOL_UPDATE: <tool> <installed> -> <latest> available (update: <command>)".
+#          TOOL_NEED (local pass) and TOOL_UPDATE (network pass) come from
+#          bin/fm-tool-gaps.sh, which owns how a project declares a tool, how it
+#          is found, and which release each fleet CLI is compared with; both
+#          only report and never install or update anything.
 #          The two HERDR_ lines print only on a herdr home, from read-only
 #          process-table and config reads (bin/backends/herdr.sh's
 #          fm_backend_herdr_host_diagnostics owns when); bootstrap never starts,
@@ -1573,8 +1579,14 @@ if network_phase; then
   __fm_timing_stamp=$(fm_timing_now_ms)
   gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
   fm_timing_record phase gh-auth "$__fm_timing_stamp"
+  # Read-only release lookups for the fleet's own CLIs; report only.
+  __fm_timing_stamp=$(fm_timing_now_ms)
+  "$SCRIPT_DIR/fm-tool-gaps.sh" cli-updates
+  fm_timing_record phase cli-updates "$__fm_timing_stamp"
 fi
 local_phase && detect_local_config
+# Tools the registered projects pin that this machine lacks; local reads only.
+local_phase && FM_PROJECTS_OVERRIDE="$PROJECTS" "$SCRIPT_DIR/fm-tool-gaps.sh" project-needs
 
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   # secondmate_sync consumes SECONDMATE_RESPAWNED_IDS from the liveness sweep, so

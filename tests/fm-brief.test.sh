@@ -1422,6 +1422,51 @@ test_worker_role_scope
 # Rule 2 governs file edits rather than pool administration, so every crewmate
 # scaffold must prohibit the administrative act itself. The rule is emitted from
 # one shared string so the ship and scout copies cannot drift apart.
+# A worker that hits a missing, unusable, mismatched, or outdated tool must say so
+# before working around it, in a line the existing classifier reads as an
+# informational per-tool note rather than a decision or blocker. The example the
+# brief itself hands the worker is fed back through the classifier, so the brief
+# and the reader cannot drift apart.
+test_crewmate_scaffolds_ask_for_tool_gap_notes() {
+  local home brief example line tool ship_rule scout_rule status
+  home="$TMP_ROOT/tool-gap-home"
+  mkdir -p "$home/data" "$home/state"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-tool-ship alpha --mode direct-PR >/dev/null 2>&1 \
+    || fail "fm-brief.sh --mode direct-PR exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-tool-scout alpha --scout >/dev/null 2>&1 \
+    || fail "fm-brief.sh --scout exited non-zero"
+  for brief in "$home/data/brief-tool-ship/brief.md" "$home/data/brief-tool-scout/brief.md"; do
+    assert_grep 'missing, unusable, at a different version than the project pins' "$brief" \
+      "$brief does not ask workers to report tool gaps"
+    assert_grep 'or prints an update notice' "$brief" "$brief does not cover update notices"
+    assert_grep 'BEFORE you work' "$brief" "$brief does not ask for the report before the workaround"
+    assert_grep 'once per tool' "$brief" "$brief does not bound the report to once per tool"
+  done
+  ship_rule=$(awk '/^8\. When a tool/,/^$/' "$home/data/brief-tool-ship/brief.md")
+  scout_rule=$(awk '/^8\. When a tool/,/^$/' "$home/data/brief-tool-scout/brief.md")
+  [ -n "$ship_rule" ] || fail "ship brief emitted no tool-gap rule"
+  [ "$ship_rule" = "$scout_rule" ] || fail "ship and scout tool-gap rules have drifted apart"
+
+  # shellcheck disable=SC2016 # Literal backticks in the sed program must remain unexpanded.
+  example=$(sed -n 's/.*for example$//; s/^ *`\(note \[key=tool-luacheck\][^`]*\)`\.$/\1/p' "$home/data/brief-tool-ship/brief.md" | head -1)
+  [ -n "$example" ] || fail "the tool-gap rule carries no worked example line"
+  line=${example//<epoch>/1700000000}
+  (
+    # shellcheck source=bin/fm-classify-lib.sh disable=SC1091
+    . "$ROOT/bin/fm-classify-lib.sh"
+    status_line_tool_gap "$line" tool || fail "the brief's example is not read as a tool gap: $line"
+    [ "$tool" = luacheck ] || fail "the brief's example names tool '$tool', not luacheck"
+    if status_is_captain_relevant "$line"; then
+      fail "the brief's tool-gap example is captain-relevant on its own: $line"
+    fi
+    status_line_is_unread_surface "$line" || fail "the brief's tool-gap example never reaches the drain's unread surface"
+    status="$home/state/tool.status"
+    printf '%s\n' "$line" > "$status"
+    [ -z "$(status_open_decisions "$status")" ] || fail "the brief's tool-gap example opened a decision"
+  ) || exit 1
+  pass "ship and scout briefs ask for one per-tool tool-gap note the classifier reads as informational"
+}
+
 test_crewmate_scaffolds_forbid_pool_administration() {
   local home id brief mode ship_rule scout_rule
   home="$TMP_ROOT/pool-admin-home"
@@ -1522,3 +1567,4 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
+test_crewmate_scaffolds_ask_for_tool_gap_notes
