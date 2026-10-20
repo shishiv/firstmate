@@ -269,6 +269,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": ".kiro/steering/firstmate-dispatch.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "AGENTS.md",
       "audience": "agent-runtime"
     },

@@ -141,6 +141,28 @@ fm-send: doorbell not typed because the worker is busy and its next tool call de
 
 Each record has exactly one `.delivered/` claim or none, and none was delivered twice.
 
+### Kiro workflow steering and the dispatch rule, 2026-10-20
+
+Verified against kiro-cli 2.32.0 (`@kiro/agent` 0.66.43) in scratch workspaces with scratch `KIRO_HOME` directories; no production home or worker was touched.
+The bundle adds its `# Workflow Orchestration` steering to a default-agent session only when the session's `workflows` feature, set by `chat.enableWorkflows`, is on, and that setting defaults off.
+Each cell ran `kiro-cli chat --v3 -a --no-interactive` from an emptied environment and asked the model, without tools, whether `run_workflow` and that steering were in its context:
+
+| `KIRO_HOME` settings | `run_workflow` offered | Workflow steering | Workspace `.kiro/steering` canary |
+| --- | --- | --- | --- |
+| Firstmate's isolated settings, no `chat.enableWorkflows` | no | no | read back |
+| the same plus `"chat.enableWorkflows": true` | yes | yes | read back |
+| unset, so the operator's global settings with `chat.enableWorkflows` true | yes | yes | read back |
+
+With workflows on, a workspace holding `AGENTS.md` and `.kiro/steering/firstmate-dispatch.md` was asked, as primary, how it would dispatch "add a --verbose flag to the acme CLI" on `claude-sonnet-5.5`:
+
+```text
+1) Yes, the "Workflow Orchestration" steering is in my context.
+2) Yes, the rule titled "Firstmate dispatch over Kiro workflows" (id firstmate-dispatch) is in my context.
+3) Captain, I'd spawn a ship through `bin/fm-spawn.sh` and never use `run_workflow`. The firstmate-dispatch rule overrides the workflow steering, ...
+```
+
+The same prompt without the steering file also chose `bin/fm-spawn.sh` from `AGENTS.md`, so this one-shot shows the rule reaches context and is the cited authority, not that a one-shot reproduces the long-session drift toward `run_workflow`.
+
 ### Kiro interrupt leaves the busy record open, 2026-10-20
 
 Verified against kiro-cli 2.32.0 with model `claude-sonnet-5.5` in a scratch home on a private tmux socket; no production home or worker was touched.
