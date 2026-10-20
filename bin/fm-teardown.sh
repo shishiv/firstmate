@@ -50,6 +50,17 @@
 # A pushed branch with an open PR is not landed: reachability from a
 # remote-tracking branch proves only survival, never a merge, and teardown
 # applies this proof for every actor, not only the supervision branch.
+# When the record carries pr=, that PR must itself report merged on its forge
+# before any other proof counts - read through bin/fm-pr-lib.sh's
+# fm_pr_read_record_for_url, the same GitHub, GitLab, and read-only Gerrit
+# readers the merge path uses - and content already on the default branch or a
+# stack base never stands in for it. An open or closed PR refuses naming the PR
+# and the forge's state word; a pr= that does not parse or a forge that cannot
+# be read proves nothing and refuses too. A deliberate open-PR handoff has no
+# separate flag: the open PR keeps the task record and its merge watch, which
+# are what bin/fm-pr-merge.sh needs to land it, so cleanup waits for the merge,
+# and only the captain's explicit discard authority (--force) retires an
+# unmerged PR's task.
 # local-only projects keep the reachability rule: work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
 # upstream-contribution PRs pushed to a fork satisfy this), or when it is merged
@@ -73,8 +84,9 @@
 # by itself causes a false refusal of landed work. A task that merged several
 # PRs also lists each one as pr_merged= (bin/fm-pr-merge.sh), and each listed
 # PR is tried the same way when the recorded pr= does not carry the local work.
-# A gh lookup error falls back to the content check; if that is also inconclusive,
-# teardown refuses rather than risk discarding unlanded work.
+# With no pr= recorded, a gh lookup error falls back to the content check; if
+# that is also inconclusive, teardown refuses rather than risk discarding
+# unlanded work.
 # Uncommitted changes are never landed; dirty refusals distinguish untracked-only
 # leftovers from tracked edits and list at most ten non-exempt untracked paths.
 # local-only projects additionally accept work merged into the local default
@@ -1724,46 +1736,73 @@ work_is_landed() {
   content_in_pr_base "$branch"
 }
 
-# Merge proof without a usable copy: the recorded current PR (pr=) is
-# authoritative when present - only its own MERGED verdict proves landing, and
-# an earlier merged PR never proves the current PR's work landed. With no
-# current PR recorded, any pr_merged= entry reporting MERGED proves it (every
-# such entry is written only after the forge accepts that merge). There is no
-# HEAD left to test containment against, so this is only the recorded-PR-merged
-# check: a missing worktree and a slot reassigned to another task both refuse
-# without it. Prints the refusal (which names the --force discard path) and
-# returns non-zero when nothing recorded proves a merge.
-record_target_reports_merged() {  # <target>
-  local target=$1 state
-  [ -n "$target" ] || return 1
-  if [ -n "${PROJ:-}" ] && [ -d "$PROJ" ]; then
-    state=$(cd "$PROJ" && gh pr view "$target" --json state -q '.state' 2>/dev/null) || return 1
-  else
-    state=$(gh pr view "$target" --json state -q '.state' 2>/dev/null) || return 1
-  fi
-  case "$state" in
-    MERGED|merged) return 0 ;;
+# The recorded PR's own forge verdict. bin/fm-pr-lib.sh's
+# fm_pr_read_record_for_url owns the per-provider read (GitHub, GitLab, and the
+# read-only Gerrit adapter), so a PR task on any supported forge is proved the
+# same way. Sets RECORDED_PR_STATE to the forge's state word, or to
+# "unreadable" when the URL does not parse or the forge cannot be read, and
+# returns 0 only when the forge reports the PR merged. A merged verdict is
+# terminal, so it is remembered for this run and the post-lock recheck does
+# not read the forge again.
+RECORDED_PR_STATE=
+RECORDED_PR_MERGED_URLS=
+recorded_pr_reports_merged() {  # <url>
+  local url=$1
+  RECORDED_PR_STATE=
+  [ -n "$url" ] || { RECORDED_PR_STATE=unreadable; return 1; }
+  case "$RECORDED_PR_MERGED_URLS" in
+    *"
+$url
+"*) RECORDED_PR_STATE=MERGED; return 0 ;;
   esac
-  return 1
+  if ! fm_pr_read_record_for_url "$url"; then
+    RECORDED_PR_STATE=unreadable
+    return 1
+  fi
+  RECORDED_PR_STATE=$FM_PR_RECORD_STATE
+  [ "$FM_PR_RECORD_MERGED" = true ] || return 1
+  RECORDED_PR_MERGED_URLS="${RECORDED_PR_MERGED_URLS:-
+}$url
+"
 }
 
+# Prints the refusal for a recorded PR the forge does not report merged,
+# naming the PR and the state the forge gave (or that it could not be read).
+recorded_pr_refusal() {  # <url> <why>
+  local url=$1 why=$2
+  if [ "$RECORDED_PR_STATE" = unreadable ]; then
+    echo "REFUSED: task $ID $why, and its recorded PR $url could not be read from the forge, so nothing proves it merged." >&2
+  else
+    echo "REFUSED: task $ID $why, and its recorded PR $url is $RECORDED_PR_STATE on the forge, not merged." >&2
+  fi
+  echo "An unmerged PR keeps this task's record and its merge watch: merge it through bin/fm-pr-merge.sh and clean up after the merge, or get the captain's explicit OK to discard, then --force." >&2
+}
+
+# Merge proof without a usable copy: the recorded current PR (pr=) is
+# authoritative when present - only its own merged verdict proves landing, and
+# an earlier merged PR never proves the current PR's work landed. With no
+# current PR recorded, any pr_merged= entry the forge reports merged proves it
+# (every such entry is written only after the forge accepts that merge). There
+# is no HEAD left to test containment against, so this is only the
+# recorded-PR-merged check: a missing worktree and a slot reassigned to another
+# task both refuse without it. Prints the refusal (which names the --force
+# discard path) and returns non-zero when nothing recorded proves a merge.
 pr_record_proves_merged() {  # <why>
   local why=$1 merged_url
   if [ -n "$PR_URL" ]; then
-    if ! record_target_reports_merged "$PR_URL"; then
-      echo "REFUSED: task $ID $why, and its current PR $PR_URL does not report MERGED." >&2
-      echo "Land its PR first, or get the captain's explicit OK to discard, then --force." >&2
+    if ! recorded_pr_reports_merged "$PR_URL"; then
+      recorded_pr_refusal "$PR_URL" "$why"
       return 1
     fi
     return 0
   fi
   while IFS= read -r merged_url; do
     [ -n "$merged_url" ] || continue
-    record_target_reports_merged "$merged_url" && return 0
+    recorded_pr_reports_merged "$merged_url" && return 0
   done <<MERGED
 $(grep '^pr_merged=' "$META" 2>/dev/null | cut -d= -f2- || true)
 MERGED
-  echo "REFUSED: task $ID $why, and none of its recorded PRs reports MERGED." >&2
+  echo "REFUSED: task $ID $why, and none of its recorded PRs reports merged on the forge." >&2
   echo "Land its PR first, or get the captain's explicit OK to discard, then --force." >&2
   return 1
 }
@@ -2138,6 +2177,15 @@ validate_worktree_teardown_safety() {
     if [ -z "$branch" ]; then
       branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
       TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
+    fi
+    # A recorded PR must itself report merged on the forge before any other
+    # proof is consulted: content already on the default branch or on a stack
+    # base never stands in for the task's own unmerged PR, and a forge that
+    # cannot be read proves nothing.
+    if [ -n "$PR_URL" ] && ! recorded_pr_reports_merged "$PR_URL"; then
+      recorded_pr_refusal "$PR_URL" "has committed work in $WT"
+      [ -n "$unpushed" ] && printf 'unpushed commits:\n%s\n' "$unpushed" >&2
+      return 1
     fi
     if ! work_is_landed "$branch"; then
       echo "REFUSED: worktree $WT has work with no merged PR containing its HEAD." >&2

@@ -430,8 +430,11 @@ META="$STATE/$ID.meta"
 . "$SCRIPT_DIR/fm-lease-lib.sh"
 fm_lease_forbid_branch "PR merge (fm-pr-merge)" --away-relocated
 
-if [ ! -f "$META" ] || [ -L "$META" ]; then
-  echo "error: task metadata is unavailable" >&2
+# The refusal names the exact record path, resolved from FM_HOME or
+# FM_STATE_OVERRIDE above, and why it was rejected, because "unavailable"
+# alone hid the usual cause: a cleanup that already retired the record.
+if META_REASON=$(fm_pr_meta_unavailable_reason "$META"); then
+  echo "error: task metadata is unavailable: $META: $META_REASON" >&2
   exit 1
 fi
 if ! fm_backlog_meta_spawn_gen_optional "$META" "$STATE"; then

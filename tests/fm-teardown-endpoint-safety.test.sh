@@ -1108,10 +1108,13 @@ write_endpoint_close_meta() {  # <case-dir> <id> <window>
 
 # A gh mock answering MERGED to a recorded-PR state query, for fixtures with
 # no copy left to inspect (their merge proof can only come from the forge).
+# `api graphql` is bin/fm-pr-lib.sh's GitHub state read, answered with the
+# fields its --jq filter would print.
 add_gh_merged_state_mock() {  # <case-dir>
   cat > "$1/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
+  "api graphql") printf '%s\n' 'state=MERGED' 'merged=true' ; exit 0 ;;
   "pr view")
     case " $* " in
       *".state"*) printf '%s\n' 'MERGED' ; exit 0 ;;
