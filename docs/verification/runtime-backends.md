@@ -769,6 +769,43 @@ The real pane renders this inside a bordered box, omitted here for readability; 
 That capture demonstrated why each signature function matches the FULL captured tail rather than the Grok/Rovo/AGY busy-footer convention of the last 12 non-blank lines: a bordered dialog box renders many short lines of pure border and padding (`│  ...  │`) that are NOT whitespace-only, so the 12-line reduction pushed this exact heading text out of the window and silently defeated the match on the first attempt.
 None of these three runs ever answered its dialog (Escape only, never Enter), so no credential store was written to and no model tokens were spent.
 
+## Provider-limit launch failure
+
+`bin/fm-busy-lib.sh`'s `fm_busy_launch_provider_limited` lets `bin/fm-spawn.sh`'s post-launch watch report a worker that its provider refuses on a usage or rate limit as a failed start.
+It needs two signals together: a provider-limit line in the pane tail, and a task that is not provably busy.
+`tests/fm-provider-limit-signals-live-e2e.test.sh` is the command that refreshes this record; it needs a Pi model whose provider is at its limit at the time it runs.
+
+Verified 2026-10-20 on pi 1.3.0 with `opencode-go/deepseek-v4.1-flash`, while quota-axi 0.1.55 reported `opencode-go,all_models,0,...,exhausted_now` (monthly window, reset 2026-11-01).
+
+```sh
+FM_PROVIDER_LIMIT_LIVE=1 FM_PROVIDER_LIMIT_PI_MODEL=opencode-go/deepseek-v4.1-flash bash tests/fm-provider-limit-signals-live-e2e.test.sh
+```
+
+```
+# live pi version: 1.3.0
+# model: opencode-go/deepseek-v4.1-flash
+# matched: Error: 429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}
+ok - pi: a real provider limit on opencode-go/deepseek-v4.1-flash is reported as a failed launch
+```
+
+A manual `pi --model opencode-go/deepseek-v4.1-flash 'Say hi only.'` run in tmux rendered the error about three seconds after launch, and Pi stayed in its TUI rather than exiting:
+
+```
+ Say hi only.
+ Error: 429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}
+ If this looks like a pi bug, /bug sends a report to the developers.
+```
+
+The same run with a scratch `-e` extension logging Pi's own events showed the turn settling right after the refusal, which is the second signal the verdict reads through the Pi busy record:
+
+```
+1792476534431 agent_start
+1792476535323 turn_end
+1792476535325 agent_settled idle=true
+```
+
+Not verified live: the Kiro usage-limit messages in the signature table are taken from Kiro 2.32.0's own `UsageLimitReachedError` strings, and the other vendors' limit tokens from their documented error types.
+
 ## Worker account pin sign-in check
 
 `bin/fm-worker-account-lib.sh` decides whether a pinned account is signed in from vendor output: the exit status of `claude auth status`, the JSON of `pi auth check`, and the provider column of `pi --list-models`.

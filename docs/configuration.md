@@ -1099,6 +1099,7 @@ This section is the single owner of the canonical schema and its per-field seman
 **Fields applied only by typed resolution**
 
 Rule `approval`, `min_confidence`, and `floor`, and profile `provider` and `floor` are optional declarations that only [typed dispatch resolution](#typed-dispatch-resolution-env-typesafe_api_key) applies in code; without that opt-in they are inert, and firstmate's own intake reads them as ordinary hints.
+The one exception is profile `provider`, which `fm-spawn.sh`'s launch quota guard also reads to bind a fresh ship or scout of exactly that harness and model to its quota-axi row; the script header owns that guard.
 The resolver supplies the fixed neutral Choice option `No listed rule applies to this task.` for work that matches no listed rule.
 
 - `approval` accepts only `"captain"` and means a task the rule matches is never dispatched from the tool's answer alone.

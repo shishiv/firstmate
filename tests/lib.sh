@@ -52,6 +52,12 @@ export FM_GATE_REFUSE_BYPASS=1
 # leaked harness pin alone stays inert outside a suite.
 export FM_TEST_SEAM=1
 
+# Keep bin/fm-spawn.sh's launch quota guard and post-launch provider watch out
+# of every suite that does not test them: the guard would otherwise read the
+# developer's real quota-axi, and the watch would add its window to every
+# fixture spawn. tests/fm-spawn-quota-guard.test.sh unsets both per case.
+export FM_SPAWN_QUOTA_GUARD=off FM_SPAWN_PROVIDER_WATCH_SECS=0
+
 # Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
 # panes. This suite builds git-init fixture repositories whose primary checkout
 # it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary

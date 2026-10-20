@@ -40,6 +40,7 @@ The tool reference records repeat, acknowledgement, and clearing behavior, while
 Native resume availability and form belong solely to the selected tool reference.
 Use native resume only when both that reference and the recovery procedure call for it.
 Deterministic relaunch instead trusts instructions on disk, not a private session, and never needs a session id printed at exit.
+A spawn that exits 3 launched a worker its provider refused on a usage or rate limit and kept its task record and local copy, so recover it with a relaunch on another provider rather than a fresh spawn; the `../../../bin/fm-spawn.sh` header owns that exit and the launch quota refusal before it.
 One relaunch-time exception is the runtime's own recorded session identity, used only to keep that runtime's status authority valid across the replacement - `../../../docs/agent-control.md` "Transactional relaunch" owns it.
 
 `../stuck-crewmate-recovery/SKILL.md` owns worker recovery and `../secondmate-provisioning/SKILL.md` owns secondmate recovery; both preserve recorded work.
