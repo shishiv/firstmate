@@ -95,7 +95,7 @@ case "${1:-}" in
   display-message)
     for a in "$@"; do
       case "$a" in
-        *cursor_y*) printf '1\n'; exit 0 ;;
+        *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-1}"; exit 0 ;;
         *pane_current_command*) [ -z "${FM_FAKE_TMUX_AGENT:-}" ] || { printf '%s\n' "$FM_FAKE_TMUX_AGENT"; exit 0; } ;;
         *pane_tty*) [ -z "${FM_FAKE_TMUX_AGENT:-}" ] || { printf '\n'; exit 0; } ;;
       esac
@@ -712,6 +712,110 @@ test_ring_defers_to_hook_delivery_while_busy() {
   pass "inbox: the doorbell defers to in-turn hook delivery while busy and rings an idle worker"
 }
 
+# The bottom rows of a real kiro-cli 2.32.0 V3 pane, cursor on the composer row
+# (row 6): <composer> replaces the composer row and <above> the row over the
+# separators. Idle after an Escape interrupt it reads `Cancelled streaming`
+# and the placeholder; mid-turn the composer row carries `Kiro is working`.
+kiro_capture() {  # <path> <composer-row> [above]
+  local rule
+  rule=$(printf '─%.0s' $(seq 1 60))
+  {
+    printf '▸ Time: 6s\n'
+    printf '%s\n' "${3:-• Cancelled streaming}"
+    printf '%s\n' "$rule"
+    printf ' Trust All Tools active, confirmations are off · /quit to exit\n'
+    printf '%s\n' "$rule"
+    printf 'Default · claude-opus-5.5 · medium · ◔ 3%%                /var/tmp/ws\n'
+    printf '%s\n' "$2"
+    printf '                              /sessions to resume · /copy to clipboard\n'
+  } > "$1"
+  printf '%s\n' "$1"
+}
+
+# A Kiro busy record over an idle composer is a turn end Kiro's Stop hook never
+# reported (Escape interrupts fire none), so the doorbell is typed; the same
+# record over a running turn still defers to in-turn delivery. Either signal
+# alone - the placeholder or the absence of a busy anchor - keeps the deferral.
+test_ring_types_doorbell_over_a_stale_kiro_busy_record() {
+  local dir state rec log rc idle busy tool anchored bare
+  dir="$TMP_ROOT/ring-kiro-stale"
+  state="$dir/state"
+  mkdir -p "$state/t1.kiro-home"
+  make_watch_stubs "$dir" >/dev/null
+  printf 'on\n' > "$state/t1.kiro-home/.fm-kiro-steer-inject"
+  printf 'g1\n' > "$state/t1.busy-gen"
+  printf 'v1 gen=g1 seq=1 state=busy source=kiro-hook event=user-prompt-submit ts=1\n' > "$state/t1.busy-state"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "please continue")
+  idle=$(kiro_capture "$dir/idle.capture" '›  ask a question or describe a task ↵')
+  busy=$(kiro_capture "$dir/busy.capture" '›  Kiro is working · 5s · Type to steer · Ctrl+S to queue')
+  tool=$(kiro_capture "$dir/tool.capture" '›  Kiro is working · 9s · Type to steer · Ctrl+S to queue' '  esc to cancel')
+  anchored=$(kiro_capture "$dir/anchored.capture" '›  ask a question or describe a task ↵' '  esc to cancel')
+  bare=$(kiro_capture "$dir/bare.capture" '›')
+  log="$dir/send.log"
+  ring_kiro() {  # <capture>
+    : > "$log"
+    rc=0
+    PATH="$dir/fakebin:$PATH" FM_SEND_LOG="$log" FM_FAKE_TMUX_AGENT=kiro-cli \
+      FM_FAKE_TMUX_CAPTURE="$1" FM_FAKE_TMUX_CURSOR_Y=6 \
+      inbox_lib "$state" fm_task_inbox_ring tmux sess:fm-t1 "$rec" fm-t1 kiro-cli || rc=$?
+  }
+  ring_kiro "$idle"
+  [ "$rc" = 0 ] || fail "a busy record over Kiro's idle composer must ring (0), got $rc"
+  grep -qF 'Firstmate instruction waiting' "$log" \
+    || fail "a busy record over Kiro's idle composer did not get the doorbell:"$'\n'"$(cat "$log")"
+  grep -q 'state=busy' "$state/t1.busy-state" || fail "the ring must not rewrite the busy record"
+  for capture in "$busy" "$tool" "$anchored" "$bare"; do
+    ring_kiro "$capture"
+    [ "$rc" = 5 ] || fail "a busy record over ${capture##*/} must defer to in-turn delivery (5), got $rc"
+    [ ! -s "$log" ] || fail "a busy record over ${capture##*/} was typed into:"$'\n'"$(cat "$log")"
+  done
+  # The two divergent fixtures each lose exactly one idle signal.
+  { grep -qF 'ask a question or describe a task' "$anchored" && grep -qF 'esc to cancel' "$anchored"; } \
+    || fail "the anchored fixture must carry the placeholder and a busy anchor"
+  ! grep -qE 'ask a question|Kiro is working|esc to cancel' "$bare" \
+    || fail "the bare fixture must carry neither the placeholder nor a busy anchor"
+  pass "inbox: a Kiro busy record over the idle composer gets the doorbell; a running turn still defers"
+}
+
+# The watcher's busy deferral reads the same proof: a Kiro worker whose record
+# says busy over an idle composer is rung, never escalated as stuck-busy.
+test_watcher_rings_kiro_stuck_busy_over_idle_composer() {
+  local dir state rec i
+  dir="$TMP_ROOT/watch-kiro-stale"
+  state="$dir/state"
+  mkdir -p "$state/t1.kiro-home"
+  make_watch_stubs "$dir" >/dev/null
+  fm_write_meta "$state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=kiro-cli"
+  printf 'on\n' > "$state/t1.kiro-home/.fm-kiro-steer-inject"
+  printf 'g1\n' > "$state/t1.busy-gen"
+  printf 'v1 gen=g1 seq=1 state=busy source=kiro-hook event=user-prompt-submit ts=1\n' > "$state/t1.busy-state"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "please continue")
+  age_path "$rec"
+  kiro_capture "$dir/idle.capture" '›  ask a question or describe a task ↵' >/dev/null
+  : > "$dir/send.log"
+  for i in 1 2 3; do
+    PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_SEND_LOG="$dir/send.log" \
+      FM_FAKE_TMUX_AGENT=kiro-cli FM_FAKE_TMUX_CAPTURE="$dir/idle.capture" FM_FAKE_TMUX_CURSOR_Y=6 \
+      FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_BUSY_MAX=2 FM_TASK_INBOX_RING_MAX=99 \
+      bash -c '. "$1" && inbox_steer_check sess:fm-t1 t1' _ "$WATCH" > "$dir/check.out" 2>&1
+  done
+  grep -qF 'Firstmate instruction waiting' "$dir/send.log" \
+    || fail "the watcher did not ring a Kiro busy record over the idle composer:"$'\n'"$(cat "$dir/check.out")"
+  ! grep -q 'stuck-busy' "$state/.wake-queue" 2>/dev/null \
+    || fail "a Kiro busy record over the idle composer escalated as stuck-busy:"$'\n'"$(cat "$state/.wake-queue")"
+  [ ! -e "$state/t1.inbox/.busy-state" ] || fail "an idle-composer ring must not count as a busy deferral"
+  # The same record over a running turn still defers and stays untyped.
+  kiro_capture "$dir/busy.capture" '›  Kiro is working · 5s · Type to steer · Ctrl+S to queue' >/dev/null
+  : > "$dir/send.log"
+  PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_SEND_LOG="$dir/send.log" \
+    FM_FAKE_TMUX_AGENT=kiro-cli FM_FAKE_TMUX_CAPTURE="$dir/busy.capture" FM_FAKE_TMUX_CURSOR_Y=6 \
+    FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_BUSY_MAX=2 FM_TASK_INBOX_RING_MAX=99 \
+    bash -c '. "$1" && inbox_steer_check sess:fm-t1 t1' _ "$WATCH" > "$dir/check.out" 2>&1
+  [ ! -s "$dir/send.log" ] || fail "a Kiro worker mid-turn was typed into:"$'\n'"$(cat "$dir/send.log")"
+  [ -f "$state/t1.inbox/.busy-state" ] || fail "a Kiro worker mid-turn must count a busy deferral"
+  pass "watcher: a Kiro busy record over the idle composer rings instead of escalating stuck-busy"
+}
+
 setup_watch_case() {  # <name> -> echoes case dir; state in <dir>/state
   local name=$1 dir
   dir="$TMP_ROOT/$name"
@@ -1259,6 +1363,8 @@ test_fire_and_forget_retry_is_quiet_without_the_flag
 test_ring_ladder_policy
 test_claimed_record_is_delivered_once_and_leaves_the_ladder
 test_ring_defers_to_hook_delivery_while_busy
+test_ring_types_doorbell_over_a_stale_kiro_busy_record
+test_watcher_rings_kiro_stuck_busy_over_idle_composer
 test_watcher_rerings_idle_pane_quietly
 test_watcher_waits_on_busy_pane
 test_watcher_busy_budget_resets_on_ring_and_ack
