@@ -92,6 +92,9 @@
 # a real busy verdict once any hook has posted, and it defers to whatever
 # harness-specific trust pre-registration already exists (fm-claude-trust.sh,
 # GEMINI_CLI_TRUST_WORKSPACE) to stop the dialog from appearing at all.
+# fm_busy_launch_provider_limited (its own section at the end of this file) is
+# a launch-failure verdict for bin/fm-spawn.sh's post-launch watch, never a
+# busy-state source.
 # Apart from the launch-prompt backstop above, Grok, Rovo, AGY, and kiro-cli are the ONLY
 # rendered-text busy fallbacks that survive the redesign, because none of their
 # structured lifecycles was credited-live-verified
@@ -1270,4 +1273,87 @@ fm_busy_is_busy() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local verdict
   verdict=$(fm_busy_classify "$@")
   [ "${verdict%% *}" = busy ]
+}
+
+# --- provider-limit launch failure (fm_busy_launch_provider_limited) --------
+#
+# A worker whose provider refuses its first model call on a usage or rate limit
+# renders the error in its pane and stops working, while every busy contract
+# above still reads it as a worker that merely has not posted yet. The live
+# shape that motivated this (pi 1.3.0 on opencode-go, 2026-10-20) renders
+#   Error: 429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}
+# about one second after Pi's agent_start, followed at once by agent_settled
+# with ctx.isIdle() true (docs/verification/runtime-backends.md "Provider-limit
+# launch failure"). bin/fm-spawn.sh reads this verdict inside its post-launch
+# watch to report a failed start; it is never a busy-state source.
+#
+# fm_busy_provider_limit_line: consumes a captured pane tail on stdin and prints
+# the first of its last 20 non-blank lines carrying a provider usage-limit or
+# rate-limit error, returning 1 when none does. The table matches the observed
+# opencode-go error, Kiro's UsageLimitReachedError and OverageLimitReachedError
+# user messages ("Usage limit reached", "You've reached your <period> usage
+# limit"), and the vendors' own limit error tokens. FM_BUSY_PROVIDER_LIMIT_REGEX
+# overrides the table.
+FM_BUSY_PROVIDER_LIMIT_REGEX_DEFAULT='GoUsageLimitError|usage limit (exceeded|reached)|reached your ([a-z]+ )?(usage|overage) limit|overage limit reached|rate[ _]limit(_error|[ _](exceeded|reached))|insufficient_quota|resource_exhausted|error: 429([^0-9]|$)|429 too many requests'
+
+fm_busy_provider_limit_line() {
+  grep -v '^[[:space:]]*$' | tail -20 \
+    | grep -iE -m1 "${FM_BUSY_PROVIDER_LIMIT_REGEX:-$FM_BUSY_PROVIDER_LIMIT_REGEX_DEFAULT}"
+}
+
+# fm_busy_line_quoted_in_file <line> <file>: 0 when <line>, trimmed of its
+# surrounding whitespace and terminal gutter glyphs and with whitespace runs
+# collapsed, occurs verbatim in <file> under the same whitespace collapsing.
+# A harness that renders its launch brief would otherwise let a brief that
+# quotes a provider error read as that error.
+fm_busy_line_quoted_in_file() {  # <line> <file>
+  local needle prev glyph
+  [ -r "${2:-}" ] || return 1
+  needle=$(printf '%s' "$1" | tr -s '[:space:]' ' ')
+  # Whole-glyph trims rather than a byte bracket, so a multibyte gutter glyph
+  # is removed intact in any locale.
+  prev=
+  while [ "$needle" != "$prev" ]; do
+    prev=$needle
+    needle=${needle#' '}
+    needle=${needle%' '}
+    for glyph in '│' '┃' '|' '>' '›' '❯' '•' '●' '○' '*' '-'; do
+      needle=${needle#"$glyph"}
+    done
+    for glyph in '│' '┃' '|'; do
+      needle=${needle%"$glyph"}
+    done
+  done
+  [ -n "$needle" ] || return 1
+  tr -s '[:space:]' ' ' < "$2" | grep -qF -- "$needle"
+}
+
+# fm_busy_launch_provider_limited: 0, printing the matched pane line, when a
+# freshly launched worker shows a provider-limit error that ended its turn.
+# Two independent signals must agree, so neither the rendered string nor the
+# record alone is load-bearing:
+#   1. the tail carries a provider-limit line (fm_busy_provider_limit_line);
+#   2. the task is not provably working: fm_busy_classify on that same tail is
+#      not busy. A worker still busy - for example one reading a brief that
+#      quotes the very error - never matches, however its pane looks.
+# When the not-busy verdict is a trusted adapter's own idle record (Pi's
+# agent_settled, a Claude Stop, ...), the settled turn corroborates the error.
+# Otherwise (unknown, or a rendered-text fallback) the line must also not be a
+# verbatim line of <brief>, because a harness with no semantic writer cannot
+# tell a rendered brief from a rendered error. Consumes nothing on stdin.
+fm_busy_launch_provider_limited() {  # <backend> <target> <harness> <id> <state-dir> <tail> [brief]
+  local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail=${6-} brief=${7-}
+  local line verdict v_state v_source
+  [ -n "$tail" ] || return 1
+  line=$(printf '%s\n' "$tail" | fm_busy_provider_limit_line) || return 1
+  verdict=$(fm_busy_classify "$backend" "$target" "$harness" "$id" "$state" "$tail")
+  v_state=${verdict%% *}
+  v_source=${verdict#* }
+  [ "$v_state" != busy ] || return 1
+  if ! { [ "$v_state" = idle ] && fm_busy_source_trusted "$harness" "$v_source"; }; then
+    if [ -n "$brief" ] && fm_busy_line_quoted_in_file "$line" "$brief"; then
+      return 1
+    fi
+  fi
+  printf '%s\n' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }

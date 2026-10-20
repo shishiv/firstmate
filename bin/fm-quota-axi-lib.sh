@@ -15,7 +15,8 @@
 # provider + accountKey; quota-axi emits it once any provider expands to more
 # than one account). Schema 5 keeps its exact pre-schema-6 rules so an older
 # quota-axi keeps working unchanged. FM_QUOTA_ROW_JQ is the one join used to
-# bind a candidate to its row under either schema.
+# bind a candidate to its row under either schema; fm_quota_exhausted_evidence
+# applies it for bin/fm-spawn.sh's launch quota guard.
 
 FM_QUOTA_AXI_MIN=0.1.51
 FM_QUOTA_PROVIDER_ID_RE='^[a-z0-9]+(-[a-z0-9]+)*\z'
@@ -185,4 +186,40 @@ fm_quota_provider_for_harness() {
     muse)         printf 'meta\n' ;;
     *)            return 1 ;;
   esac
+}
+
+# fm_quota_exhausted_evidence <provider> <harness> <model>
+# Reads one quota-axi --json snapshot on stdin and binds the candidate to its
+# provider row through quota_lane and quota_row above. Prints one line,
+#   provider=<p> scope=<scope> reason=<exhausted_now|0% remaining> resets=<iso|unknown>
+# and returns 0 when an applicable scope (all_models, all_products, or the
+# model's own model:/product: scope, matched on the model's last path segment)
+# says the runway is exhausted now or 0 percent remains. Returns 1, printing
+# nothing, for every other case - a healthy, unknown, or unmeasured scope, an
+# absent row, or an unparseable snapshot - because missing quota is disclosed
+# uncertainty, never a block (AGENTS.md section 4). This is evidence only: the
+# caller owns what to do with it, and quota-axi stays data-only. The reset time
+# is the limiting window's resetsAt when the row names one.
+fm_quota_exhausted_evidence() {
+  local provider=$1 harness=$2 model=${3:-} out
+  out=$(jq -r --arg provider "$provider" --arg harness "$harness" --arg model "$model" "$FM_QUOTA_ROW_JQ"'
+    quota_lane($harness; $model) as $lane |
+    quota_row(.; $provider; $lane) as $row |
+    ($model | split("/") | last // "") as $bare |
+    if $row == null then empty else
+      ([$row.quotaSemantics.effectiveAvailability[]? | select(
+          .scope == "all_models" or .scope == "all_products" or
+          ($bare != "" and (.scope == ("model:" + $bare) or .scope == ("product:" + $bare))))
+        | select((.runway.status // "") == "exhausted_now" or
+                 (.status == "known" and (.effectivePercentRemaining | type) == "number" and
+                  .effectivePercentRemaining <= 0))] | first) as $bad |
+      if $bad == null then empty else
+        ($bad.runway.limitingWindowId // ($bad.limitingWindowIds // [])[0] // null) as $wid |
+        ([$row.windows[]? | select(.id == $wid) | .resetsAt] | first // "unknown") as $reset |
+        "provider=\($provider) scope=\($bad.scope) reason=\(if ($bad.runway.status // "") == "exhausted_now" then "exhausted_now" else "0% remaining" end) resets=\($reset)"
+      end
+    end
+  ' 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
 }

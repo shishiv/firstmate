@@ -245,6 +245,7 @@ The one case where the contract reads rendered text for a converted adapter is t
 That keeps a launch that never began its brief from holding the busy-age exemption for the whole `FM_BUSY_TURN_MAX_SECS` bound and surfaces it through the ordinary not-provably-working path instead.
 A record any real hook event has advanced is never reclassified this way however its pane looks, no captured tail means the record's own state stands, and the general busy bound is unchanged.
 The per-harness signature table lives in `bin/fm-busy-lib.sh`'s header, and [runtime backend verification](verification/runtime-backends.md#launch-prompt-backstop-signatures) owns the live evidence.
+The same library also owns a launch-failure verdict that is never a busy source: `fm_busy_launch_provider_limited` reports a provider usage-limit or rate-limit error in a fresh worker's pane only when that worker is not provably busy, and `fm-spawn.sh` reads it in a short post-launch watch to report a failed start instead of success ([live evidence](verification/runtime-backends.md#provider-limit-launch-failure)).
 
 Missing, malformed, stale, untrusted, or unverified semantic state is unknown, never idle, and unknown is never promoted to busy either.
 Ordinary task-state consumers act only on an exact busy verdict, so an unreadable worker surfaces for a closer look instead of being absorbed as still-working or written off as finished.
@@ -316,6 +317,7 @@ The intake and authority contract in `AGENTS.md` owns when separate scout resear
 Crewmate and scout dispatch can stay on the static crewmate harness resolved by `config/crew-harness`, or it can use local dispatch profiles in `config/crew-dispatch.json`.
 The dispatch file is intentionally judgment-based: firstmate reads the natural-language rules at intake, chooses the best matching rule, resolves profile arrays itself from current quota output under the `AGENTS.md` section 4 intake boundary and the `quota-array-dispatch` selection procedure, and passes only concrete `--harness`, `--model`, and `--effort` axes to `fm-spawn.sh`.
 The shell scripts validate the JSON shape and verified harness/effort combinations, but they do not parse task intent, match natural-language rules, or own array selection.
+The one quota fact `fm-spawn.sh` enforces itself is a backstop, not a selection: a fresh ship or scout whose harness and model bind to a quota-axi row that is exhausted now refuses before anything is created, unless an explicit override names the captain's choice; its header owns the binding and the override.
 The session-start bootstrap step keeps valid dispatch configuration silent unless verbose facts are enabled and surfaces a concise invalid-config line when validation fails.
 When the file exists, `fm-spawn.sh` refuses crewmate and scout launches without an explicit harness, so `config/crew-harness` is only automatic when no dispatch profile file is active.
 Secondmate launches are exempt because they resolve the secondmate harness and any optional secondmate model or effort tokens instead.

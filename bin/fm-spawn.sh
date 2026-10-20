@@ -4,6 +4,7 @@
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
+#   Ship and scout spawns also accept --allow-exhausted-quota (see "Launch quota guard" below).
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -506,6 +507,39 @@
 # keeps no data/backlog.md. A configured non-markdown adapter remains
 # active without a markdown file; any active automatic backend without
 # compatible tasks-axi refuses before creating lifecycle state.
+# Launch quota guard (fresh ship and scout spawns; never a relaunch, secondmate,
+# or raw launch command):
+#   Before any endpoint, worktree, or record exists, the resolved harness and
+#   model are bound to a quota-axi provider: a config/crew-dispatch.json profile
+#   with exactly this harness and model that declares `provider`, else the
+#   single-provider mapping in bin/fm-quota-axi-lib.sh
+#   (fm_quota_single_provider_for_harness, the same one typed dispatch uses).
+#   Nothing is inferred from a model or harness name, so a multi-provider
+#   harness such as pi binds only through a declared provider. One
+#   `quota-axi --json --provider <p>` read (the whole snapshot when quota-axi
+#   does not list <p>), bounded by FM_SPAWN_QUOTA_TIMEOUT seconds (default
+#   30), is joined through fm_quota_exhausted_evidence. When an applicable scope
+#   says the runway is exhausted now or 0 percent remains, the spawn refuses
+#   with exit 1, naming the provider, scope, and reset time. An unbound
+#   harness, an absent, unknown, or unmeasured row, or a healthy one launches;
+#   a missing quota-axi or an unusable snapshot warns and launches.
+#   --allow-exhausted-quota launches anyway with a warning; pass it only on the
+#   captain's explicit, attended choice for that spawn. It is refused on
+#   --relaunch and --secondmate, and a batch passes it to every pair.
+# Post-launch provider watch (fresh ship and scout spawns):
+#   After the commit point below (record published, backlog item In flight),
+#   the spawn reads the worker's pane every FM_SPAWN_PROVIDER_WATCH_INTERVAL
+#   seconds (default 1) for FM_SPAWN_PROVIDER_WATCH_SECS seconds (default 20;
+#   0 disables the watch). When bin/fm-busy-lib.sh's
+#   fm_busy_launch_provider_limited reports a provider usage-limit or
+#   rate-limit error from a worker that is not provably busy, the spawn appends a
+#   `failed:` line carrying that pane line to state/<id>.status, prints the
+#   evidence and the bin/fm-control.sh relaunch command, and exits 3 without
+#   printing the success line. Unlike a launch-gate failure before the commit
+#   point, which rolls the provisional record back, exit 3 keeps the task
+#   record, backlog item, endpoint, and local copy in place, so the task is
+#   recovered with `bin/fm-control.sh <id> relaunch --harness <name> --note
+#   <why>` rather than spawned again.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
@@ -697,6 +731,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-quota-axi-lib.sh
+. "$SCRIPT_DIR/fm-quota-axi-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -723,6 +759,7 @@ BRANCH_PREFIX_SET=0
 BASE_BRANCH=
 BASE_BRANCH_SET=0
 TRACEPARENT_SET=0
+ALLOW_EXHAUSTED_QUOTA=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -789,6 +826,7 @@ for a in "$@"; do
     KIND_SET=1
     ;;
   --relaunch) RELAUNCH=1 ;;
+  --allow-exhausted-quota) ALLOW_EXHAUSTED_QUOTA=1 ;;
   --harness) want_value=harness ;;
   --harness=*)
     HARNESS_ARG=${a#--harness=}
@@ -882,6 +920,10 @@ if [ "$TRACEPARENT_SET" -eq 1 ]; then
     exit 1
   }
 fi
+if [ "$ALLOW_EXHAUSTED_QUOTA" -eq 1 ] && [ "$KIND" = secondmate ]; then
+  echo "error: --allow-exhausted-quota applies only to a fresh ship or scout spawn; a secondmate launch runs no launch quota check" >&2
+  exit 1
+fi
 case "$EFFORT" in
 '' | low | medium | high | xhigh | max | ultra) ;;
 *)
@@ -917,6 +959,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
   [ "$BASE_BRANCH_SET" -eq 0 ] || {
     echo "error: --relaunch reuses the task's recorded base branch; --base-branch cannot override it" >&2
+    exit 1
+  }
+  [ "$ALLOW_EXHAUSTED_QUOTA" -eq 0 ] || {
+    echo "error: --allow-exhausted-quota applies only to a fresh ship or scout spawn; a relaunch runs no launch quota check" >&2
     exit 1
   }
 else
@@ -1550,6 +1596,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
   [ "$BASE_BRANCH_SET" -eq 0 ] || shared_args+=(--base-branch "$BASE_BRANCH")
+  [ "$ALLOW_EXHAUSTED_QUOTA" -eq 0 ] || shared_args+=(--allow-exhausted-quota)
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -2545,6 +2592,67 @@ if [ -n "$WORKER_ACCOUNT" ] && [ "$HARNESS" = claude ]; then
   else
     unset CLAUDE_CONFIG_DIR
   fi
+fi
+
+# Launch quota guard (header "Launch quota guard"): a fresh ship or scout whose
+# harness and model bind to a quota-axi row that is exhausted now refuses here,
+# before any endpoint, worktree, or record exists. The binding is a profile's
+# declared `provider` in config/crew-dispatch.json for this exact harness and
+# model, else the authoritative single-provider mapping the typed resolver
+# uses (fm_quota_single_provider_for_harness); nothing is inferred from a model
+# or harness name. Unbound, unmeasured, unknown, and absent rows launch.
+spawn_quota_provider() {
+  local declared count
+  if [ -f "$CONFIG/crew-dispatch.json" ]; then
+    declared=$(jq -r --arg h "$HARNESS" --arg m "$MODEL" '
+      def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
+      [((.rules // [])[] | profiles(.use)[]), profiles(.default // null)[]
+        | select(.harness == $h and ((.model // "") == $m) and ((.provider // "") | type) == "string" and (.provider // "") != "")
+        | .provider] | unique | .[]' "$CONFIG/crew-dispatch.json" 2>/dev/null) || declared=
+    count=$(printf '%s' "$declared" | grep -c . || true)
+    if [ "$count" -gt 1 ]; then
+      echo "warning: config/crew-dispatch.json declares several providers for $HARNESS${MODEL:+ $MODEL} ($(printf '%s' "$declared" | tr '\n' ' ' | sed 's/ $//')); the launch quota check is skipped" >&2
+      return 1
+    fi
+    if [ "$count" -eq 1 ]; then
+      printf '%s\n' "$declared"
+      return 0
+    fi
+  fi
+  fm_quota_single_provider_for_harness "$HARNESS" 2>/dev/null
+}
+
+spawn_quota_guard() {
+  local provider snapshot evidence timeout=${FM_SPAWN_QUOTA_TIMEOUT:-30}
+  if [ "${FM_TEST_SEAM:-}" = 1 ] && [ "${FM_SPAWN_QUOTA_GUARD:-}" = off ]; then
+    return 0
+  fi
+  provider=$(spawn_quota_provider) || return 0
+  [ -n "$provider" ] || return 0
+  if ! command -v quota-axi >/dev/null 2>&1; then
+    echo "warning: quota-axi is not installed, so $HARNESS${MODEL:+ $MODEL} launches without the launch quota check on provider $provider" >&2
+    return 0
+  fi
+  # One provider read is fast; a provider id quota-axi does not list refuses
+  # the flag, so the whole snapshot is the fallback before giving up.
+  snapshot=$(fm_run_timed "$timeout" quota-axi --json --provider "$provider" 2>/dev/null </dev/null) ||
+    snapshot=$(fm_run_timed "$timeout" quota-axi --json 2>/dev/null </dev/null) ||
+    snapshot=
+  if [ -z "$snapshot" ] || ! printf '%s\n' "$snapshot" | fm_quota_json_valid; then
+    echo "warning: quota-axi returned no usable quota snapshot, so $HARNESS${MODEL:+ $MODEL} launches without the launch quota check on provider $provider" >&2
+    return 0
+  fi
+  evidence=$(printf '%s\n' "$snapshot" | fm_quota_exhausted_evidence "$provider" "$HARNESS" "$MODEL") || return 0
+  if [ "$ALLOW_EXHAUSTED_QUOTA" -eq 1 ]; then
+    echo "warning: launching $ID on $HARNESS${MODEL:+ $MODEL} although quota-axi reports it exhausted ($evidence), because --allow-exhausted-quota was passed" >&2
+    return 0
+  fi
+  echo "error: refusing to spawn $ID on $HARNESS${MODEL:+ $MODEL}: quota-axi reports its provider exhausted ($evidence); choose another profile, or pass --allow-exhausted-quota only on the captain's explicit choice to launch on it anyway" >&2
+  return 1
+}
+
+if [ "$RELAUNCH" -eq 0 ] && [ "$RAW_LAUNCH" = 0 ] && { [ "$KIND" = ship ] || [ "$KIND" = scout ]; }; then
+  spawn_quota_guard || exit 1
 fi
 
 secondmate_registry_value() {
@@ -5928,4 +6036,34 @@ SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
+# Post-launch provider watch (header "Post-launch provider watch"): the task is
+# committed - record published, backlog item In flight - so a worker that dies on
+# a provider limit right after launch is reported as a failed start while its
+# record and local copy stay intact for bin/fm-control.sh relaunch.
+# bin/fm-busy-lib.sh's fm_busy_launch_provider_limited owns the verdict.
+spawn_watch_provider_limit() {
+  local secs=${FM_SPAWN_PROVIDER_WATCH_SECS:-20} interval=${FM_SPAWN_PROVIDER_WATCH_INTERVAL:-1}
+  local deadline pane line
+  case "$secs" in ''|*[!0-9]*) secs=20 ;; esac
+  case "$interval" in ''|*[!0-9]*|0) interval=1 ;; esac
+  [ "$secs" -gt 0 ] || return 0
+  deadline=$((SECONDS + secs))
+  while :; do
+    pane=$(fm_backend_capture "$BACKEND" "$T" 40 "$W" 2>/dev/null) || pane=
+    if line=$(fm_busy_launch_provider_limited "$BACKEND" "$T" "$HARNESS" "$ID" "$STATE" "$pane" "$BRIEF"); then
+      SPAWN_PROVIDER_LIMIT_LINE=$line
+      return 1
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || return 0
+    sleep "$interval"
+  done
+}
+SPAWN_PROVIDER_LIMIT_LINE=
+if [ "$RELAUNCH" -eq 0 ] && { [ "$KIND" = ship ] || [ "$KIND" = scout ]; } &&
+  ! spawn_watch_provider_limit; then
+  printf '%s\n' "$(status_stamp_line "failed: worker failed to start: its provider refused the first model call: $SPAWN_PROVIDER_LIMIT_LINE")" >>"$STATE/$ID.status"
+  echo "error: $ID was launched on $HARNESS${MODEL:+ $MODEL} but its worker failed to start: the provider refused its first model call with a usage or rate limit: $SPAWN_PROVIDER_LIMIT_LINE" >&2
+  echo "error: the task record and local copy $WT are kept; relaunch it on another provider with bin/fm-control.sh $ID relaunch --harness <name> [--model <model>] --note <why>" >&2
+  exit 3
+fi
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"
