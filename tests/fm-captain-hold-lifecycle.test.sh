@@ -32,6 +32,24 @@ make_home() {  # <name>
 EOF
   fakebin=$(fm_fakebin "$home")
   fm_fake_exit0 "$fakebin" tmux treehouse no-mistakes gh gh-axi
+  # The fixtures' recorded PRs have landed: cleanup proves that on the forge
+  # through bin/fm-pr-lib.sh's GitHub reader, whose gh-axi leg answers here
+  # once the silent gh read yields nothing.
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/gh-axi"
+  # The same for a recorded Gerrit change, through the read-only Gerrit reader.
+  cat > "$fakebin/gerrit-axi" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = show ] || exit 1
+printf '{"ok":true,"changes":[{"change":%s,"status":"MERGED"}]}\n' "${2:-0}"
+SH
+  chmod +x "$fakebin/gerrit-axi"
   printf '%s\n' "$home"
 }
 

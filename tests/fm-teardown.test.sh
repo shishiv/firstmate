@@ -109,11 +109,24 @@ SH
   # number fails. This keeps the landed-work check hermetic (never reaching the real
   # gh-axi) and represents the common "no GitHub PR" baseline. Tests that need a
   # merged PR or a lookup error override this file with the helpers below.
+  # `pr view <n>` is the GitHub leg of bin/fm-pr-lib.sh's forge reader once
+  # the gh GraphQL read fails, as every gh mock here makes it; it reports
+  # the state forge_pr_state recorded for <n> (or for "*") and otherwise
+  # fails as before.
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
   "pr list") printf '%s\n' "count: 0 (showing first 0)" "pull_requests[]: []" ; exit 0 ;;
-  "pr view") echo "error: pull request not found" >&2 ; exit 1 ;;
+  "pr view")
+    states="$(dirname "$0")/../forge-pr-states"
+    number=${3:-}
+    state=
+    [ -f "$states" ] && state=$(awk -v n="$number" '$1 == n || $1 == "*" { print $2; exit }' "$states")
+    if [ -n "$state" ]; then
+      printf '%s\n' "pull_request:" "  number: $number" "  state: $state"
+      exit 0
+    fi
+    echo "error: pull request not found" >&2 ; exit 1 ;;
 esac
 exit 0
 SH
@@ -261,6 +274,31 @@ land_on_origin_main() {
   git -C "$tmp" push -q origin HEAD:main
   rm -rf "$tmp"
 }
+
+# Record the state the forge reports for PR <number> ("*" for any PR), read
+# by the default gh-axi mock's `pr view`, which is how bin/fm-pr-lib.sh's
+# GitHub reader sees it here. Args: case_dir number state
+forge_pr_state() {
+  printf '%s %s\n' "$2" "$3" >> "$1/forge-pr-states"
+}
+
+# A gerrit-axi that reports change <number> with <status>, the shape
+# bin/fm-pr-lib.sh's read-only Gerrit reader parses. Args: case_dir number status
+add_gerrit_change_status() {
+  local case_dir=$1 number=$2 status=$3
+  cat > "$case_dir/fakebin/gerrit-axi" <<SH
+#!/usr/bin/env bash
+[ "\${1:-} \${2:-}" = "show $number" ] || { echo "error: change not found" >&2; exit 1; }
+printf '%s\n' '{"ok":true,"changes":[{"change":$number,"status":"$status"}]}'
+SH
+  chmod +x "$case_dir/fakebin/gerrit-axi"
+}
+
+# A canonical GitHub PR URL the forge reader accepts and the mocks report
+# merged, whose 2100-digit number the pending-close record refuses as an
+# over-long --pr link. Legacy-stamp cases use it to make the close
+# unrecordable after every landed-work proof has passed.
+UNRECORDABLE_PR_URL="https://github.com/example/repo/pull/1$(printf '%02100d' 0)"
 
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
 add_gh_pr_merged_for_head() {
@@ -790,6 +828,7 @@ test_teardown_closes_the_backlog_item_itself() {
   case_dir=$(make_case tasks-axi-close)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  forge_pr_state "$case_dir" 7 MERGED
   seed_backlog_in_flight "$case_dir"
 
   out=$(run_teardown "$case_dir") || fail "teardown failed with a real backlog"
@@ -813,6 +852,7 @@ test_teardown_closes_a_gerrit_task_with_its_change_url_as_a_note() {
   case_dir=$(make_case tasks-axi-close-gerrit)
   write_meta "$case_dir" no-mistakes ship
   printf 'pr=%s\n' "$gerrit_url" >> "$case_dir/state/task-x1.meta"
+  add_gerrit_change_status "$case_dir" 12345 MERGED
   seed_backlog_in_flight "$case_dir"
   # Pin the refusal tasks-axi applies to a --pr link that is not a canonical
   # GitHub pull request, so this case keeps reproducing whatever the installed
@@ -844,6 +884,7 @@ SH
   case_dir=$(make_case tasks-axi-close-github-under-refusal)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  forge_pr_state "$case_dir" 7 MERGED
   seed_backlog_in_flight "$case_dir"
   cp "$TMP_ROOT/tasks-axi-close-gerrit/fakebin/tasks-axi" "$case_dir/fakebin/tasks-axi"
   out=$(run_teardown "$case_dir" 2>&1) || fail "teardown of a landed GitHub task failed: $out"
@@ -858,6 +899,7 @@ test_teardown_manual_backend_leaves_the_backlog_to_the_operator() {
   case_dir=$(make_case tasks-axi-manual-optout)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  forge_pr_state "$case_dir" 7 MERGED
   printf '%s\n' manual > "$case_dir/config/backlog-backend"
   seed_backlog_in_flight "$case_dir"
 
@@ -983,6 +1025,7 @@ land_on_branch() {
 # Args: case_dir stale-head stack-base state
 add_gh_stack_pr() {
   local case_dir=$1 stale_head=$2 base=$3 state=$4
+  forge_pr_state "$case_dir" '*' "$state"
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in
@@ -1038,6 +1081,121 @@ test_stack_base_merge_counts_as_landed() {
   pass "a merge into the PR's stack base counts as landed work"
 }
 
+# A glab that reports merge request <number> of the fixture GitLab project
+# with <state> (GitLab's own words: opened, merged, closed), the shape
+# bin/fm-pr-lib.sh's GitLab reader parses. Args: case_dir number state
+GITLAB_MR_PROJECT=https://gitlab.example/group/subgroup/project
+add_glab_mr_state() {
+  local case_dir=$1 number=$2 state=$3
+  cat > "$case_dir/fakebin/glab" <<SH
+#!/usr/bin/env bash
+[ "\${1:-} \${2:-} \${3:-}" = "mr view $number" ] || { echo "error: not found" >&2; exit 1; }
+printf '%s\n' '{"iid":$number,"state":"$state"}'
+SH
+  chmod +x "$case_dir/fakebin/glab"
+}
+
+# The 20/10 incident: a ship's branch was pushed and its recorded PR was still
+# open, yet cleanup closed the work as merged and retired the record the
+# guarded merge needs. A recorded PR that the forge does not report merged
+# refuses on every supported forge reader, even when the task's content
+# already sits on the default branch, and the refusal names the PR and the
+# state the forge gave; an unreadable forge proves nothing and refuses too.
+test_recorded_unmerged_pr_refuses_on_every_forge() {
+  local variant case_dir rc head url state
+  for variant in github-open github-closed github-unreadable gitlab-opened gerrit-new; do
+    case_dir=$(make_case "recorded-pr-$variant")
+    write_meta "$case_dir" direct-PR ship
+    seed_backlog_in_flight "$case_dir"
+    wt_commit_file "$case_dir" feature.txt hello "shippable work"
+    git -C "$case_dir/wt" push -q origin fm/task-x1
+    # The same content already on the default branch: not a substitute for
+    # the task's own PR merging.
+    land_on_origin_main "$case_dir" feature.txt hello
+    git -C "$case_dir/project" fetch -q origin
+    head=$(git -C "$case_dir/wt" rev-parse HEAD)
+    case "$variant" in
+      github-*)
+        url=https://github.com/example/repo/pull/42
+        case "$variant" in
+          github-open) state=OPEN; forge_pr_state "$case_dir" 42 OPEN ;;
+          github-closed) state=CLOSED; forge_pr_state "$case_dir" 42 CLOSED ;;
+          github-unreadable) state= ;;
+        esac
+        ;;
+      gitlab-opened)
+        url=$GITLAB_MR_PROJECT/-/merge_requests/7
+        state=opened
+        add_glab_mr_state "$case_dir" 7 opened
+        ;;
+      gerrit-new)
+        url=https://gerrit.example.com/c/project/+/12345
+        state=NEW
+        add_gerrit_change_status "$case_dir" 12345 NEW
+        ;;
+    esac
+    printf 'pr=%s\n' "$url" >> "$case_dir/state/task-x1.meta"
+
+    set +e
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "recorded-pr-$variant: teardown must refuse while the recorded PR is not merged"
+    if [ -n "$state" ]; then
+      grep -qF "its recorded PR $url is $state on the forge, not merged" "$case_dir/stderr" \
+        || fail "recorded-pr-$variant: refusal did not name the PR and its state: $(cat "$case_dir/stderr")"
+    else
+      grep -qF "its recorded PR $url could not be read from the forge" "$case_dir/stderr" \
+        || fail "recorded-pr-$variant: refusal did not say the PR state was unreadable: $(cat "$case_dir/stderr")"
+    fi
+    grep -q -- --force "$case_dir/stderr" \
+      || fail "recorded-pr-$variant: refusal did not name the captain-authorized --force path"
+    assert_refusal_retained_task_state "$case_dir" "recorded-pr-$variant" "$head"
+    [ "$(backlog_row_state "$case_dir")" = in_flight ] \
+      || fail "recorded-pr-$variant: the refusal closed the backlog item anyway"
+  done
+  pass "a recorded PR that is open, closed, or unreadable refuses on GitHub, GitLab, and Gerrit"
+}
+
+# The accepting half: the same pushed copy, with its recorded PR reported
+# merged by GitHub or GitLab, is torn down.
+test_recorded_merged_pr_is_torn_down_on_every_forge() {
+  local variant case_dir url
+  for variant in github gitlab; do
+    case_dir=$(make_case "recorded-pr-merged-$variant")
+    write_meta "$case_dir" direct-PR ship
+    seed_backlog_in_flight "$case_dir"
+    wt_commit_file "$case_dir" feature.txt hello "shippable work"
+    git -C "$case_dir/wt" push -q origin fm/task-x1
+    land_on_origin_main "$case_dir" feature.txt hello
+    git -C "$case_dir/project" fetch -q origin
+    if [ "$variant" = github ]; then
+      url=https://github.com/example/repo/pull/42
+      forge_pr_state "$case_dir" 42 MERGED
+    else
+      url=$GITLAB_MR_PROJECT/-/merge_requests/7
+      add_glab_mr_state "$case_dir" 7 merged
+      # tasks-axi takes no GitLab merge request as a --pr link, so the close
+      # itself is left to the operator here; this case proves the landed-work
+      # gate, not the backlog link.
+      printf '%s\n' manual > "$case_dir/config/backlog-backend"
+    fi
+    printf 'pr=%s\n' "$url" >> "$case_dir/state/task-x1.meta"
+
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" \
+      || fail "recorded-pr-merged-$variant: teardown refused a merged PR: $(cat "$case_dir/stderr")"
+    ! grep -q REFUSED "$case_dir/stderr" || fail "recorded-pr-merged-$variant: teardown printed a REFUSED line"
+    assert_absent "$case_dir/state/task-x1.meta" "recorded-pr-merged-$variant: teardown left the task record"
+    if [ "$variant" = github ]; then
+      [ "$(backlog_row_state "$case_dir")" = "done" ] \
+        || fail "recorded-pr-merged-$variant: the backlog item was not closed"
+    fi
+  done
+  pass "a recorded PR the forge reports merged is torn down on GitHub and GitLab"
+}
+
+
 # The P1 companion to the case above: an OPEN stacked PR whose base already
 # carries the task content must still refuse. The base match alone never proves
 # a merge; only a merged-state verdict lets the stack-base fallback through.
@@ -1063,8 +1221,8 @@ test_open_stacked_pr_with_base_content_refuses() {
   set -e
 
   expect_code 1 "$rc" "stack-base-open: teardown should refuse an open stacked PR even when its base carries the content"
-  grep -q "no merged PR containing its HEAD" "$case_dir/stderr" \
-    || fail "stack-base-open: refusal did not cite the missing merged PR: $(cat "$case_dir/stderr")"
+  grep -qF "its recorded PR https://github.com/example/repo/pull/7 is OPEN on the forge, not merged" "$case_dir/stderr" \
+    || fail "stack-base-open: refusal did not name the open PR and its state: $(cat "$case_dir/stderr")"
   assert_refusal_retained_task_state "$case_dir" stack-base-open "$head"
   pass "an open stacked PR refuses even when its base carries the content"
 }
@@ -1072,6 +1230,8 @@ test_open_stacked_pr_with_base_content_refuses() {
 # .state answers per recorded PR: PR 7 is MERGED, PR 8 is OPEN, anything else errors.
 add_gh_pr_state_split() {  # <case-dir>
   local case_dir=$1
+  forge_pr_state "$case_dir" 8 OPEN
+  forge_pr_state "$case_dir" 7 MERGED
   cat > "$case_dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
@@ -1111,7 +1271,7 @@ test_missing_worktree_current_pr_open_refuses() {
   set -e
 
   expect_code 1 "$rc" "missing-wt-current-open: an earlier merge must not close a task whose current PR is open"
-  grep -q "current PR https://github.com/example/repo/pull/8 does not report MERGED" "$case_dir/stderr" \
+  grep -qF "its recorded PR https://github.com/example/repo/pull/8 is OPEN on the forge, not merged" "$case_dir/stderr" \
     || fail "missing-wt-current-open: refusal did not name the open current PR: $(cat "$case_dir/stderr")"
   [ -e "$case_dir/state/task-x1.meta" ] \
     || fail "missing-wt-current-open: the refusal erased the durable task record"
@@ -1124,6 +1284,7 @@ test_missing_worktree_current_pr_open_refuses() {
 # worktree left to inspect (the full head query cannot run there).
 add_gh_pr_state() {  # <case-dir> <state>
   local case_dir=$1 state=$2
+  forge_pr_state "$case_dir" '*' "$state"
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in
@@ -1373,6 +1534,7 @@ test_merged_pr_with_later_local_commit_refuses() {
 # Args: case_dir head_1052 head_1055
 add_gh_two_prs_merged() {
   local case_dir=$1 head_a=$2 head_b=$3
+  forge_pr_state "$case_dir" '*' MERGED
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in
@@ -2001,12 +2163,12 @@ test_windowless_leftover_retries_its_retained_legacy_stamp_without_the_flag() {
   local case_dir rc out
   case_dir=$(make_case windowless-retry)
   write_windowless_legacy_meta "$case_dir" no-mistakes ship "$case_dir/missing-wt"
-  printf '%s\n' 'pr=not-a-valid-url' 'pr_merged=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  printf 'pr=%s\n' "$UNRECORDABLE_PR_URL" >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' 'pr_merged=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   seed_backlog_in_flight "$case_dir"
-  # The mock answers MERGED to any .state query, including the unresolvable
-  # pr= target: this case exercises the stamp/rollback path, not proof, so
-  # the merge proof passes here while the backlog close still fails on the
-  # invalid --pr link below.
+  # The forge reports every PR merged, including the over-long pr= link: this
+  # case exercises the stamp/rollback path, not proof, so the merge proof
+  # passes here while the backlog close still fails on that --pr link.
   add_gh_pr_state "$case_dir" MERGED
   add_failing_truncate_perl "$case_dir"
 
@@ -2109,7 +2271,8 @@ test_legacy_record_rolls_the_stamp_back_when_the_marker_write_fails() {
   local case_dir rc before
   case_dir=$(make_case legacy-stamp-rollback)
   write_legacy_meta "$case_dir" no-mistakes ship
-  printf '%s\n' 'pr=not-a-valid-url' >> "$case_dir/state/task-x1.meta"
+  printf 'pr=%s\n' "$UNRECORDABLE_PR_URL" >> "$case_dir/state/task-x1.meta"
+  forge_pr_state "$case_dir" '*' MERGED
   seed_backlog_in_flight "$case_dir"
   wt_commit "$case_dir" "landed legacy work"
   add_fork_with_pushed_branch "$case_dir"
@@ -2162,7 +2325,8 @@ test_retained_legacy_stamp_still_faces_the_endpoint_gate() {
   local case_dir rc stamped
   case_dir=$(make_case legacy-stamp-retained)
   write_legacy_meta "$case_dir" no-mistakes ship
-  printf '%s\n' 'pr=not-a-valid-url' >> "$case_dir/state/task-x1.meta"
+  printf 'pr=%s\n' "$UNRECORDABLE_PR_URL" >> "$case_dir/state/task-x1.meta"
+  forge_pr_state "$case_dir" '*' MERGED
   seed_backlog_in_flight "$case_dir"
   wt_commit "$case_dir" "landed legacy work"
   add_fork_with_pushed_branch "$case_dir"
@@ -4968,6 +5132,8 @@ test_no_mistakes_pushed_branch_without_merge_refuses
 test_no_mistakes_pushed_merged_pr_allows
 test_stack_base_merge_counts_as_landed
 test_open_stacked_pr_with_base_content_refuses
+test_recorded_unmerged_pr_refuses_on_every_forge
+test_recorded_merged_pr_is_torn_down_on_every_forge
 test_missing_worktree_needs_merge_proof
 test_missing_worktree_current_pr_open_refuses
 test_reassigned_slot_needs_merge_proof

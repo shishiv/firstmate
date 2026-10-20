@@ -1681,12 +1681,35 @@ test_missing_meta_refuses_before_merge() {
   set -e
 
   expect_code 1 "$rc" "missing-meta: fm-pr-merge should refuse"
-  assert_grep 'error: task metadata is unavailable' "$case_dir/stderr" \
-    "missing-meta: refusal did not explain missing meta"
+  # The refusal names the exact record path it resolved and why it was
+  # rejected: a record a completed cleanup already removed is the usual cause.
+  assert_grep "error: task metadata is unavailable: $case_dir/state/missing-x1.meta: no such file; a task whose record a completed cleanup already removed has nothing left to act on" "$case_dir/stderr" \
+    "missing-meta: refusal did not name the path it checked and why"
   [ ! -s "$case_dir/gh.log" ] || fail "missing-meta: gh pr merge was invoked"
   assert_absent "$case_dir/state/missing-x1.check.sh" \
     "missing-meta: fm-pr-check should not arm a poll for an unknown task"
-  pass "fm-pr-merge refuses before merging when task meta is missing"
+  pass "fm-pr-merge refuses before merging when task meta is missing, naming the path"
+}
+
+test_symlinked_meta_refusal_names_the_path() {
+  local case_dir rc
+  case_dir=$(make_case symlinked-meta)
+  add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
+  : > "$case_dir/gh-axi.log"
+  mv "$case_dir/state/task-x1.meta" "$case_dir/real.meta"
+  ln -s "$case_dir/real.meta" "$case_dir/state/task-x1.meta"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "symlinked-meta: fm-pr-merge should refuse"
+  assert_grep "error: task metadata is unavailable: $case_dir/state/task-x1.meta: it is a symbolic link" "$case_dir/stderr" \
+    "symlinked-meta: refusal did not name the path and the symlink"
+  [ ! -s "$case_dir/gh.log" ] || fail "symlinked-meta: gh pr merge was invoked"
+  pass "fm-pr-merge names the path when the task record is a symbolic link"
 }
 
 test_malformed_url_refuses_before_merge() {
@@ -2554,6 +2577,7 @@ test_github_queued_outcome_is_verified
 test_github_queue_required_refusal_names_retry_flags
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
+test_symlinked_meta_refusal_names_the_path
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording

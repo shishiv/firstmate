@@ -67,8 +67,8 @@ NUMBER=$FM_PR_NUMBER
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
-if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" != 1 ]; then
-  echo "error: task metadata is unavailable" >&2
+if META_REASON=$(fm_pr_meta_unavailable_reason "$META"); then
+  echo "error: task metadata is unavailable: $META: $META_REASON" >&2
   exit 1
 fi
 
@@ -233,11 +233,13 @@ fm_pr_poll_prepare "$STATE" "$ID" "$PROVIDER" "$URL" "$HOST" "$PROJECT_PATH" "$N
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
-[ -f "$META" ] && [ ! -L "$META" ] && [ "$(fm_pr_file_link_count "$META")" = 1 ] \
-  || { echo "error: task metadata is unavailable" >&2; exit 1; }
+if META_REASON=$(fm_pr_meta_unavailable_reason "$META" "$STATE"); then
+  echo "error: task metadata is unavailable: $META: $META_REASON" >&2
+  exit 1
+fi
 META_DEVICE=$(fm_pr_file_device "$META") || exit 1
 STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
-[ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable" >&2; exit 1; }
+[ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable: $META: it is not on the state directory's own filesystem" >&2; exit 1; }
 META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in

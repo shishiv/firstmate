@@ -347,6 +347,29 @@ fm_pr_file_identity() {
   printf '%s:%s\n' "$device" "$inode"
 }
 
+# Why a task record at <meta> cannot be used as one: prints a short reason for
+# a refusal that names the exact path it checked, and returns non-zero when
+# the record is usable. <state> is the directory the record must share a
+# filesystem with; pass it to also check the device. An absent record is
+# almost always one a completed cleanup already retired, which is why the
+# reason says so rather than leaving a bare "unavailable".
+fm_pr_meta_unavailable_reason() {  # <meta> [<state>]
+  local meta=$1 state=${2:-} links
+  if [ -L "$meta" ]; then
+    printf 'it is a symbolic link, not the regular file a task record must be'
+  elif [ ! -e "$meta" ]; then
+    printf 'no such file; a task whose record a completed cleanup already removed has nothing left to act on'
+  elif [ ! -f "$meta" ]; then
+    printf 'it is not a regular file'
+  elif links=$(fm_pr_file_link_count "$meta") && [ "$links" != 1 ]; then
+    printf 'it has %s hard links, so another name could change it' "${links:-an unreadable number of}"
+  elif [ -n "$state" ] && [ "$(fm_pr_file_device "$meta")" != "$(fm_pr_file_device "$state")" ]; then
+    printf 'it is not on the state directory'"'"'s own filesystem'
+  else
+    return 1
+  fi
+}
+
 fm_pr_sha256() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
@@ -1146,6 +1169,29 @@ fm_pr_gerrit_read_revision() {  # <host> <number>
   # Consumed by bin/fm-dod-lib.sh fm_dod_gerrit_change_carries_head.
   # shellcheck disable=SC2034
   FM_PR_RECORD_REVISION=$revision
+}
+
+# The live state of the PR, MR, or change a canonical URL names, read through
+# the provider's own reader above: GitHub through gh (gh-axi as fallback),
+# GitLab through glab, Gerrit through the read-only gerrit-axi adapter. Sets
+# FM_PR_RECORD_STATE to the forge's own state word and FM_PR_RECORD_MERGED to
+# true or false; returns non-zero, with both empty, when the URL does not parse
+# or the forge cannot be read. This also leaves fm_pr_url_parse's FM_PR_*
+# identity set for the caller. bin/fm-teardown.sh's merge proof consumes it.
+fm_pr_read_record_for_url() {  # <url>
+  # Consumed by bin/fm-teardown.sh recorded_pr_reports_merged.
+  # shellcheck disable=SC2034
+  FM_PR_RECORD_STATE=
+  # Consumed by bin/fm-teardown.sh recorded_pr_reports_merged.
+  # shellcheck disable=SC2034
+  FM_PR_RECORD_MERGED=
+  fm_pr_url_parse "$1" || return 1
+  case "$FM_PR_PROVIDER" in
+    github) fm_pr_github_read_record "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" ;;
+    gitlab) fm_pr_gitlab_read_record "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" ;;
+    gerrit) fm_pr_gerrit_read_record "$FM_PR_HOST" "$FM_PR_NUMBER" ;;
+    *) return 1 ;;
+  esac
 }
 
 fm_pr_poll_retirement_data_valid() {
