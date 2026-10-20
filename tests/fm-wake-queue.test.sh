@@ -3421,6 +3421,151 @@ SH
   pass "watch liveness: an unreachable remote secondmate is probed, preserved, and never failed over"
 }
 
+# A Kiro ship case for kiro_stopped_session_tick: a tmux record whose recorded
+# worktree exists, a status log whose last line is the hook's stopped-session
+# blocker for <session> (stamped now), a busy generation armed before the stop,
+# and a fake control plane that records each call and its note.
+KIRO_STOP_LINE_TAIL="this session was not started by Firstmate's launch, which records the tools Kiro offers, so they cannot be checked; a plain kiro-cli resume opens a new session without the worker's conversation or its tools (kiro-cli 2.32.0); relaunch it with bin/fm-control.sh k1 relaunch"
+make_kiro_stop_case() {  # <name> [kind]
+  local dir=$1 fakebin now
+  dir="$TMP_ROOT/$1"
+  fakebin="$dir/fakebin"
+  mkdir -p "$dir/state" "$dir/config" "$dir/data" "$dir/wt" "$fakebin"
+  printf 'window=firstmate:fm-k1\nkind=%s\nharness=kiro-cli\nbackend=tmux\nworktree=%s\n' \
+    "${2:-ship}" "$dir/wt" > "$dir/state/k1.meta"
+  now=$(date +%s)
+  printf 'g1\n' > "$dir/state/k1.busy-gen"
+  touch -d "@$((now - 600))" "$dir/state/k1.busy-gen"
+  {
+    printf 'working [at=%s]: implementing the parser fix\n' "$((now - 500))"
+    printf 'paused [at=%s]: waiting on the CI run for the parser fix\n' "$((now - 400))"
+    printf 'blocked [at=%s]: kiro worker session sess_a1 stopped: %s\n' "$now" "$KIRO_STOP_LINE_TAIL"
+  } > "$dir/state/k1.status"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) printf 'kiro-cli\n' ;;
+  list-windows) printf 'main\nfm-k1\n' ;;
+esac
+exit 0
+SH
+  cat > "$fakebin/fm-control.sh" <<'SH'
+#!/usr/bin/env bash
+log=$FM_FAKE_CONTROL_LOG
+printf '%s %s FM_HOME=%s\n' "$1" "$2" "${FM_HOME:-}" >> "$log"
+[ "${3:-}" = --note ] && printf '%s\n--\n' "$4" >> "$log.notes"
+exit "${FM_FAKE_CONTROL_RC:-0}"
+SH
+  chmod +x "$fakebin/tmux" "$fakebin/fm-control.sh"
+  make_fake_crew_state "$fakebin" >/dev/null
+  printf '%s\n' "$dir"
+}
+
+run_kiro_stop_leg() {  # <dir> <tag> [NAME=VALUE...]
+  local dir=$1 tag=$2
+  shift 2
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_CONTROL_BIN="$dir/fakebin/fm-control.sh" FM_FAKE_CONTROL_LOG="$dir/control.log" \
+    TMUX='' FM_BACKEND=tmux FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$@" "$WATCH" > "$dir/watch-$tag.out" 2> "$dir/watch-$tag.err" &
+  LIVENESS_PID=$!
+}
+
+test_kiro_stopped_session_is_relaunched_once_with_its_progress() {
+  local dir state pid now open
+  dir=$(make_kiro_stop_case kiro-stop-relaunch)
+  state="$dir/state"
+  run_kiro_stop_leg "$dir" first; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "the watcher did not exit on the auto-relaunch wake"
+  grep -F 'check: worker k1 auto-relaunched after its Kiro session sess_a1 stopped' "$dir/watch-first.out" >/dev/null \
+    || fail "a stopped Kiro session was not auto-relaunched: $(cat "$dir/watch-first.out" "$dir/watch-first.err")"
+  [ "$(grep -c '^k1 relaunch FM_HOME='"$dir"'$' "$dir/control.log")" -eq 1 ] \
+    || fail "the relaunch did not run exactly once through the control plane with FM_HOME: $(cat "$dir/control.log")"
+  { grep -F 'implementing the parser fix' "$dir/control.log.notes" >/dev/null \
+    && grep -F 'waiting on the CI run for the parser fix' "$dir/control.log.notes" >/dev/null; } \
+    || fail "the relaunch note did not carry the last working and paused lines: $(cat "$dir/control.log.notes")"
+  grep -F 'sess_a1 stopped because' "$dir/control.log.notes" >/dev/null \
+    || fail "the relaunch note did not say why the worker was relaunched: $(cat "$dir/control.log.notes")"
+  awk -F '\t' '$2 == "sess_a1" && $3 == "relaunched"' "$state/.kiro-auto-relaunch-k1" | grep -q . \
+    || fail "the relaunch was not recorded: $(cat "$state/.kiro-auto-relaunch-k1")"
+  [ "$(grep -c 'kiro-auto-relaunch-k1-sess_a1' "$state/.wake-queue")" -eq 1 ] \
+    || fail "the auto-relaunch wake row was not queued exactly once: $(cat "$state/.wake-queue")"
+  tail -1 "$state/k1.status" | grep -E '^resolved \[at=[0-9]+\]: supervision relaunched' >/dev/null \
+    || fail "the stopped-session blocker was not closed: $(tail -2 "$state/k1.status")"
+  open=$(bash -c '. "$1/bin/fm-classify-lib.sh" && status_open_decisions "$2"' _ "$ROOT" "$state/k1.status")
+  [ -z "$open" ] || fail "the stopped-session blocker is still open after the relaunch: $open"
+
+  # The same stopped session never relaunches twice.
+  drain_liveness_wakes "$dir"
+  run_kiro_stop_leg "$dir" again; pid=$LIVENESS_PID
+  sleep 3
+  kill_liveness_leg "$pid"
+  [ "$(wc -l < "$dir/control.log" | tr -d ' ')" -eq 1 ] \
+    || fail "an already relaunched session was relaunched again: $(cat "$dir/control.log")"
+
+  # A second stop inside the hour escalates instead of looping.
+  now=$(date +%s)
+  printf 'blocked [at=%s]: kiro worker session sess_b2 stopped: %s\n' "$now" "$KIRO_STOP_LINE_TAIL" >> "$state/k1.status"
+  run_kiro_stop_leg "$dir" second; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "the watcher did not exit on the repeat-stop escalation"
+  grep -F 'check: worker k1 Kiro session sess_b2 stopped again within 3600s' "$dir/watch-second.out" >/dev/null \
+    || fail "a second stop within the hour did not escalate: $(cat "$dir/watch-second.out" "$dir/watch-second.err")"
+  [ "$(wc -l < "$dir/control.log" | tr -d ' ')" -eq 1 ] \
+    || fail "a second stop within the hour was relaunched: $(cat "$dir/control.log")"
+  awk -F '\t' '$2 == "sess_b2" && $3 == "escalated"' "$state/.kiro-auto-relaunch-k1" | grep -q . \
+    || fail "the escalation was not recorded: $(cat "$state/.kiro-auto-relaunch-k1")"
+  open=$(bash -c '. "$1/bin/fm-classify-lib.sh" && status_open_decisions "$2"' _ "$ROOT" "$state/k1.status")
+  [ -n "$open" ] || fail "an escalated stop must leave its blocker open for firstmate"
+  pass "watch kiro: a stopped Kiro session relaunches once with its progress, and a repeat inside the hour escalates"
+}
+
+test_kiro_stopped_session_is_left_alone_when_unsafe_or_superseded() {
+  local dir state pid now
+  # A missing worktree escalates without relaunching.
+  dir=$(make_kiro_stop_case kiro-stop-no-worktree)
+  state="$dir/state"
+  rmdir "$dir/wt"
+  run_kiro_stop_leg "$dir" nowt; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "the watcher did not exit on the missing-worktree escalation"
+  grep -F 'check: worker k1 Kiro session sess_a1 stopped, but its worktree' "$dir/watch-nowt.out" >/dev/null \
+    || fail "a stop with a missing worktree did not escalate: $(cat "$dir/watch-nowt.out" "$dir/watch-nowt.err")"
+  [ ! -s "$dir/control.log" ] || fail "a task with a missing worktree was relaunched: $(cat "$dir/control.log")"
+
+  # A task already relaunched after the stop (a newer busy generation) is only recorded.
+  dir=$(make_kiro_stop_case kiro-stop-superseded)
+  state="$dir/state"
+  now=$(date +%s)
+  touch -d "@$((now + 5))" "$state/k1.busy-gen"
+  run_kiro_stop_leg "$dir" superseded; pid=$LIVENESS_PID
+  sleep 3
+  kill_liveness_leg "$pid"
+  [ ! -s "$dir/control.log" ] || fail "an already relaunched task was relaunched again: $(cat "$dir/control.log")"
+  awk -F '\t' '$2 == "sess_a1" && $3 == "superseded"' "$state/.kiro-auto-relaunch-k1" | grep -q . \
+    || fail "the superseded stop was not recorded: $(cat "$state/.kiro-auto-relaunch-k1" 2>/dev/null)"
+  ! grep -q 'kiro-auto-relaunch' "$state/.wake-queue" 2>/dev/null \
+    || fail "a superseded stop queued a wake: $(cat "$state/.wake-queue")"
+
+  # A secondmate never takes this path.
+  dir=$(make_kiro_stop_case kiro-stop-secondmate secondmate)
+  state="$dir/state"
+  run_kiro_stop_leg "$dir" secondmate; pid=$LIVENESS_PID
+  sleep 3
+  kill_liveness_leg "$pid"
+  [ ! -s "$dir/control.log" ] || fail "a secondmate was auto-relaunched: $(cat "$dir/control.log")"
+  [ ! -e "$state/.kiro-auto-relaunch-k1" ] || fail "a secondmate's stop was ledgered"
+
+  # A failed relaunch reports once and keeps the blocker open.
+  dir=$(make_kiro_stop_case kiro-stop-failed)
+  state="$dir/state"
+  run_kiro_stop_leg "$dir" failed FM_FAKE_CONTROL_RC=3; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "the watcher did not exit on the failed relaunch"
+  grep -F 'check: worker k1 auto-relaunch after its Kiro session sess_a1 stopped failed (exit 3)' "$dir/watch-failed.out" >/dev/null \
+    || fail "a failed relaunch was not reported: $(cat "$dir/watch-failed.out" "$dir/watch-failed.err")"
+  ! grep -q '^resolved' "$state/k1.status" || fail "a failed relaunch closed the blocker"
+  pass "watch kiro: a missing worktree escalates, a superseded stop or a secondmate is untouched, and a failed relaunch reports"
+}
+
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_subshell_lock_ownership_without_bashpid
 test_bounded_lock_handoff_after_contention
@@ -3488,3 +3633,5 @@ test_secondmate_liveness_tick_error_keeps_scanning_and_wakes
 test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake
 test_secondmate_liveness_tick_skips_mate_whose_lock_is_held
 test_secondmate_liveness_tick_preserves_unreachable_remote
+test_kiro_stopped_session_is_relaunched_once_with_its_progress
+test_kiro_stopped_session_is_left_alone_when_unsafe_or_superseded

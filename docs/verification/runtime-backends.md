@@ -141,6 +141,24 @@ fm-send: doorbell not typed because the worker is busy and its next tool call de
 
 Each record has exactly one `.delivered/` claim or none, and none was delivered twice.
 
+### Kiro interrupt leaves the busy record open, 2026-10-20
+
+Verified against kiro-cli 2.32.0 with model `claude-sonnet-5.5` in a scratch home on a private tmux socket; no production home or worker was touched.
+An Escape that cancels a running turn ends it without the `Stop` hook, so the busy record keeps the `UserPromptSubmit` busy over the idle composer.
+On that pane the composer row reads `›  ask a question or describe a task ↵`, while a running turn, a tool call included, draws `›  Kiro is working · <n>s · Type to steer · Ctrl+S to queue` there and a tool call adds an `esc to cancel` row above it.
+`bin/fm-task-inbox-lib.sh` (`fm_task_inbox_kiro_pane_idle`) types the doorbell only when the placeholder and the absence of both busy rows agree, and `tests/fm-task-inbox.test.sh` pins each signal's loss on these rows.
+The live guard drove a real worker through a `sleep 90` tool call, `bin/fm-control.sh <id> interrupt`, and a new steer:
+
+```sh
+SHELL=/bin/sh FM_KIRO_LIVE_E2E=1 FM_KIRO_LIVE_MODEL=claude-sonnet-5.5 FM_KIRO_LIVE_TIMEOUT=300 bash tests/fm-kiro-signals-live-e2e.test.sh
+```
+
+```text
+# after interrupt: busy kiro-hook; busy record: v1 gen=<gen> seq=8 state=busy source=kiro-hook event=user-prompt-submit ts=<epoch>
+ok - live: after an interrupt of a running Kiro turn, fm-send typed the doorbell and the worker acknowledged it
+ok - kiro-cli live crewmate signals (turn-end, detection, busy/idle, control, teardown) passed
+```
+
 
 ## Harness detection precedence
 

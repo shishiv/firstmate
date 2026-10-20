@@ -147,6 +147,29 @@
 #                          budget and is parked until a probe reads it live
 #                          again (FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS and
 #                          FM_SECONDMATE_LIVENESS_WINDOW_SECS)
+#   check: worker <id> auto-relaunched after its Kiro session <session> stopped ...
+#                          a local ship or scout's Kiro hook appended the
+#                          `blocked: kiro worker session <session> stopped: this
+#                          session was not started by Firstmate's launch ...`
+#                          line (bin/fm-kiro-turnend-hook.sh); the watcher ran
+#                          bin/fm-control.sh <id> relaunch once for that
+#                          session, with the task's last working:/paused: lines
+#                          as the note, and appended the `resolved` line that
+#                          closes the blocker. state/.kiro-auto-relaunch-<id>
+#                          records every handled session as
+#                          `<epoch>\t<session>\t<outcome>`; a session whose task
+#                          was already relaunched after its stop (a newer busy
+#                          generation) is recorded `superseded` silently
+#   check: worker <id> Kiro session <session> stopped again within <s>s ...
+#   check: worker <id> Kiro session <session> stopped, but its worktree ...
+#   check: worker <id> auto-relaunch after its Kiro session <session> stopped failed: ...
+#                          the same line, not relaunched: a second stop within
+#                          FM_KIRO_AUTO_RELAUNCH_WINDOW_SECS (default 3600) of an
+#                          auto-relaunch of the same task, a missing recorded
+#                          worktree, or a relaunch that failed or timed out
+#                          (FM_KIRO_AUTO_RELAUNCH_TIMEOUT, default 300); the
+#                          blocker stays open for firstmate. Secondmates and
+#                          remote records are never touched here
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock. A live holder whose beacon is stale
@@ -367,6 +390,16 @@ SECONDMATE_LIVENESS_MAX_ATTEMPTS=${FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS:-}
 case "$SECONDMATE_LIVENESS_MAX_ATTEMPTS" in ''|*[!0-9]*|0) SECONDMATE_LIVENESS_MAX_ATTEMPTS=3 ;; esac
 SECONDMATE_LIVENESS_WINDOW_SECS=${FM_SECONDMATE_LIVENESS_WINDOW_SECS:-}
 case "$SECONDMATE_LIVENESS_WINDOW_SECS" in ''|*[!0-9]*|0) SECONDMATE_LIVENESS_WINDOW_SECS=3600 ;; esac
+# Kiro stopped-session auto-relaunch (kiro_stopped_session_tick): a second stop
+# of the same task inside this window escalates instead of relaunching again,
+# and one relaunch may run this long before it counts as failed.
+KIRO_AUTO_RELAUNCH_WINDOW_SECS=${FM_KIRO_AUTO_RELAUNCH_WINDOW_SECS:-}
+case "$KIRO_AUTO_RELAUNCH_WINDOW_SECS" in ''|*[!0-9]*|0) KIRO_AUTO_RELAUNCH_WINDOW_SECS=3600 ;; esac
+KIRO_AUTO_RELAUNCH_TIMEOUT=${FM_KIRO_AUTO_RELAUNCH_TIMEOUT:-}
+case "$KIRO_AUTO_RELAUNCH_TIMEOUT" in ''|*[!0-9]*|0) KIRO_AUTO_RELAUNCH_TIMEOUT=300 ;; esac
+# The control plane the tick relaunches through; overridable only so tests can
+# observe the call without a real agent.
+FM_CONTROL_BIN=${FM_CONTROL_BIN:-$SCRIPT_DIR/fm-control.sh}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -559,7 +592,12 @@ inbox_steer_check() {  # <window> <task>
     return 0
   fi
   tail40=$(fm_backend_capture "$backend" "$w" 40 "$(window_label "$w")" 2>/dev/null) || tail40=
-  if window_is_busy "$w" "$tail40"; then
+  # A Kiro busy record over an idle composer missed its turn end (an Escape
+  # interrupt fires no Stop hook), so it defers nothing: the doorbell rings
+  # (fm_task_inbox_kiro_pane_idle owns that proof).
+  if window_is_busy "$w" "$tail40" \
+    && ! { [ "$(window_harness "$w")" = kiro-cli ] \
+      && fm_task_inbox_kiro_pane_idle "$backend" "$w" "$(window_label "$w")" "$tail40"; }; then
     [ "$verb" != retry ] || return 0
     if ! count=$(fm_task_inbox_record_busy "$STATE" "$task" "$rec"); then
       [ -f "$rec" ] || return 0
@@ -1144,6 +1182,111 @@ secondmate_liveness_tick() {
       triage_log "secondmate $id liveness error: $err" || true
       failed=1
     fi
+  done
+  [ -z "$first_reason" ] || wake "$first_reason"
+  [ "$failed" -eq 0 ]
+}
+
+# The task's last <n> working:/paused: status lines before <stop-line>, oldest
+# first, for the relaunch note.
+kiro_stopped_progress_lines() {  # <status-file> <n> <stop-line>
+  local line verb out=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$line" != "$3" ] || break
+    status_line_verb "$line" verb
+    case "$verb" in working|paused) out="${out}${line}"$'\n' ;; esac
+  done < "$1"
+  printf '%s' "$out" | tail -n "$2"
+}
+
+# Auto-relaunch a local ship or scout whose Kiro session stopped because
+# Firstmate's launch did not start it (the blocked line
+# bin/fm-kiro-turnend-hook.sh's worker tool check appends), once per stopped
+# session; the header's `check: worker <id> ...` entries own the outcomes and
+# the ledger. A second stop inside KIRO_AUTO_RELAUNCH_WINDOW_SECS of this
+# task's last auto-relaunch, a missing worktree, or a failed relaunch escalates
+# instead and leaves the blocker open. A session whose task already has a newer
+# busy generation than its stop was relaunched by someone else and is only
+# recorded. Every handled session wakes once, after the whole fleet is visited.
+KIRO_STOPPED_MARK="stopped: this session was not started by Firstmate's launch"
+kiro_stopped_session_tick() {
+  local meta id kind harness status line session at gen_mtime ledger worktree
+  local last note progress out rc reason key outcome now first_reason='' failed=0
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    harness=$(fm_meta_get "$meta" harness 2>/dev/null || true)
+    [ "$harness" = kiro-cli ] || continue
+    kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
+    case "${kind:-ship}" in ship|scout) ;; *) continue ;; esac
+    [ -z "$(fm_meta_get "$meta" remote_host 2>/dev/null || true)" ] || continue
+    id=${meta##*/}
+    id=${id%.meta}
+    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    status="$STATE/$id.status"
+    [ -f "$status" ] && [ ! -L "$status" ] || continue
+    line=$(grep -F "$KIRO_STOPPED_MARK" "$status" 2>/dev/null | tail -1) || true
+    [ -n "$line" ] || continue
+    [ "$(status_line_verb "$line")" = blocked ] || continue
+    session=$(printf '%s' "$line" | sed -n 's/^.*kiro worker session \([A-Za-z0-9._-]*\) stopped: .*$/\1/p')
+    [ -n "$session" ] || continue
+    ledger="$STATE/.kiro-auto-relaunch-$id"
+    if [ -f "$ledger" ] && awk -F '\t' -v s="$session" '$2 == s { f = 1 } END { exit !f }' "$ledger" 2>/dev/null; then
+      continue
+    fi
+    now=$(date +%s)
+    at=$(status_line_at_epoch "$line" 2>/dev/null) || at=$now
+    gen_mtime=$(fm_path_mtime "$STATE/$id.busy-gen" 2>/dev/null) || gen_mtime=0
+    reason='' outcome=''
+    worktree=$(fm_meta_get "$meta" worktree 2>/dev/null || true)
+    last=$(awk -F '\t' '$3 == "relaunched" { t = $1 } END { print t + 0 }' "$ledger" 2>/dev/null) || last=0
+    if [ "${gen_mtime:-0}" -gt "$at" ]; then
+      outcome=superseded
+      triage_log "kiro worker $id session $session stopped, but the task was already relaunched after the stop; nothing to do"
+    elif [ -z "$worktree" ] || [ ! -d "$worktree" ]; then
+      outcome=no-worktree
+      reason="check: worker $id Kiro session $session stopped, but its worktree ${worktree:-(unrecorded)} is missing; not relaunched - recover it by hand"
+    elif [ "${last:-0}" -gt 0 ] && [ "$((now - last))" -lt "$KIRO_AUTO_RELAUNCH_WINDOW_SECS" ]; then
+      outcome=escalated
+      reason="check: worker $id Kiro session $session stopped again within ${KIRO_AUTO_RELAUNCH_WINDOW_SECS}s of its last auto-relaunch; not relaunched again - inspect why the session keeps stopping"
+    else
+      progress=$(kiro_stopped_progress_lines "$status" 5 "$line")
+      note="Firstmate supervision relaunched you automatically: your previous Kiro session $session stopped because Firstmate's launch did not start it, so it had none of your conversation or tools."
+      if [ -n "$progress" ]; then
+        note="$note"$'\n'"Your last progress reports before the stop:"$'\n'"$progress"
+      else
+        note="$note"$'\n'"No progress report was recorded before the stop."
+      fi
+      note="$note"$'\n'"Reconcile the local copy (git status, git log) against the task and continue from there."
+      rc=0
+      out=$(fm_run_timed "$KIRO_AUTO_RELAUNCH_TIMEOUT" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+        FM_SPAWN_NO_GUARD=1 "$FM_CONTROL_BIN" "$id" relaunch --note "$note" 2>&1 </dev/null) || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        outcome=relaunched
+        reason="check: worker $id auto-relaunched after its Kiro session $session stopped (not started by Firstmate's launch); the relaunch already ran, so reconcile it rather than relaunching again"
+      else
+        outcome=failed
+        reason="check: worker $id auto-relaunch after its Kiro session $session stopped failed (exit $rc): $(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
+      fi
+    fi
+    if ! printf '%s\t%s\t%s\n' "$now" "$session" "$outcome" >> "$ledger"; then
+      echo "watcher: kiro auto-relaunch ledger $ledger is unwritable" >&2
+      failed=1
+    fi
+    if [ "$outcome" = relaunched ]; then
+      fm_wake_status_append_self_announced "$STATE" "$status" \
+        "resolved: supervision relaunched the worker after Kiro session $session stopped" || [ "$?" -eq 1 ] \
+        || { echo "watcher: could not close the stopped-session blocker in $status" >&2; failed=1; }
+    fi
+    [ -n "$reason" ] || continue
+    key="kiro-auto-relaunch-$id-$session"
+    if ! fm_wake_queued_keys check | grep -Fx "$key" >/dev/null 2>&1 \
+      && ! fm_wake_append check "$key" "$reason"; then
+      echo "watcher: check wake row could not be queued: $reason" >&2
+      failed=1
+      continue
+    fi
+    triage_log "kiro worker $id session $session: $outcome"
+    [ -n "$first_reason" ] || first_reason=$reason
   done
   [ -z "$first_reason" ] || wake "$first_reason"
   [ "$failed" -eq 0 ]
@@ -2726,6 +2869,14 @@ while :; do
   # the parent without consuming or rewriting the receiving home's record.
   secondmate_wake_stall_tick || {
     echo "watcher: secondmate wake-loop observation failed" >&2
+    exit 1
+  }
+
+  # A Kiro ship or scout whose session stopped because Firstmate's launch did
+  # not start it is relaunched once here, before the signal scan below can
+  # surface its blocker as work for firstmate.
+  kiro_stopped_session_tick || {
+    echo "watcher: kiro stopped-session auto-relaunch failed" >&2
     exit 1
   }
 

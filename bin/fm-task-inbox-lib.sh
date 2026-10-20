@@ -90,7 +90,9 @@
 # calls deliver it exactly once. A claimed record is still unhandled until the
 # worker's own `mv` into handled/. The doorbell is skipped while that harness's
 # worker is busy, because its next tool call delivers the text (fm_task_inbox_ring
-# return 5), and the ladder does not ring a claimed record; one that stays
+# return 5), unless its pane renders the idle composer, which means the busy
+# record missed its turn end (fm_task_inbox_kiro_pane_idle); the ladder does not
+# ring a claimed record; one that stays
 # unacknowledged for the whole ladder budget (grace times ring-max) after its
 # claim still escalates as stale.
 #
@@ -341,12 +343,44 @@ fm_task_inbox_is_delivered() {  # <record-path>
 # Whether this task's worker takes its steering text through in-turn hook
 # delivery, and a turn is in flight, so its next tool call will deliver. Only a
 # Kiro ship or scout opts in, through a marker in its isolated KIRO_HOME
-# (bin/fm-kiro-lib.sh); the busy record is bin/fm-busy-lib.sh's.
-fm_task_inbox_hook_delivers() {  # <state-dir> <task-id>
+# (bin/fm-kiro-lib.sh); the busy record is bin/fm-busy-lib.sh's. Given the
+# endpoint, a busy record whose pane renders Kiro's idle composer
+# (fm_task_inbox_kiro_pane_idle) has no turn in flight, so nothing would
+# deliver in-turn and the doorbell is typed instead.
+fm_task_inbox_hook_delivers() {  # <state-dir> <task-id> [backend target [expected-label]]
   local verdict
   [ -f "$1/$2.kiro-home/.fm-kiro-steer-inject" ] || return 1
   verdict=$(fm_busy_record_read "$1" "$2" 2>/dev/null) || return 1
-  [ "${verdict%% *}" = busy ]
+  [ "${verdict%% *}" = busy ] || return 1
+  [ -n "${4:-}" ] || return 0
+  ! fm_task_inbox_kiro_pane_idle "$3" "$4" "${5:-}"
+}
+
+# Whether a Kiro pane provably has no turn running, for doorbell purposes only:
+# its last rows show the idle composer placeholder, which the shared composer
+# classifier reads `empty` under the kiro-cli identity, and no busy anchor
+# (fm_busy_kiro_tail_busy's `Kiro is working`, plus the `esc to cancel` row
+# kiro-cli 2.32.0 draws alone above the composer during a tool call). Kiro
+# draws that placeholder on the composer row only between turns; a running
+# turn, a tool call included, replaces it with the `Kiro is working` status.
+# Both signals must agree. The busy record cannot answer this by itself: an
+# Escape interrupt ends the turn without Kiro's Stop hook, so the record stays
+# busy on an idle prompt (kiro-cli 2.32.0, docs/verification/runtime-backends.md).
+# This never rewrites the busy record; the doorbell's own prompt submit and the
+# next Stop hook do. <tail> reuses a capture the caller already holds.
+fm_task_inbox_kiro_pane_idle() {  # <backend> <target> [expected-label] [tail]
+  local tail=${4-} rows
+  fm_backend_source "$1" || return 1
+  if [ -z "$tail" ]; then
+    tail=$(fm_backend_capture "$1" "$2" 40 "${3:-}" 2>/dev/null) || return 1
+  fi
+  rows=$(printf '%s\n' "$tail" | grep -v '^[[:space:]]*$' | tail -12)
+  [ -n "$rows" ] || return 1
+  ! printf '%s\n' "$rows" | fm_busy_kiro_tail_busy || return 1
+  ! printf '%s\n' "$rows" | grep -qiF 'esc to cancel' || return 1
+  printf '%s\n' "$rows" | sed 's/^[[:space:]]*›[[:space:]]*//; s/[[:space:]]*$//' \
+    | grep -Eq "${FM_COMPOSER_KIRO_IDLE_RE:-$FM_COMPOSER_KIRO_IDLE_RE_DEFAULT}" || return 1
+  [ "$(fm_backend_composer_state "$1" "$2" "${3:-}" kiro-cli 2>/dev/null)" = empty ]
 }
 
 # The exact enqueued text back out of a record.
@@ -425,7 +459,7 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label] [har
     dead|missing) return 3 ;;
   esac
   task=${inbox##*/}
-  if fm_task_inbox_hook_delivers "${inbox%/*}" "${task%.inbox}"; then
+  if fm_task_inbox_hook_delivers "${inbox%/*}" "${task%.inbox}" "$backend" "$target" "$label"; then
     return 5
   fi
   if ! line=$(fm_task_inbox_doorbell_line "$rec"); then

@@ -230,7 +230,15 @@ if [ ! -f "$FMHOME/state/$ID.turn-ended" ]; then
   fail "semantic second turn never reached Stop"
 fi
 semantic=$(fm_busy_classify_meta "$META" "$ID" "$FMHOME/state")
-[ "$semantic" = 'idle kiro-hook' ]   || fail "Stop did not close the semantic second turn, got '$semantic'"
+# The Stop hook touches turn-ended before it records idle, so give the record
+# a moment to follow.
+i=0
+while [ "$i" -lt 50 ] && [ "$semantic" != 'idle kiro-hook' ]; do
+  sleep 0.2
+  semantic=$(fm_busy_classify_meta "$META" "$ID" "$FMHOME/state")
+  i=$((i + 1))
+done
+[ "$semantic" = 'idle kiro-hook' ]   || { env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$SOCK" capture-pane -p -S -60 -t "$TARGET" >&2 2>/dev/null || true; fail "Stop did not close the semantic second turn, got '$semantic' (record: $(cat "$FMHOME/state/$ID.busy-state" 2>/dev/null))"; }
 find "$FMHOME/state/$ID.inbox/handled" -type f -name '*.msg' -print -quit 2>/dev/null | grep -q .   || fail "the real Kiro worker did not acknowledge its durable steering record"
 pass "live: Kiro hooks bracket a steered tool turn as busy/progress/idle"
 SESSION_OK=$(cat "$KIRO_HOME_DIR/.fm-kiro-tools-ok" 2>/dev/null || true)
@@ -281,6 +289,53 @@ esac
 pass "live: a fresh V3 worker read, ran shell, and replaced file content with no approval dialog"
 
 # 4) Control: interrupt (Escape) preserves the pane; exit (/quit) stops the agent.
+# An Escape that cancels a running turn fires no Stop hook, so the busy record
+# can stay busy over the idle composer; the next steer must still type its
+# doorbell rather than wait for a tool call that never comes.
+rm -f "$FMHOME/state/$ID.turn-ended"
+spawn_env "$ROOT/bin/fm-send.sh" "$ID" "Use the shell tool exactly once to run sleep 90, then reply with exactly SLEPT." \
+  > "$LAB/long-send.out" 2>&1 || { cat "$LAB/long-send.out" >&2; fail "long-turn steer failed"; }
+i=0
+while [ "$i" -lt "$SLOW_POLLS" ]; do
+  TAIL=$(env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$SOCK" capture-pane -p -t "$TARGET" 2>/dev/null || true)
+  case "$TAIL" in *'Shell sleep 90'*) break ;; esac
+  sleep 0.2
+  i=$((i + 1))
+done
+case "$TAIL" in *'Shell sleep 90'*) ;; *) printf '%s\n' "$TAIL" >&2; fail "the long turn never started its sleep 90 tool call" ;; esac
+spawn_env "$ROOT/bin/fm-control.sh" "$ID" interrupt > "$LAB/interrupt-busy.out" 2>&1 \
+  || { cat "$LAB/interrupt-busy.out" >&2; fail "fm-control interrupt of a running turn failed"; }
+i=0
+while [ "$i" -lt 50 ]; do
+  TAIL=$(env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$SOCK" capture-pane -p -t "$TARGET" 2>/dev/null || true)
+  case "$TAIL" in *'ask a question or describe a task'*) break ;; esac
+  sleep 0.2
+  i=$((i + 1))
+done
+case "$TAIL" in *'ask a question or describe a task'*) ;; *) printf '%s\n' "$TAIL" >&2; fail "the interrupted turn never returned to the idle composer" ;; esac
+printf '# after interrupt: %s; busy record: %s\n' "$(fm_busy_classify_meta "$META" "$ID" "$FMHOME/state")" \
+  "$(cat "$FMHOME/state/$ID.busy-state" 2>/dev/null)"
+spawn_env "$ROOT/bin/fm-send.sh" "$ID" "Reply with exactly AFTERINTERRUPT." > "$LAB/after-interrupt-send.out" 2>&1 \
+  || { cat "$LAB/after-interrupt-send.out" >&2; fail "the steer after the interrupt failed"; }
+if grep -qF 'doorbell not typed because the worker is busy' "$LAB/after-interrupt-send.out"; then
+  cat "$LAB/after-interrupt-send.out" >&2
+  fail "live: the steer after an interrupt deferred to in-turn delivery on an idle Kiro composer"
+fi
+AFTER_REC=$(find "$FMHOME/state/$ID.inbox" -maxdepth 1 -name '*.msg' -print 2>/dev/null | LC_ALL=C sort | tail -1)
+[ -n "$AFTER_REC" ] || fail "the steer after the interrupt left no inbox record"
+i=0
+while [ "$i" -lt "${FM_KIRO_LIVE_TIMEOUT:-180}" ] && [ -f "$AFTER_REC" ]; do
+  sleep 1
+  i=$((i + 1))
+done
+[ ! -f "$AFTER_REC" ] && [ -f "$FMHOME/state/$ID.inbox/handled/${AFTER_REC##*/}" ] \
+  || { env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$SOCK" capture-pane -p -S -60 -t "$TARGET" >&2 2>/dev/null || true; fail "live: the worker never acknowledged the steer sent after the interrupt"; }
+pass "live: after an interrupt of a running Kiro turn, fm-send typed the doorbell and the worker acknowledged it"
+i=0
+while [ "$i" -lt "${FM_KIRO_LIVE_TIMEOUT:-180}" ] && [ "$(fm_busy_classify_meta "$META" "$ID" "$FMHOME/state")" != 'idle kiro-hook' ]; do
+  sleep 1
+  i=$((i + 1))
+done
 spawn_env "$ROOT/bin/fm-control.sh" "$ID" interrupt > "$LAB/interrupt.out" 2>&1 \
   || { cat "$LAB/interrupt.out" >&2; fail "fm-control interrupt failed"; }
 env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$SOCK" has-session -t "${TARGET%%:*}" 2>/dev/null \
