@@ -470,7 +470,7 @@ kiro_subagents_clear() {
 
 # The in-turn steering delivery described in the header.
 kiro_steer_inject() {
-  local tool inbox f n names='' out='' body key
+  local tool inbox f n pending='' out='' body key
   [ "$KIRO_TASK_BOUND" = 1 ] && [ -n "$KIRO_STEER_INJECT" ] && [ -f "$KIRO_STEER_INJECT" ] || return 0
   tool=$(payload_field tool_name)
   inbox=$KIRO_TASK_STATE/$KIRO_TASK_ID.inbox
@@ -483,11 +483,11 @@ kiro_steer_inject() {
     [ -f "$inbox/.delivered/${f##*/}" ] && continue
     [ -n "$KIRO_DOORBELL_TURN" ] && [ -f "$KIRO_DOORBELL_TURN" ] && ! [ "$f" -nt "$KIRO_DOORBELL_TURN" ] && continue
     n=${f##*/}
-    names="$names${n%.msg} $n"$'\n'
+    pending="$pending${n%.msg} $n"$'\n'
   done
-  if [ -n "$names" ]; then
+  if [ -n "$pending" ]; then
     # shellcheck source=bin/fm-task-inbox-lib.sh
-    . "$SCRIPT_DIR/fm-task-inbox-lib.sh" || names=
+    . "$SCRIPT_DIR/fm-task-inbox-lib.sh" || pending=
   fi
   while IFS=' ' read -r _ n; do
     [ -n "$n" ] || continue
@@ -496,7 +496,7 @@ kiro_steer_inject() {
     body=$(fm_task_inbox_body "$f") || body='(the record could not be read; open it yourself)'
     out="$out"$'\n'"--- Firstmate steering message ${n%.msg} ($f) ---"$'\n'"$body"$'\n'
   done <<EOF
-$(printf '%s' "$names" | LC_ALL=C sort -n)
+$(printf '%s' "$pending" | LC_ALL=C sort -n)
 EOF
   if [ -n "$out" ]; then
     printf 'Firstmate held this %s call only to deliver steering that arrived while you were working; the call did not run.\n%s\nAct on this steering now. When you have acted on a message, move its file into %s/handled/ as your inbox contract says. Then re-issue the held %s call only if it still fits the steering.\n' \

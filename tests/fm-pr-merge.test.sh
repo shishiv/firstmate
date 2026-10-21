@@ -4190,10 +4190,10 @@ test_adopted_foreign_branch_pr_merges() {
 # other, pr= follows each merge, both are listed as pr_merged= ahead of the
 # pr= block, and the metadata still parses as a single bound PR identity.
 test_two_open_prs_of_one_task_merge_in_turn() {
-  local case_dir rc meta
+  local case_dir rc task_meta
   case_dir=$(make_direct_pr_case adopt-two-open-prs)
-  meta="$case_dir/state/task-x1.meta"
-  printf 'pr=https://github.com/example/repo/pull/1055\n' >> "$meta"
+  task_meta="$case_dir/state/task-x1.meta"
+  printf 'pr=https://github.com/example/repo/pull/1055\n' >> "$task_meta"
   add_sibling_branch_gh_mocks "$case_dir" cececececececececececececececececececece \
     1055 false fm/task-x1-crafting
 
@@ -4214,20 +4214,20 @@ test_two_open_prs_of_one_task_merge_in_turn() {
   expect_code 0 "$rc" "adopt-two-open-prs: the second PR should merge after the first"
   assert_logged_gh_merge "$case_dir" 1055 example/repo --squash
 
-  [ "$(grep -c '^pr=' "$meta")" -eq 1 ] \
-    || fail "adopt-two-open-prs: metadata holds more than one pr= line"$'\n'"$(cat "$meta")"
-  assert_line 'pr=https://github.com/example/repo/pull/1055' "$meta" \
+  [ "$(grep -c '^pr=' "$task_meta")" -eq 1 ] \
+    || fail "adopt-two-open-prs: metadata holds more than one pr= line"$'\n'"$(cat "$task_meta")"
+  assert_line 'pr=https://github.com/example/repo/pull/1055' "$task_meta" \
     "adopt-two-open-prs: pr= does not name the last merged PR"
-  assert_line 'pr_head=dededededededededededededededededededede' "$meta" \
+  assert_line 'pr_head=dededededededededededededededededededede' "$task_meta" \
     "adopt-two-open-prs: pr_head= is not the last merged PR's forge head"
-  [ "$(grep '^pr_merged=' "$meta")" = "pr_merged=https://github.com/example/repo/pull/1052"$'\n'"pr_merged=https://github.com/example/repo/pull/1055" ] \
-    || fail "adopt-two-open-prs: both merged PRs are not listed once each"$'\n'"$(cat "$meta")"
+  [ "$(grep '^pr_merged=' "$task_meta")" = "pr_merged=https://github.com/example/repo/pull/1052"$'\n'"pr_merged=https://github.com/example/repo/pull/1055" ] \
+    || fail "adopt-two-open-prs: both merged PRs are not listed once each"$'\n'"$(cat "$task_meta")"
   (
     # shellcheck source=bin/fm-pr-lib.sh
     . "$ROOT/bin/fm-pr-lib.sh"
-    fm_pr_metadata_identity_parse "$meta" \
+    fm_pr_metadata_identity_parse "$task_meta" \
       && [ "$FM_PR_META_URL" = https://github.com/example/repo/pull/1055 ]
-  ) || fail "adopt-two-open-prs: metadata no longer parses as one PR identity"$'\n'"$(cat "$meta")"
+  ) || fail "adopt-two-open-prs: metadata no longer parses as one PR identity"$'\n'"$(cat "$task_meta")"
   pass "fm-pr-merge --adopt-external merges two open PRs of one task in turn and lists both for teardown"
 }
 

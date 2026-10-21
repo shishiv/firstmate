@@ -412,7 +412,7 @@ test_kiro_pretool_denies_a_backgrounded_worker_command() {
 # (no read, list, or search tool) must stop the worker with a message naming the
 # missing tools; a full list passes once per session and is not re-read.
 test_kiro_worker_tool_check_stops_a_session_without_its_tools() {
-  local id rec state kh hook gen rc out record
+  local id rec state kh hook gen rc out
   id="kiro-tools-z7-$$"
   rec=$(make_kiro_spawn_case tools "$id")
   read_kiro_spawn_record "$rec"
@@ -485,30 +485,30 @@ test_kiro_worker_tool_check_stops_a_session_without_its_tools() {
 # several concurrent calls delivers it, the next call runs, a sub-agent's tool
 # calls never receive it, and a call with nothing new is silent.
 test_kiro_pretool_delivers_a_steer_mid_turn_exactly_once() {
-  local id rec state kh hook gen rc out i delivered msg
+  local id rec steer_state kh hook gen rc out i delivered msg
   id="kiro-steer-z8-$$"
   rec=$(make_kiro_spawn_case steer "$id")
   read_kiro_spawn_record "$rec"
   run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" --model auto >/dev/null 2>&1
-  state="$HOME_DIR/state"
-  kh="$state/$id.kiro-home"
+  steer_state="$HOME_DIR/state"
+  kh="$steer_state/$id.kiro-home"
   hook="$ROOT/bin/fm-kiro-turnend-hook.sh"
-  gen=$(cat "$state/$id.busy-gen" 2>/dev/null) || fail "Kiro spawn did not arm a busy generation"
+  gen=$(cat "$steer_state/$id.busy-gen" 2>/dev/null) || fail "Kiro spawn did not arm a busy generation"
   assert_present "$kh/.fm-kiro-steer-inject" "a Kiro ship's KIRO_HOME must opt into in-turn steering delivery"
   printf 'sess_steer read_file\n' > "$kh/.fm-kiro-tools-ok"
   drive_kiro_event() {  # <event> <tool> [<tool-input-json>]
     printf '{"session_id":"sess_steer","hook_event_name":"%s","cwd":"%s","tool_name":"%s","tool_input":%s}\n' \
       "$1" "$WT_DIR" "$2" "${3:-"{\"command\":\"make test\"}"}" |
-      (cd "$WT_DIR" && env FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$state" \
+      (cd "$WT_DIR" && env FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$steer_state" \
         KIRO_HOME="$kh" KIRO_WORKSPACE_ROOT="$WT_DIR" \
-        FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$state" FM_KIRO_BUSY_GEN="$gen" \
+        FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$steer_state" FM_KIRO_BUSY_GEN="$gen" \
         KIRO_DUMP_REQUESTS=1 PATH="$FAKEBIN_DIR:$BASE_PATH" bash "$hook") 2>&1
   }
 
   out=$(drive_kiro_event PreToolUse execute_bash); rc=$?
   [ "$rc" -eq 0 ] && [ -z "$out" ] || fail "a tool call with no new steering must run silently, got exit $rc: $out"
 
-  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$state" "$id" $'Stop after this file.\nThen report.')
+  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$steer_state" "$id" $'Stop after this file.\nThen report.')
   for i in 1 2 3 4; do
     drive_kiro_event PreToolUse execute_bash > "$CASE_DIR/steer.$i.out" 2>&1 &
   done
@@ -520,14 +520,14 @@ test_kiro_pretool_delivers_a_steer_mid_turn_exactly_once() {
   [ "$delivered" -eq 1 ] || fail "exactly one of four concurrent tool calls must deliver the steer, got $delivered"
   out=$(cat "$CASE_DIR"/steer.*.out)
   assert_contains "$out" $'Stop after this file.\nThen report.' "the held call must carry the steer text verbatim"
-  assert_contains "$out" "$state/$id.inbox/handled/" "the held call must say where to acknowledge"
+  assert_contains "$out" "$steer_state/$id.inbox/handled/" "the held call must say where to acknowledge"
   [ -f "$msg" ] || fail "delivery must leave the record for the worker's own acknowledgement"
   out=$(drive_kiro_event PreToolUse execute_bash); rc=$?
   [ "$rc" -eq 0 ] && [ -z "$out" ] || fail "a delivered steer must not be delivered again, got exit $rc: $out"
 
   drive_kiro_event PreToolUse invoke_sub_agent '{"name":"firstmate-oracle","prompt":"q"}' >/dev/null; rc=$?
   [ "$rc" -eq 0 ] || fail "invoke_sub_agent with nothing new must run, got exit $rc"
-  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$state" "$id" "second steer")
+  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$steer_state" "$id" "second steer")
   out=$(drive_kiro_event PreToolUse read_file '{"path":"x"}'); rc=$?
   [ "$rc" -eq 0 ] && [ -z "$out" ] || fail "a sub-agent's tool call must never receive the worker's steer, got exit $rc: $out"
   drive_kiro_event PostToolUse invoke_sub_agent '{"name":"firstmate-oracle","prompt":"q"}' >/dev/null
@@ -536,15 +536,15 @@ test_kiro_pretool_delivers_a_steer_mid_turn_exactly_once() {
   assert_contains "$out" "second steer" "the second steer must be delivered after the sub-agent returns"
 
   # A turn the typed doorbell started already points at the waiting records.
-  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$state" "$id" "third steer")
+  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$steer_state" "$id" "third steer")
   touch -d '-5 seconds' "$msg"
   printf '{"session_id":"sess_steer","hook_event_name":"UserPromptSubmit","cwd":"%s","prompt":": Firstmate instruction waiting: list ..."}\n' "$WT_DIR" |
-    (cd "$WT_DIR" && env FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$state" KIRO_HOME="$kh" \
-      FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$state" FM_KIRO_BUSY_GEN="$gen" PATH="$FAKEBIN_DIR:$BASE_PATH" bash "$hook")
+    (cd "$WT_DIR" && env FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$steer_state" KIRO_HOME="$kh" \
+      FM_KIRO_TASK_ID="$id" FM_KIRO_STATE="$steer_state" FM_KIRO_BUSY_GEN="$gen" PATH="$FAKEBIN_DIR:$BASE_PATH" bash "$hook")
   out=$(drive_kiro_event PreToolUse execute_bash); rc=$?
   [ "$rc" -eq 0 ] && [ -z "$out" ] || fail "a doorbell turn must not re-deliver the record its doorbell pointed at, got exit $rc: $out"
   sleep 1
-  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$state" "$id" "fourth steer")
+  msg=$(. "$ROOT/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$steer_state" "$id" "fourth steer")
   out=$(drive_kiro_event PreToolUse execute_bash); rc=$?
   [ "$rc" -eq 2 ] || fail "a record arriving during a doorbell turn must still be delivered, got exit $rc"
   assert_contains "$out" "fourth steer" "the late record must be delivered"

@@ -165,7 +165,7 @@ project_needs() {
         continue
       fi
       if [ "$onpath" -eq 0 ]; then
-        printf 'TOOL_NEED: %s: %s is not on PATH, so a bare `%s` call fails (fix: %s)\n' \
+        printf 'TOOL_NEED: %s: %s is not on PATH, so a bare \x60%s\x60 call fails (fix: %s)\n' \
           "$where" "$bin" "$tool" "$fix"
       fi
     done
