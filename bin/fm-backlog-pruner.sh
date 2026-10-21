@@ -284,7 +284,9 @@ ledger_publish() {  # <workdir>
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
   [ ! -L "$LEDGER" ] || return 1
   tmp=$(mktemp "$STATE/.backlog-pruner.XXXXXX") || return 1
-  cp "$1/current.ledger" "$tmp" && mv -f -- "$tmp" "$LEDGER" || { rm -f -- "$tmp"; return 1; }
+  cp "$1/current.ledger" "$tmp" && mv -f -- "$tmp" "$LEDGER" && return 0
+  rm -f -- "$tmp"
+  return 1
 }
 
 do_run() {  # <apply: 0|1> <report-file> <fog-file> <refresh-ledger: 0|1>
@@ -326,10 +328,10 @@ do_run() {  # <apply: 0|1> <report-file> <fog-file> <refresh-ledger: 0|1>
 
 drop_moved_from_ledger() {  # <workdir>
   local work=$1 id
-  for id in $(awk -F '\037' '$2 == "fog" { print $1 }' "$work/verdict.tsv"); do
+  while IFS= read -r id; do
     awk -F '\t' -v OFS='\t' -v i="$id" '$1 != i' "$work/current.ledger" > "$work/current.next" \
       && mv "$work/current.next" "$work/current.ledger"
-  done
+  done < <(awk -F '\037' '$2 == "fog" { print $1 }' "$work/verdict.tsv")
 }
 
 summary_line() {
@@ -409,7 +411,9 @@ cmd_disarm() {
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-check-unregister.sh" backlog-pruner
 }
 
-uint_valid "$DAYS" && uint_valid "$INTERVAL" && uint_valid "$LOOKUPS" || fail "invalid numeric setting in the environment"
+if ! { uint_valid "$DAYS" && uint_valid "$INTERVAL" && uint_valid "$LOOKUPS"; }; then
+  fail "invalid numeric setting in the environment"
+fi
 
 case "${1:-}" in
   run) shift; cmd_run "$@" ;;
