@@ -28,6 +28,10 @@ case "${1:-}" in
   capture-pane)
     cat "$FM_PRIMARY_TEST_SCREEN"
     ;;
+  list-windows)
+    # The tmux adapter checks exact window membership for primary:0.
+    printf '@1|0|primary\n'
+    ;;
   send-keys)
     printf '%s\n' "$*" >> "$FM_PRIMARY_TEST_SEND_LOG"
     printf 'ring %s\n' "$*" >> "$FM_PRIMARY_TEST_EVENTS"

@@ -603,10 +603,21 @@ case "${1:-}" in
   # After a kill, the endpoint is gone: report it absent so teardown's
   # post-close verification confirms the window closed.
   has-session) [ -f "$killed" ] && exit 1 || exit 0 ;;
-  list-windows) [ -f "$killed" ] && exit 0 || printf '%s\n' fm-task; exit 0 ;;
+  # list-windows also names the window a spawn created, because the tmux
+  # adapter checks exact window membership before it sends a key.
+  list-windows)
+    [ -f "$killed" ] && exit 0
+    printf '%s\n' fm-task
+    [ ! -s "${FM_FAKE_KIRO_STATE:-/nonexistent}.window" ] || cat "$FM_FAKE_KIRO_STATE.window"
+    exit 0 ;;
   list-panes) [ -f "$killed" ] && exit 0 || printf '%s\n' pane; exit 0 ;;
   kill-window|kill-pane) : > "$killed"; exit 0 ;;
-  new-session|new-window|select-window|set-option|set-hook|rename-window) exit 0 ;;
+  new-window)
+    name=; prev=
+    for a in "$@"; do [ "$prev" = -n ] && name=$a; prev=$a; done
+    [ -z "$name" ] || [ -z "${FM_FAKE_KIRO_STATE:-}" ] || printf '%s\n' "$name" > "$FM_FAKE_KIRO_STATE.window"
+    exit 0 ;;
+  new-session|select-window|set-option|set-hook|rename-window) exit 0 ;;
   send-keys)
     literal=; prev=
     for a in "$@"; do [ "$prev" = -l ] && { literal=$a; break; }; prev=$a; done
