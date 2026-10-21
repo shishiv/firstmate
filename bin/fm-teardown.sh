@@ -347,6 +347,13 @@
 #     bridge (and so its MCP server and headless browser) whose environment
 #     proves it was started by this task of this home; it owns that proof and
 #     never matches by name or folder. Best effort: it never blocks cleanup.
+#   Fix 6 - release what the task still holds on the machine. With the endpoint
+#     closed and the work proved landed, bin/fm-task-resources-stop.sh stops
+#     the processes whose environment proves this task of this home started
+#     them (dev servers), brings down the Compose project fm-<id> without
+#     removing its volumes, and removes the task's big folders named by
+#     config/task-cleanup-dirs, never a shared build cache. It owns those
+#     proofs and refusals. Best effort: it never blocks cleanup.
 # After Fix 1 and Fix 2, when config/pipeline-spend opts this home in, a ship
 # task whose local copy this teardown owns has its no-mistakes pipeline spend
 # recorded by bin/fm-pipeline-spend.sh, which owns the attribution and the
@@ -4102,6 +4109,10 @@ if [ "$KIND" != secondmate ]; then
   # Fix 5 (see script header): the endpoint is closed, so stop any browser
   # bridge this task started. Best effort; it never blocks cleanup.
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-task-browser-stop.sh" "$ID" || true
+  # Fix 6 (see script header): then the rest of what the task left running or
+  # on disk. Best effort; it never blocks cleanup.
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+    "$SCRIPT_DIR/fm-task-resources-stop.sh" "$ID" || true
   if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
       "$SCRIPT_DIR/fm-inactive-reconcile.sh" report "$ID"; then
     echo "error: $ID's final outcome has not reached the parent channel; retaining every durable task record so a rerun can retry the delivery" >&2

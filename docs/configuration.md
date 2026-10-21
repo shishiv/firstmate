@@ -655,6 +655,19 @@ An explicit non-empty `NM_HOME` always wins and the resolver is not called.
 With the file absent, a first line that is not an absolute executable path, or a resolver that fails, times out, or prints anything else, every read uses the ambient home exactly as without the file.
 The file is a home-local site choice and is not inherited by secondmate homes; `bin/fm-nm-run-lib.sh` owns the exact resolution.
 
+## Task cleanup folders (config/task-cleanup-dirs)
+
+The optional local, gitignored `config/task-cleanup-dirs` file lists the big folders a finished task leaves behind, so cleanup removes them.
+Each line is one template, an absolute path or a path starting with `~/`, with `{id}` in its last path component only, for example `/var/tmp/fm-{id}`.
+Blank lines and `#` comments are ignored.
+Cleanup removes the template with the task id filled in, by that exact path and never by a glob, after its landed-work checks pass and the task's endpoint is closed.
+A folder that does not exist is not an error, a symlink is left alone, and an unusable template is reported and ignored.
+With the file absent nothing is removed.
+Cleanup never removes a folder that is, contains, or lies inside the shared build caches `/var/tmp/fm-cliente-base` and `~/.cache/lloegrys`, and it never removes Docker volumes.
+The same cleanup stops the processes the task started and brings down the Compose project `fm-<id>` without removing its volumes.
+`bin/fm-task-resources-stop.sh` owns the template rules, the refusals, and how a task's processes are proved to be its own.
+The file is a per-machine choice and is not inherited by secondmate homes.
+
 ## Lane capacity (config/lane-capacity)
 
 The optional local, gitignored `config/lane-capacity` file holds one non-negative integer: how many ship and scout lanes this home should run at once.

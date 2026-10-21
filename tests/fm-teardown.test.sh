@@ -5443,6 +5443,105 @@ test_teardown_refuses_while_a_task_board_holds_unread_feedback() {
   pass "cleanup refuses before anything destructive while a task board holds unread feedback"
 }
 
+# Servers, Compose projects, and big folders outlive their worker unless cleanup
+# releases them (bin/fm-teardown.sh Fix 6, bin/fm-task-resources-stop.sh).
+setup_task_resources() {  # <case-dir>; sets RES_* for the case
+  local case_dir=$1 marker real
+  real=$(cd "$case_dir/state" && pwd -P)
+  marker="$real/task-x1.inbox"
+  mkdir -p "$case_dir/home/.cache/lloegrys" "$case_dir/big/fm-task-x1/sub" "$case_dir/big/fm-task-y" \
+    "$case_dir/home/.cache/fm-lloegrys-task-x1" "$case_dir/home/.cache/fm-lloegrys-task-y"
+  printf x > "$case_dir/home/.cache/lloegrys/object"
+  printf x > "$case_dir/big/fm-task-x1/sub/object"
+  cat > "$case_dir/config/task-cleanup-dirs" <<EOF
+$case_dir/big/fm-{id}
+~/.cache/fm-lloegrys-{id}
+EOF
+  cat > "$case_dir/fakebin/docker" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+  ps)
+    case "$*" in *"project=fm-task-x1"*) [ -e "$FAKE_DOCKER_LOG.up" ] && echo c0ffee ;; esac
+    exit 0
+    ;;
+  compose) rm -f "$FAKE_DOCKER_LOG.up"; exit 0 ;;
+esac
+exit 3
+SH
+  chmod +x "$case_dir/fakebin/docker"
+  : > "$case_dir/docker.log"
+  : > "$case_dir/docker.log.up"
+  ( cd "$case_dir/data" && exec env -i PATH="$PATH" FM_TASK_INBOX="$marker" sleep 300 ) </dev/null >/dev/null 2>&1 &
+  RES_SERVER=$!
+  disown "$RES_SERVER"
+  ( cd "$case_dir/data" && exec env -i PATH="$PATH" FM_TASK_INBOX="$real/task-y.inbox" sleep 300 ) </dev/null >/dev/null 2>&1 &
+  RES_OTHER_SERVER=$!
+  disown "$RES_OTHER_SERVER"
+  sleep 0.3
+  if ! kill -0 "$RES_SERVER" 2>/dev/null || ! kill -0 "$RES_OTHER_SERVER" 2>/dev/null; then
+    fail "task-resources: fixture servers did not start"
+  fi
+}
+
+test_teardown_releases_the_resources_the_task_held() {
+  local case_dir rc=0
+  case_dir=$(make_case task-resources)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  setup_task_resources "$case_dir"
+
+  HOME="$case_dir/home" FAKE_DOCKER_LOG="$case_dir/docker.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "task-resources: teardown should succeed ($(cat "$case_dir/stderr"))"
+  sleep 0.2
+  if kill -0 "$RES_SERVER" 2>/dev/null; then
+    kill -KILL "$RES_SERVER" "$RES_OTHER_SERVER" 2>/dev/null || true
+    fail "task-resources: the server the task started survived its cleanup"
+  fi
+  kill -0 "$RES_OTHER_SERVER" 2>/dev/null \
+    || fail "task-resources: cleanup stopped another task's server"
+  kill -KILL "$RES_OTHER_SERVER" 2>/dev/null || true
+  assert_grep "compose -p fm-task-x1 down" "$case_dir/docker.log" \
+    "task-resources: the task's Compose project was not brought down"
+  if grep -E -- ' -v( |$)|--volumes|--rmi|volume ' "$case_dir/docker.log" >/dev/null; then
+    fail "task-resources: cleanup asked docker to remove volumes or images"
+  fi
+  assert_absent "$case_dir/big/fm-task-x1" "task-resources: the task's big folder survived its cleanup"
+  assert_absent "$case_dir/home/.cache/fm-lloegrys-task-x1" \
+    "task-resources: the task's cache folder survived its cleanup"
+  assert_present "$case_dir/big/fm-task-y" "task-resources: cleanup removed another task's folder"
+  assert_present "$case_dir/home/.cache/fm-lloegrys-task-y" \
+    "task-resources: cleanup removed another task's cache folder"
+  assert_present "$case_dir/home/.cache/lloegrys/object" "task-resources: cleanup touched the shared build cache"
+  assert_absent "$case_dir/state/task-x1.meta" "task-resources: cleanup did not finish"
+  pass "cleanup stops the task's servers, brings its Compose project down, and removes its folders only"
+}
+
+test_teardown_refusal_keeps_the_task_resources() {
+  local case_dir rc=0
+  case_dir=$(make_case task-resources-refused)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "unlanded work"
+  setup_task_resources "$case_dir"
+
+  HOME="$case_dir/home" FAKE_DOCKER_LOG="$case_dir/docker.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  [ "$rc" -ne 0 ] || fail "task-resources-refused: teardown accepted unlanded work"
+  grep -q REFUSED "$case_dir/stderr" || fail "task-resources-refused: no REFUSED line in stderr"
+  if ! kill -0 "$RES_SERVER" 2>/dev/null; then
+    fail "task-resources-refused: a refused cleanup stopped the task's server"
+  fi
+  kill -KILL "$RES_SERVER" "$RES_OTHER_SERVER" 2>/dev/null || true
+  assert_no_grep "compose -p" "$case_dir/docker.log" \
+    "task-resources-refused: a refused cleanup brought the Compose project down"
+  assert_present "$case_dir/big/fm-task-x1/sub/object" \
+    "task-resources-refused: a refused cleanup removed the task's folder"
+  pass "a cleanup that refuses unlanded work releases none of the task's resources"
+}
+
 test_lsof_absent_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
@@ -6081,6 +6180,8 @@ test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_teardown_retires_task_boards_and_stops_its_browser
 test_teardown_refuses_while_a_task_board_holds_unread_feedback
+test_teardown_releases_the_resources_the_task_held
+test_teardown_refusal_keeps_the_task_resources
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed

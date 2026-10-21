@@ -5187,4 +5187,54 @@ pe "$HRT" retire-task rt-other >/dev/null || fail "retire-task refused once the 
 pe "$HRT" retire rt-main >/dev/null || true
 pass "an empty claim from the current boot still refuses retirement"
 
+# --- reconcile never revives the board of a task that is gone ----------------
+# Cleanup retires a task's boards (retire-task), but a task cleaned up before
+# that existed, or by a home that has not updated, leaves its registration
+# behind, and reconcile used to start it again at every restart.
+HGONE="$TMP_ROOT/hgone"; new_home "$HGONE"; fm_test_track_procevent_home "$HGONE"
+new_task_endpoint "$HGONE" gone-task
+new_task_endpoint "$HGONE" kept-task
+new_task_endpoint "$HGONE" unread-task
+GONE_TRIG="$TMP_ROOT/gone-never"
+pe "$HGONE" register-task lavish gone-board gone-task -- "$BLOCKER" "$GONE_TRIG" gone >/dev/null
+pe "$HGONE" register-task lavish kept-board kept-task -- "$BLOCKER" "$GONE_TRIG" kept >/dev/null
+pe "$HGONE" register-task lavish unread-board unread-task -- "$BLOCKER" "$GONE_TRIG" unread >/dev/null
+mkdir -p "$HGONE/state/procevent-inbox"
+printf 'session:\n  status: feedback\n' > "$HGONE/state/procevent-inbox/unread-board.1.result"
+chmod 600 "$HGONE/state/procevent-inbox/unread-board.1.result"
+if pe "$HGONE" retire gone-board --if-task-closed gone-task >/dev/null 2>&1; then
+  fail "retire --if-task-closed retired the board of a task this home still has a record of"
+fi
+[ -e "$HGONE/state/procevent/gone-board.source" ] || fail "a refused --if-task-closed still removed the board"
+pass "retire --if-task-closed refuses while the task record exists"
+
+rm -f "$HGONE/state/gone-task.meta" "$HGONE/state/unread-task.meta"
+gone_out=$(pe "$HGONE" reconcile) || fail "reconcile failed: $gone_out"
+assert_contains "$gone_out" "started=1" "reconcile did not start the board of the task that is still here"
+assert_contains "$gone_out" "stopped=1" "reconcile did not report retiring the finished task's board"
+assert_absent "$HGONE/state/procevent/gone-board.source" "reconcile left the finished task's board registered"
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/gone-board.claim" "reconcile started the finished task's board"
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/kept-board.claim" || fail "reconcile did not start the live task's board"
+[ -e "$HGONE/state/procevent/unread-board.source" ] \
+  || fail "reconcile retired a finished task's board that still holds unread feedback"
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/unread-board.claim" "reconcile started a board that holds unread feedback"
+gone_out=$(pe "$HGONE" reconcile) || fail "a second reconcile failed: $gone_out"
+assert_contains "$gone_out" "stopped=0" "a second reconcile found another board to retire"
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/gone-board.claim" "a second reconcile revived the finished task's board"
+pass "reconcile retires a finished task's board instead of starting it, and starts a live task's"
+
+# A runner still polling for a finished task is stopped as well.
+new_task_endpoint "$HGONE" late-task
+pe "$HGONE" register-task lavish late-board late-task -- "$BLOCKER" "$GONE_TRIG" late >/dev/null
+pe "$HGONE" reconcile >/dev/null || fail "reconcile failed starting the late task's board"
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/late-board.claim" || fail "the late task's board never claimed its source"
+late_runner=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/late-board.claim")
+kill -0 "$late_runner" 2>/dev/null || fail "fixture invalid: the late task's runner is not running"
+rm -f "$HGONE/state/late-task.meta"
+pe "$HGONE" reconcile >/dev/null || fail "reconcile failed with a running board of a finished task"
+for _ in $(seq 1 50); do kill -0 "$late_runner" 2>/dev/null || break; sleep 0.1; done
+! kill -0 "$late_runner" 2>/dev/null || fail "reconcile left a finished task's board polling"
+assert_absent "$HGONE/state/procevent/late-board.source" "reconcile left a polling finished task's board registered"
+pass "reconcile also stops a finished task's board that is still polling"
+
 printf '\nall procevent tests passed\n'
