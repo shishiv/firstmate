@@ -4608,6 +4608,108 @@ test_leaked_tasktmp_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too"
 }
 
+# Task boards and browser bridges outlive their worker unless cleanup stops
+# them (bin/fm-teardown.sh Fix 4 and Fix 5).
+write_board_source() {  # <case-dir> <source-id> [owner-task]
+  local reg="$1/state/procevent" file
+  mkdir -p "$reg"
+  chmod 700 "$reg"
+  file="$reg/$2.source"
+  {
+    printf 'adapter=lavish\n'
+    [ -z "${3-}" ] || printf 'kind=task-owned\nowner_task=%s\n' "$3"
+    printf 'argc=1\nargv:\n/bin/true\n'
+  } > "$file"
+  chmod 600 "$file"
+}
+
+start_fake_bridge() {  # <case-dir> <cwd> <marker-or-empty>; prints the bridge pid
+  local script="$1/lib/chrome-devtools-axi-bridge.js"
+  mkdir -p "$1/lib" "$2"
+  cat > "$script" <<'PL'
+use POSIX (); POSIX::setpgid(0, 0); $SIG{TERM} = sub { exit 0 }; sleep 300;
+PL
+  if [ -n "$3" ]; then
+    ( cd "$2" && exec env -i PATH="$PATH" HOME="$1" FM_TASK_INBOX="$3" perl "$script" ) </dev/null >/dev/null 2>&1 &
+  else
+    ( cd "$2" && exec env -i PATH="$PATH" HOME="$1" perl "$script" ) </dev/null >/dev/null 2>&1 &
+  fi
+  printf '%s\n' "$!"
+}
+
+test_teardown_retires_task_boards_and_stops_its_browser() {
+  local case_dir rc=0 own_bridge foreign_bridge marker
+  case_dir=$(make_case task-boards-browser)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  write_board_source "$case_dir" lavish-own task-x1
+  write_board_source "$case_dir" lavish-sibling task-y
+  write_board_source "$case_dir" lavish-main
+  mkdir -p "$case_dir/claims"
+  : > "$case_dir/claims/lavish-own.claim"
+  chmod 600 "$case_dir/claims/lavish-own.claim"
+  touch -t 200001010000 "$case_dir/claims/lavish-own.claim"
+  marker="$(cd "$case_dir/state" && pwd -P)/task-x1.inbox"
+  own_bridge=$(start_fake_bridge "$case_dir" "$case_dir/data/task-x1/mocks" "$marker")
+  foreign_bridge=$(start_fake_bridge "$case_dir" "$case_dir/data/task-x1/mocks" "")
+  sleep 0.3
+  if ! kill -0 "$own_bridge" 2>/dev/null || ! kill -0 "$foreign_bridge" 2>/dev/null; then
+    fail "task-boards-browser: fixture bridges did not start"
+  fi
+
+  FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "task-boards-browser: teardown should succeed ($(cat "$case_dir/stderr"))"
+  assert_absent "$case_dir/state/procevent/lavish-own.source" \
+    "task-boards-browser: the task's own board survived its cleanup"
+  assert_absent "$case_dir/claims/lavish-own.claim" \
+    "task-boards-browser: the crashed board's empty claim survived its cleanup"
+  [ -e "$case_dir/state/procevent/lavish-sibling.source" ] \
+    || fail "task-boards-browser: cleanup retired another task's board"
+  [ -e "$case_dir/state/procevent/lavish-main.source" ] \
+    || fail "task-boards-browser: cleanup retired a board firstmate holds"
+  if [ -r "/proc/$$/environ" ]; then
+    sleep 0.2
+    if kill -0 "$own_bridge" 2>/dev/null; then
+      kill -KILL "$own_bridge" "$foreign_bridge" 2>/dev/null || true
+      fail "task-boards-browser: the browser bridge the task started survived its cleanup"
+    fi
+    assert_grep "stopped browser bridge $own_bridge that task-x1 started" "$case_dir/stderr" \
+      "task-boards-browser: cleanup did not report stopping the task's browser bridge"
+  fi
+  kill -0 "$foreign_bridge" 2>/dev/null \
+    || fail "task-boards-browser: cleanup stopped a bridge the task did not start, in the task's folder"
+  kill -KILL "$own_bridge" "$foreign_bridge" 2>/dev/null || true
+  pass "cleanup retires the task's own boards and stops only the browser bridge the task started"
+}
+
+test_teardown_refuses_while_a_task_board_holds_unread_feedback() {
+  local case_dir rc=0
+  case_dir=$(make_case task-board-unread)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  write_board_source "$case_dir" lavish-own task-x1
+  mkdir -p "$case_dir/state/procevent-inbox"
+  printf 'session:\n  status: feedback\n' > "$case_dir/state/procevent-inbox/lavish-own.1.result"
+  chmod 600 "$case_dir/state/procevent-inbox/lavish-own.1.result"
+
+  FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  [ "$rc" -ne 0 ] || fail "task-board-unread: teardown discarded a board holding unread feedback"
+  assert_grep "unacknowledged" "$case_dir/stderr" \
+    "task-board-unread: the refusal did not say the board's feedback is unacknowledged"
+  assert_grep "REFUSED: task-x1 still owns a process-event source" "$case_dir/stderr" \
+    "task-board-unread: the refusal did not name the task's remaining source"
+  [ -e "$case_dir/state/procevent/lavish-own.source" ] \
+    || fail "task-board-unread: the refused cleanup still retired the board"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "task-board-unread: the refused cleanup removed the task record"
+  [ -d "$case_dir/wt" ] || fail "task-board-unread: the refused cleanup removed the local copy"
+  pass "cleanup refuses before anything destructive while a task board holds unread feedback"
+}
+
 test_lsof_absent_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
@@ -5227,6 +5329,8 @@ test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
+test_teardown_retires_task_boards_and_stops_its_browser
+test_teardown_refuses_while_a_task_board_holds_unread_feedback
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed

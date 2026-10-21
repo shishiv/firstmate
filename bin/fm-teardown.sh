@@ -317,6 +317,18 @@
 #     root still exists, so the account's healthy LaunchAgent worker and every
 #     live remote secondmate worker are out of scope. Best effort: a sweep
 #     failure never blocks this teardown.
+#   Fix 4 - retire the task's own process-event sources. A board a worker
+#     armed for itself (`fm-procevent.sh register-task`) keeps its poll and
+#     helpers running after the worker is gone (observed 2026-10-20: 29 such
+#     boards from finished tasks). `fm-procevent.sh retire-task` owns which
+#     registrations are this task's and how each is stopped; a board holding
+#     captured feedback nobody acknowledged refuses this teardown before any
+#     destructive step, naming the source.
+#   Fix 5 - stop browser bridges the task started. Once the endpoint is
+#     closed, bin/fm-task-browser-stop.sh stops every chrome-devtools-axi
+#     bridge (and so its MCP server and headless browser) whose environment
+#     proves it was started by this task of this home; it owns that proof and
+#     never matches by name or folder. Best effort: it never blocks cleanup.
 # After Fix 1 and Fix 2, when config/pipeline-spend opts this home in, a ship
 # task whose local copy this teardown owns has its no-mistakes pipeline spend
 # recorded by bin/fm-pipeline-spend.sh, which owns the attribution and the
@@ -3848,6 +3860,17 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
 fi
+# Fix 4 (see script header): retire every board this task owns, so no
+# process-event poll outlives its task. A board with captured feedback nobody
+# has acknowledged refuses here, before anything destructive. A home with no
+# registration naming this task skips the runner entirely.
+if [ "$KIND" != secondmate ] \
+   && grep -sqFx "owner_task=$ID" "$STATE/procevent/"*.source \
+   && ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+     "$SCRIPT_DIR/fm-procevent.sh" retire-task "$ID" >/dev/null; then
+  echo "REFUSED: $ID still owns a process-event source; acknowledge or retire it with bin/fm-procevent.sh, then rerun teardown" >&2
+  exit 1
+fi
 if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
     "$SCRIPT_DIR/fm-pipeline-spend.sh" record "$ID" >/dev/null \
@@ -4005,6 +4028,9 @@ if [ "$BACKEND" = herdr ]; then
   fi
 fi
 if [ "$KIND" != secondmate ]; then
+  # Fix 5 (see script header): the endpoint is closed, so stop any browser
+  # bridge this task started. Best effort; it never blocks cleanup.
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-task-browser-stop.sh" "$ID" || true
   if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
       "$SCRIPT_DIR/fm-inactive-reconcile.sh" report "$ID"; then
     echo "error: $ID's final outcome has not reached the parent channel; retaining every durable task record so a rerun can retry the delivery" >&2
