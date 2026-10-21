@@ -12,7 +12,8 @@
 #   fm-procevent.sh reconcile
 #   fm-procevent.sh classify <result-file>
 #   fm-procevent.sh handled <source-id> <sequence>
-#   fm-procevent.sh retire <source-id> [--if-absent|--if-matches <adapter> -- <argv>...|--if-owner <registration-token>]
+#   fm-procevent.sh retire <source-id> [--if-absent|--if-matches <adapter> -- <argv>...|--if-owner <registration-token>|--if-task <task-id>]
+#   fm-procevent.sh retire-task <task-id>
 #   fm-procevent.sh sweep-home [--preflight]
 #   fm-procevent.sh binding-retirement-preflight <binding-digest>
 #   fm-procevent.sh extension-retirement <binding|transfer> <retirement-arguments...>
@@ -113,7 +114,17 @@
 #            built-in registration, --if-absent refuses while any registration
 #            exists, and --if-owner removes only the exact extension registration
 #            token printed by register-extension, so a stale owner cannot retire
-#            a replacement generation.
+#            a replacement generation. --if-task removes only a task-owned
+#            registration whose owner is exactly <task-id>. A claim that is an
+#            empty file from an earlier boot (an unsynced write lost in a crash)
+#            names no owner that can still run, so retire drops it; any other
+#            unreadable claim still refuses.
+# retire-task
+#            Retire every task-owned registration this home holds for <task-id>,
+#            listening or dead, through `retire --if-task`. Task cleanup
+#            (bin/fm-teardown.sh) calls it so no board poll outlives its task.
+#            A source with an unacknowledged captured round still refuses, as
+#            `retire` does, and the command exits nonzero naming the count left.
 # sweep-home Retire a bounded snapshot of this home's registrations and owned
 #            claims, then refuse unless no registration, runner record, or owned
 #            claim remains. Used by supported Firstmate home retirement.
@@ -2132,12 +2143,17 @@ cmd_handled() {
 }
 
 cmd_retire() {
-  local id=${1-} condition=${2-} adapter='' sep='' expected_owner='' owner='' pid='' token='' identity='' stop_state owner_state
+  local id=${1-} condition=${2-} adapter='' sep='' expected_owner='' expected_task='' owner='' pid='' token='' identity='' stop_state owner_state
   local extension_binding_digest='' round_owner=''
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   case "$condition" in
     '') [ "$#" -eq 1 ] || usage ;;
     --if-absent) [ "$#" -eq 2 ] || usage ;;
+    --if-task)
+      [ "$#" -eq 3 ] || usage
+      expected_task=${3-}
+      fm_pr_task_id_valid "$expected_task" || die "task id is invalid: $expected_task"
+      ;;
     --if-owner)
       [ "$#" -eq 3 ] || usage
       expected_owner=${3-}
@@ -2180,6 +2196,13 @@ cmd_retire() {
         fm_procevent_source_lock_release "$id"
         die "source registration does not match the expected owner: $id"
         ;;
+      --if-task)
+        if [ "$(source_kind "$id" 2>/dev/null || true)" != task-owned ] \
+          || [ "$(source_owner_task "$id" 2>/dev/null || true)" != "$expected_task" ]; then
+          fm_procevent_source_lock_release "$id"
+          die "source registration does not match the expected owner: $id"
+        fi
+        ;;
       --if-matches)
         if ! fm_procevent_registration_matches_locked "$STATE" "$adapter" "$id" "$@"; then
           fm_procevent_source_lock_release "$id"
@@ -2204,10 +2227,16 @@ cmd_retire() {
   fi
   if [ -e "$(fm_procevent_claim_path "$id")" ]; then
     if ! fm_procevent_claim_load_locked "$id" 2>/dev/null; then
-      fm_procevent_source_lock_release "$id"
-      die "cannot safely read source ownership: $id"
-    fi
-    if fm_procevent_claim_owned_by_state "$STATE" "$FM_HOME"; then
+      # An empty claim left by a crash in an earlier boot names no owner that
+      # can still be alive, so it is dropped rather than stranding the source.
+      if fm_procevent_claim_prior_boot_empty_locked "$id" \
+        && rm -f -- "$(fm_procevent_claim_path "$id")"; then
+        :
+      else
+        fm_procevent_source_lock_release "$id"
+        die "cannot safely read source ownership: $id"
+      fi
+    elif fm_procevent_claim_owned_by_state "$STATE" "$FM_HOME"; then
       owner=$FM_PROCEVENT_CLAIM_HOME
       pid=$FM_PROCEVENT_CLAIM_PID
       token=$FM_PROCEVENT_CLAIM_TOKEN
@@ -2245,6 +2274,30 @@ cmd_retire() {
   # source id, and an unbound source is unaffected.
   "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
   printf 'retired: %s\n' "$id"
+}
+
+cmd_retire_task() {
+  local task=${1-} rec id retired=0 failed=0
+  [ "$#" -eq 1 ] || usage
+  fm_pr_task_id_valid "$task" || die "task id is invalid: $task"
+  for rec in "$REG"/*.source; do
+    [ -f "$rec" ] && [ ! -L "$rec" ] || continue
+    id=${rec##*/}; id=${id%.source}
+    fm_procevent_source_id_valid "$id" || continue
+    [ "$(source_kind "$id" 2>/dev/null || true)" = task-owned ] || continue
+    [ "$(source_owner_task "$id" 2>/dev/null || true)" = "$task" ] || continue
+    if FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$SCRIPT_DIR/fm-procevent.sh" retire "$id" --if-task "$task" >/dev/null; then
+      retired=$((retired + 1))
+    else
+      failed=$((failed + 1))
+    fi
+  done
+  if [ "$failed" -ne 0 ]; then
+    printf 'error: task %s still owns %s process-event source(s); retired=%s\n' "$task" "$failed" "$retired" >&2
+    return 1
+  fi
+  printf 'retired-task: %s retired=%s\n' "$task" "$retired"
 }
 
 sweep_add_id() {
@@ -2559,6 +2612,7 @@ case "${1-}" in
   classify)           shift; cmd_classify "$@" ;;
   handled)            shift; cmd_handled "$@" ;;
   retire)             shift; cmd_retire "$@" ;;
+  retire-task)        shift; cmd_retire_task "$@" ;;
   sweep-home)         shift; cmd_sweep_home "$@" ;;
   binding-retirement-preflight) shift; cmd_binding_retirement_preflight "$@" ;;
   extension-retirement) shift; cmd_extension_retirement "$@" ;;

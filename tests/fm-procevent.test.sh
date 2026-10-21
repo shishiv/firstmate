@@ -4977,4 +4977,52 @@ PATH="$UNDISP/bin:$PATH" FM_HOME="$UNDISP/home" \
   "$ROOT/bin/fm-procevent-lavish.sh" retire "$undisp_art" >/dev/null 2>&1 || true
 pass "arm does not launch beside a stale claim whose process group is alive"
 
+# --- retire-task retires every board its task owns, listening or dead -------
+# Task cleanup calls this so no board poll outlives its task. The dead board's
+# claim is the shape a crash leaves: an empty record from an earlier boot.
+HRT="$TMP_ROOT/hrt"; new_home "$HRT"; fm_test_track_procevent_home "$HRT"
+new_task_endpoint "$HRT" rt-task
+new_task_endpoint "$HRT" rt-other
+RT_TRIG="$TMP_ROOT/rt-never"
+pe "$HRT" register-task lavish rt-live rt-task -- "$BLOCKER" "$RT_TRIG" live >/dev/null
+pe "$HRT" register-task lavish rt-dead rt-task -- "$BLOCKER" "$RT_TRIG" dead >/dev/null
+pe "$HRT" register-task lavish rt-sibling rt-other -- "$BLOCKER" "$RT_TRIG" sibling >/dev/null
+pe_register "$HRT" lavish rt-main -- "$BLOCKER" "$RT_TRIG" main >/dev/null
+pe "$HRT" start rt-live >/dev/null 2>&1 &
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/rt-live.claim" || fail "the live task board never claimed its source"
+rt_runner=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/rt-live.claim")
+kill -0 "$rt_runner" 2>/dev/null || fail "fixture invalid: the live task board's runner is not running"
+: > "$FM_PROCEVENT_CLAIM_ROOT/rt-dead.claim"
+chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/rt-dead.claim"
+touch -t 200001010000 "$FM_PROCEVENT_CLAIM_ROOT/rt-dead.claim"
+rt_list=$(pe "$HRT" list)
+assert_contains "$rt_list" "task:rt-task/listening" "fixture invalid: the live task board is not listening"
+assert_contains "$rt_list" "task:rt-task/dead" "fixture invalid: the crashed task board is not reported dead"
+rt_out=$(pe "$HRT" retire-task rt-task 2>&1) || fail "retire-task refused the task's own boards: $rt_out"
+assert_contains "$rt_out" "retired-task: rt-task retired=2" "retire-task did not report both boards retired"
+for _ in $(seq 1 50); do kill -0 "$rt_runner" 2>/dev/null || break; sleep 0.1; done
+! kill -0 "$rt_runner" 2>/dev/null || fail "retire-task left the task's board runner polling"
+assert_absent "$HRT/state/procevent/rt-live.source" "retire-task left the listening board registered"
+assert_absent "$HRT/state/procevent/rt-dead.source" "retire-task left the dead board registered"
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/rt-dead.claim" "retire-task left the crashed board's empty claim"
+[ -e "$HRT/state/procevent/rt-sibling.source" ] || fail "retire-task retired another task's board"
+[ -e "$HRT/state/procevent/rt-main.source" ] || fail "retire-task retired a board firstmate holds"
+pass "retire-task retires every board its task owns, including one a crash left with an empty claim"
+
+# An empty claim written in this boot is not a crash leftover, so it still
+# proves nothing and retirement still refuses.
+: > "$FM_PROCEVENT_CLAIM_ROOT/rt-sibling.claim"
+chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/rt-sibling.claim"
+if pe "$HRT" retire-task rt-other > "$TMP_ROOT/rt-fresh.out" 2>&1; then
+  fail "retire-task dropped an unreadable claim written during this boot"
+fi
+assert_contains "$(cat "$TMP_ROOT/rt-fresh.out")" "cannot safely read source ownership" \
+  "the refused retire did not name the unreadable claim"
+[ -e "$HRT/state/procevent/rt-sibling.source" ] || fail "a refused retire-task still removed the board"
+[ -e "$FM_PROCEVENT_CLAIM_ROOT/rt-sibling.claim" ] || fail "a refused retire-task removed the claim"
+rm -f "$FM_PROCEVENT_CLAIM_ROOT/rt-sibling.claim"
+pe "$HRT" retire-task rt-other >/dev/null || fail "retire-task refused once the claim was gone"
+pe "$HRT" retire rt-main >/dev/null || true
+pass "an empty claim from the current boot still refuses retirement"
+
 printf '\nall procevent tests passed\n'

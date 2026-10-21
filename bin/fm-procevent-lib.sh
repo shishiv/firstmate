@@ -610,6 +610,39 @@ fm_procevent_claim_load_locked() {  # <source-id>
   FM_PROCEVENT_CLAIM_STATE_MODE=$state_mode
 }
 
+# fm_procevent_claim_prior_boot_empty_locked <source-id>
+# True only for a claim record that is an ordinary, single-link, zero-length file
+# of this user whose mtime predates the current boot by more than ten minutes.
+# Every claim writer fills a private temporary file and renames it into place, so
+# no running process ever leaves an empty record; an empty one is what an
+# unsynced rename looks like after a crash or power loss. A record from an
+# earlier boot cannot name a live runner, because no process survives a reboot.
+# The margin absorbs boot-time drift after a wall-clock step. An unknown boot
+# time, an unreadable file, or anything else proves nothing and returns false,
+# so the unreadable-claim refusal stands for every other shape.
+fm_procevent_claim_prior_boot_empty_locked() {
+  local claim boot mtime
+  claim=$(fm_procevent_claim_path "$1")
+  [ -f "$claim" ] && [ ! -L "$claim" ] && [ ! -s "$claim" ] && [ -O "$claim" ] || return 1
+  [ "$(fm_pr_file_link_count "$claim")" = 1 ] || return 1
+  boot=$(fm_procevent_boot_epoch) || return 1
+  mtime=$(fm_path_mtime "$claim") || return 1
+  case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$mtime" -lt $((boot - 600)) ]
+}
+
+# Wall-clock epoch of the current boot, from the kernel; returns nonzero when unknown.
+fm_procevent_boot_epoch() {
+  local boot
+  if [ -r /proc/stat ]; then
+    boot=$(awk '$1 == "btime" { print $2; exit }' /proc/stat 2>/dev/null)
+  elif [ "$_FM_UNAME" = Darwin ]; then
+    boot=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9][0-9]*\),.*/\1/p')
+  fi
+  case "${boot-}" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$boot"
+}
+
 fm_procevent_claim_state_root_field_valid() {  # <canonical-state-root>
   local value=$1 LC_ALL=C
   case "$value" in *[[:cntrl:]]*) return 1 ;; esac
