@@ -90,6 +90,25 @@
 # drops to one worker when available memory cannot hold two capped roots. The
 # cap block beside RESIDENT_KIB below owns the knobs and the sizing.
 #
+# One lint per machine: every run that reaches ShellCheck first takes a host
+# lock (an flock on <host dir>/lock, the host dir being FM_LINT_HOST_DIR or
+# /tmp/fm-lint-host-<uid>), shared by every home and every copy of the repository
+# on the machine. A second fm-lint prints that it is waiting for its turn, naming
+# the owner, and runs after the first finishes instead of beside it, so the memory
+# peak is one lint's. The kernel drops the lock when the owner and the processes
+# it started are gone, so a killed lint never leaves a stale lock.
+#
+# Base cache: a passing full lint (the default file set with full source-aware
+# analysis, a working tree with no change to bin/, tests/, or .github/workflows,
+# no --telemetry, not CI) is recorded in <host dir>/base under a key made of the
+# commit, the lint rules (this script, fm-timeout-lib.sh, fm-lint-workflows.sh,
+# and the ShellCheck version), and the partition. A later fm-lint with the same
+# key, once it holds the lock, prints that it is reusing the recorded pass and
+# does not run ShellCheck again; another commit, a changed rule, or another
+# partition runs again. A failing lint, a root that fell back from source
+# following, and any dirty tree are never recorded. FM_LINT_BASE_CACHE=off
+# neither reads nor writes the cache.
+#
 # Per-root evidence is incremental: workers append begin/end records (root,
 # mode, shard, start, end, duration, final exit status, reason, peak RSS when
 # measured, and whether the final attempt followed sources) to a roots log
@@ -765,6 +784,146 @@ fm_lint_run_backend_purity() {
   }
 }
 
+FM_LINT_HOST_DIR_PATH=${FM_LINT_HOST_DIR:-/tmp/fm-lint-host-$(id -u)}
+FM_LINT_LOCK_FD=
+
+# Host lock: one fm-lint runs ShellCheck per machine, whichever home or copy of
+# the repository started it. The lock is an flock on a file in the per-user host
+# directory, taken through perl on a descriptor this shell keeps open, so the
+# kernel drops it the moment the owner and everything it started are gone, and a
+# crashed or killed run never leaves a stale lock to clean up.
+fm_lint_host_dir_ready() {
+  local dir=$FM_LINT_HOST_DIR_PATH
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null || return 1
+  fi
+  [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] && [ -w "$dir" ]
+}
+
+fm_lint_host_lock_try() {
+  # shellcheck disable=SC2016 # The $ expressions belong to the perl program.
+  "$PERL_BIN" -e 'use Fcntl qw(:flock); open(my $fh, ">&=", $ARGV[0]) or exit 3;
+    exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1);' "$FM_LINT_LOCK_FD"
+}
+
+fm_lint_host_lock() {
+  local lockfile rc waited_since=0 owner
+  if ! fm_lint_host_dir_ready; then
+    printf 'fm-lint.sh: host lint lock directory %s is not usable; running without the one-lint-per-machine lock\n' \
+      "$FM_LINT_HOST_DIR_PATH" >&2
+    return 0
+  fi
+  lockfile=$FM_LINT_HOST_DIR_PATH/lock
+  if [ -L "$lockfile" ] || ! { exec {FM_LINT_LOCK_FD}>>"$lockfile"; } 2>/dev/null; then
+    FM_LINT_LOCK_FD=
+    printf 'fm-lint.sh: host lint lock %s cannot be opened; running without the one-lint-per-machine lock\n' \
+      "$lockfile" >&2
+    return 0
+  fi
+  while :; do
+    rc=0
+    fm_lint_host_lock_try || rc=$?
+    case "$rc" in
+      0) break ;;
+      1) ;;
+      *)
+        printf 'fm-lint.sh: host lint lock %s cannot be taken; running without the one-lint-per-machine lock\n' \
+          "$lockfile" >&2
+        exec {FM_LINT_LOCK_FD}>&-
+        FM_LINT_LOCK_FD=
+        return 0
+        ;;
+    esac
+    if [ "$waited_since" -eq 0 ]; then
+      waited_since=$(date +%s)
+      owner=$(head -n 1 "$lockfile" 2>/dev/null)
+      printf 'fm-lint.sh: waiting for its turn: only one fm-lint runs per machine and another is running%s (lock %s)\n' \
+        "${owner:+ ($owner)}" "$lockfile" >&2
+    fi
+    sleep 1
+  done
+  printf 'pid %s, %s\n' "$$" "$ROOT" > "$lockfile" 2>/dev/null || true
+  if [ "$waited_since" -ne 0 ]; then
+    printf 'fm-lint.sh: took the host lint lock after waiting %ss\n' "$(( $(date +%s) - waited_since ))" >&2
+  fi
+}
+
+# Base cache: a passing full lint is recorded per commit and per lint-rules
+# version, so a second fm-lint over the same clean base reuses the result
+# instead of running ShellCheck again. Only a result that no later run can
+# disagree with is eligible: the full canonical set with full source-aware
+# analysis, a working tree with no change to any linted input, no telemetry
+# request, and not CI. A new commit, a changed rule, another partition, or a
+# different ShellCheck starts a new key.
+fm_lint_sha() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# The lint rules are this script, its timeout library, the workflow linter, and
+# the pinned ShellCheck that runs them.
+fm_lint_rules_version() {
+  local file
+  {
+    for file in "$SELF" "$SELF_DIR/fm-timeout-lib.sh" "$SELF_DIR/fm-lint-workflows.sh"; do
+      [ ! -r "$file" ] || cat "$file"
+    done
+    printf 'shellcheck=%s\n' "$resolved"
+  } | fm_lint_sha
+}
+
+# fm_lint_base_state prints the HEAD commit, and fails when the tree has an
+# uncommitted change to any linted input.
+fm_lint_base_state() {
+  local head dirty
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  head=$(git rev-parse --verify -q HEAD 2>/dev/null) || return 1
+  dirty=$(git status --porcelain --untracked-files=all -- bin tests .github/workflows 2>/dev/null) || return 1
+  [ -z "$dirty" ] || return 1
+  printf '%s\n' "$head"
+}
+
+fm_lint_base_cache_eligible() {
+  [ "${FM_LINT_BASE_CACHE:-on}" != off ] || return 1
+  [ "${GITHUB_ACTIONS:-}" != true ] && [ "${CI:-}" != true ] || return 1
+  [ "$EXPLICIT_PATHS" -eq 0 ] && [ "$CHANGED_MODE" -eq 0 ] && [ "$FAST" -eq 0 ] \
+    && [ "$FOLLOW_SOURCES" -eq 1 ] && [ -z "$TELEMETRY" ] || return 1
+  fm_lint_host_dir_ready
+}
+
+# fm_lint_base_cache_file prints the cache path for the current commit and rules.
+fm_lint_base_cache_file() {
+  local head rules key
+  head=$(fm_lint_base_state) || return 1
+  rules=$(fm_lint_rules_version) || return 1
+  [ -n "$rules" ] || return 1
+  key=$(printf 'commit=%s\nrules=%s\npartition=%s\n' "$head" "$rules" "${PARTITION:-all}" | fm_lint_sha) || return 1
+  [ -n "$key" ] || return 1
+  printf '%s/base/%s.pass\n' "$FM_LINT_HOST_DIR_PATH" "$key"
+}
+
+fm_lint_base_cache_store() {  # <cache-file>
+  local file=$1 tmp
+  [ "$(fm_lint_base_cache_file 2>/dev/null)" = "$file" ] || return 0
+  awk -F '\t' '
+    $1 == "begin" { begun++ }
+    $1 == "end" { ended++; if (!($10 == "ok" && $12 == 1)) impure = 1 }
+    END { exit((begun > 0 && begun == ended && !impure) ? 0 : 1) }
+  ' "$ROOTS_LOG" || return 0
+  mkdir -p "${file%/*}" 2>/dev/null || return 0
+  tmp=$file.$$
+  if printf 'recorded %s\ncommit %s\n' "$(date +%s)" "$(git rev-parse HEAD 2>/dev/null)" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+}
+
 JOBS=${FM_LINT_JOBS:-2}
 JOBS_EXPLICIT=0
 [ -z "${FM_LINT_JOBS:-}" ] || JOBS_EXPLICIT=1
@@ -1000,6 +1159,24 @@ if [ "$CHANGED_MODE" -eq 1 ] && [ "$ROOT_COUNT" -eq 0 ]; then
   fm_lint_run_backend_purity || overall_rc=$?
   fm_lint_run_workflows || overall_rc=$?
   exit "$overall_rc"
+fi
+
+# Everything below runs ShellCheck. Take the one host lint lock first, and only
+# then look for a recorded pass, so a waiter sees what the lint it waited for
+# just stored.
+fm_lint_host_lock
+BASE_CACHE_FILE=
+if fm_lint_base_cache_eligible && BASE_CACHE_FILE=$(fm_lint_base_cache_file); then
+  if [ -f "$BASE_CACHE_FILE" ]; then
+    recorded_at=$(awk '$1 == "recorded" { print $2; exit }' "$BASE_CACHE_FILE" 2>/dev/null)
+    case "$recorded_at" in ''|*[!0-9]*) recorded_at=$(date +%s) ;; esac
+    printf 'fm-lint.sh: reusing the lint pass recorded %ss ago for commit %s with these lint rules (key %s); ShellCheck not run again\n' \
+      "$(( $(date +%s) - recorded_at ))" "$(git rev-parse --short HEAD 2>/dev/null)" \
+      "$(basename "$BASE_CACHE_FILE" .pass | cut -c1-12)"
+    exit 0
+  fi
+else
+  BASE_CACHE_FILE=
 fi
 
 if [ -n "$TELEMETRY" ]; then
@@ -1550,6 +1727,10 @@ fi
 
 if [ -s "$ROOTS_LOG" ]; then
   printf 'meta\t%s\t%s\n' 'result_exit' "$overall_rc" >> "$ROOTS_LOG"
+fi
+
+if [ -n "$BASE_CACHE_FILE" ] && [ "$overall_rc" -eq 0 ]; then
+  fm_lint_base_cache_store "$BASE_CACHE_FILE"
 fi
 
 exit "$overall_rc"

@@ -2132,6 +2132,331 @@ SH
   pass "seeded dispatcher, adapter, production-owner, and test-local diagnostics preserve parity"
 }
 
+# --- host lock and base cache ------------------------------------------------
+#
+# These cases run the real bin/fm-lint.sh copied into a throwaway git repository
+# on its main branch (so the default run is the full canonical lint) with a
+# ShellCheck stub on PATH. Each case owns its host directory, so none of them
+# touches the operator's real lock or cache.
+
+# fm_lint_host_fixture <dir>: a clean git repo on main holding the lint owner,
+# its two sibling libraries, one backend root, and one test root the hoarding
+# stub keys on: five roots in all.
+fm_lint_host_fixture() {
+  local dir=$1
+  mkdir -p "$dir/bin/backends" "$dir/tests"
+  printf '#!/usr/bin/env bash\ntrue\n' > "$dir/bin/backends/one.sh"
+  cp "$ROOT/bin/fm-lint.sh" "$ROOT/bin/fm-timeout-lib.sh" "$ROOT/bin/fm-lint-workflows.sh" "$dir/bin/"
+  printf '#!/usr/bin/env bash\ntrue\n' > "$dir/tests/one.test.sh"
+  git -C "$dir" init -q -b main
+  git -C "$dir" add -A
+  git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm base
+}
+
+fm_lint_host_commit() {  # <dir> <message>
+  git -C "$1" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -am "$2"
+}
+
+# fm_lint_host_stub_shellcheck <fakebin>: answers --version with the pin, logs
+# every root it is asked to check to FM_TEST_STUB_LOG, sleeps FM_TEST_STUB_DELAY,
+# fails when FM_TEST_STUB_FAIL is set, and, for tests/one.test.sh only when
+# FM_TEST_STUB_HOARD is set, holds FM_TEST_STUB_HOARD_BYTES of resident memory
+# for FM_TEST_STUB_HOARD_SECS while logging "start <tag>" and "end <tag>" to
+# FM_TEST_STUB_ORDER. The holder is a perl process carrying FM_TEST_HOARD_MARK
+# in its arguments so a sampler can sum its resident size; with
+# FM_TEST_STUB_EXEC it replaces the stub, so killing that pid ends the hold.
+fm_lint_host_stub_shellcheck() {
+  local fakebin=$1
+  mkdir -p "$fakebin"
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+root=${*: -1}
+[ -z "${FM_TEST_STUB_LOG:-}" ] || printf 'run %s\n' "$root" >> "$FM_TEST_STUB_LOG"
+[ -z "${FM_TEST_STUB_DELAY:-}" ] || sleep "$FM_TEST_STUB_DELAY"
+if [ -n "${FM_TEST_STUB_HOARD:-}" ] && [ "${root##*/}" = one.test.sh ]; then
+  printf 'start %s\n' "${FM_TEST_LINT_TAG:-}" >> "${FM_TEST_STUB_ORDER:?}"
+  hold='my $x = "a" x $ARGV[0]; select(undef, undef, undef, $ARGV[1]);'
+  if [ -n "${FM_TEST_STUB_EXEC:-}" ]; then
+    exec perl -e "$hold" "${FM_TEST_STUB_HOARD_BYTES:-104857600}" "${FM_TEST_STUB_HOARD_SECS:-1.5}" "${FM_TEST_HOARD_MARK:-}"
+  fi
+  perl -e "$hold" "${FM_TEST_STUB_HOARD_BYTES:-104857600}" "${FM_TEST_STUB_HOARD_SECS:-1.5}" "${FM_TEST_HOARD_MARK:-}"
+  printf 'end %s\n' "${FM_TEST_LINT_TAG:-}" >> "$FM_TEST_STUB_ORDER"
+fi
+if [ -n "${FM_TEST_STUB_FAIL:-}" ]; then
+  printf 'stub finding in %s\n' "$root" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/shellcheck"
+}
+
+fm_lint_host_now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    local seconds=${EPOCHREALTIME%.*} micros=${EPOCHREALTIME#*.}
+    printf '%s\n' "$((seconds * 1000 + 10#${micros:0:3}))"
+  else
+    printf '%s\n' "$(($(date +%s) * 1000))"
+  fi
+}
+
+# fm_lint_host_run <fixture-dir> <fakebin> <host-dir> [VAR=value]...: the
+# fixture's own fm-lint.sh with CI variables cleared and the base cache off
+# unless a VAR=value argument turns it on.
+fm_lint_host_run() {
+  local dir=$1 fakebin=$2 host=$3
+  shift 3
+  env -u CI -u GITHUB_ACTIONS FM_LINT_BASE_CACHE=off \
+    PATH="$fakebin:$PATH" FM_LINT_HOST_DIR="$host" FM_LINT_JOBS=2 FM_LINT_MEMORY_CAP=none \
+    "$@" "$dir/bin/fm-lint.sh" 2>&1
+}
+
+# fm_lint_host_descendants <pid>: the pid and every process below it.
+fm_lint_host_descendants() {
+  local pid=$1 child
+  printf '%s\n' "$pid"
+  for child in $(ps -A -o pid= -o ppid= | awk -v p="$pid" '$2 == p { print $1 }'); do
+    fm_lint_host_descendants "$child"
+  done
+}
+
+# fm_lint_host_wait_for <file> <text> [seconds]: wait for text to appear.
+fm_lint_host_wait_for() {
+  local file=$1 text=$2 tries=$((${3:-30} * 10))
+  while [ "$tries" -gt 0 ]; do
+    grep -Fq -- "$text" "$file" 2>/dev/null && return 0
+    sleep 0.1
+    tries=$((tries - 1))
+  done
+  return 1
+}
+
+# fm_lint_host_sampler <stop-file> <out-file> <mark>: background sampler that
+# records the largest summed resident size (KiB) of processes whose arguments
+# carry <mark>. The mark travels in the environment so the sampler's own awk
+# never matches itself.
+fm_lint_host_sampler() {
+  local stop=$1 out=$2 mark=$3
+  : > "$out"
+  (
+    max=0
+    while [ ! -e "$stop" ]; do
+      sum=$(ps -A -o rss= -o args= | MARK=$mark awk 'index($0, ENVIRON["MARK"]) { s += $1 } END { print s + 0 }')
+      if [ "$sum" -gt "$max" ]; then
+        max=$sum
+        printf '%s\n' "$max" > "$out"
+      fi
+      sleep 0.05
+    done
+  ) &
+  FM_LINT_HOST_SAMPLER_PID=$!
+}
+
+# fm_lint_host_two_lints <label> <host-dir-a> <host-dir-b>: start one hoarding
+# lint, wait until it is holding memory, start a second, and record the peak
+# resident KiB the sampler saw across both in TWO_PEAK, with each lint's output
+# in TWO_OUT_A and TWO_OUT_B and the hoard start/end order in TWO_ORDER.
+fm_lint_host_two_lints() {
+  local label=$1 host_a=$2 host_b=$3 dir fakebin tmp mark order pid_a pid_b
+  tmp=$(fm_test_tmproot "fm-lint-two-$label")
+  dir=$tmp/repo
+  fakebin=$tmp/bin
+  fm_lint_host_fixture "$dir"
+  fm_lint_host_stub_shellcheck "$fakebin"
+  mark=fmlint-hoard-$label-$$
+  order=$tmp/order
+  : > "$order"
+  fm_lint_host_sampler "$tmp/stop" "$tmp/peak" "$mark"
+  fm_lint_host_run "$dir" "$fakebin" "$host_a" FM_TEST_LINT_TAG=A FM_TEST_STUB_HOARD=1 \
+    FM_TEST_STUB_ORDER="$order" FM_TEST_HOARD_MARK="$mark" TMPDIR="$tmp" > "$tmp/a.out" &
+  pid_a=$!
+  fm_lint_host_wait_for "$order" 'start A' 30 || fail "the first lint never reached its hoarding root"
+  fm_lint_host_run "$dir" "$fakebin" "$host_b" FM_TEST_LINT_TAG=B FM_TEST_STUB_HOARD=1 \
+    FM_TEST_STUB_ORDER="$order" FM_TEST_HOARD_MARK="$mark" TMPDIR="$tmp" > "$tmp/b.out" &
+  pid_b=$!
+  wait "$pid_a" || fail "the first lint failed: $(cat "$tmp/a.out")"
+  wait "$pid_b" || fail "the second lint failed: $(cat "$tmp/b.out")"
+  : > "$tmp/stop"
+  wait "$FM_LINT_HOST_SAMPLER_PID" 2>/dev/null || true
+  TWO_OUT_A=$(cat "$tmp/a.out")
+  TWO_OUT_B=$(cat "$tmp/b.out")
+  TWO_ORDER=$(cat "$order")
+  TWO_PEAK=$(cat "$tmp/peak")
+  [ -n "$TWO_PEAK" ] || fail "the memory sampler never saw the hoarding root"
+}
+
+test_host_lock_makes_a_second_lint_wait_and_keeps_the_memory_peak_to_one() {
+  local tmp one_kib peak_locked peak_unlocked
+  tmp=$(fm_test_tmproot fm-lint-host-lock)
+  one_kib=$((104857600 / 1024))
+
+  fm_lint_host_two_lints locked "$tmp/shared" "$tmp/shared"
+  peak_locked=$TWO_PEAK
+  [ "$TWO_ORDER" = $'start A\nend A\nstart B\nend B' ] \
+    || fail "the second lint ran beside the first instead of waiting: $(printf '%s' "$TWO_ORDER" | tr '\n' ' ')"
+  assert_contains "$TWO_OUT_B" "waiting for its turn" "the second lint did not say it was waiting"
+  assert_contains "$TWO_OUT_B" "took the host lint lock after waiting" "the second lint did not report taking the lock"
+  assert_not_contains "$TWO_OUT_A" "waiting for its turn" "the first lint waited with nothing ahead of it"
+  [ "$peak_locked" -ge $((one_kib * 95 / 100)) ] \
+    || fail "the sampler missed the hoard: ${peak_locked} KiB of ${one_kib} KiB"
+  [ "$peak_locked" -lt $((one_kib * 3 / 2)) ] \
+    || fail "two locked lints peaked at ${peak_locked} KiB, more than one lint's ${one_kib} KiB"
+
+  fm_lint_host_two_lints unlocked "$tmp/host-a" "$tmp/host-b"
+  peak_unlocked=$TWO_PEAK
+  assert_not_contains "$TWO_OUT_B" "waiting for its turn" "separate lock directories still serialized the lints"
+  [ "$peak_unlocked" -ge $((one_kib * 18 / 10)) ] \
+    || fail "the control without a shared lock peaked at ${peak_unlocked} KiB, so the measurement cannot tell one lint from two"
+  pass "a second fm-lint waits for the first; measured peak ${peak_locked} KiB with the lock vs ${peak_unlocked} KiB without (one lint holds ${one_kib} KiB)"
+}
+
+test_host_lock_is_released_when_the_owner_dies() {
+  local tmp dir fakebin order host pid victims out start_ms waited_ms rc
+  tmp=$(fm_test_tmproot fm-lint-host-death)
+  dir=$tmp/repo
+  fakebin=$tmp/bin
+  host=$tmp/host
+  order=$tmp/order
+  fm_lint_host_fixture "$dir"
+  fm_lint_host_stub_shellcheck "$fakebin"
+  : > "$order"
+  fm_lint_host_run "$dir" "$fakebin" "$host" FM_TEST_LINT_TAG=A FM_TEST_STUB_HOARD=1 FM_TEST_STUB_EXEC=1 \
+    FM_TEST_STUB_HOARD_SECS=120 FM_TEST_STUB_HOARD_BYTES=1048576 FM_TEST_STUB_ORDER="$order" \
+    TMPDIR="$tmp" > "$tmp/a.out" &
+  pid=$!
+  fm_lint_host_wait_for "$order" 'start A' 30 || fail "the owner never reached its hoarding root"
+  victims=$(fm_lint_host_descendants "$pid")
+  # shellcheck disable=SC2086
+  kill -KILL $victims 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  start_ms=$(fm_lint_host_now_ms)
+  rc=0
+  fm_lint_host_run "$dir" "$fakebin" "$host" FM_TEST_LINT_TAG=B TMPDIR="$tmp" > "$tmp/b.out" &
+  pid=$!
+  waited_ms=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+    waited_ms=$(($(fm_lint_host_now_ms) - start_ms))
+    if [ "$waited_ms" -gt 30000 ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      fail "a killed owner left the host lock held: the next lint was still waiting after ${waited_ms}ms"
+    fi
+  done
+  wait "$pid" || rc=$?
+  out=$(cat "$tmp/b.out")
+  [ "$rc" -eq 0 ] || fail "the lint after a killed owner failed ($rc): $out"
+  assert_not_contains "$out" "waiting for its turn" "a killed owner still held the lock"
+  pass "the host lock is released when its owner is killed"
+}
+
+test_base_cache_reuses_a_pass_for_the_same_commit_and_rules() {
+  local tmp dir fakebin host log runs_before first_ms second_ms start_ms out clone
+  tmp=$(fm_test_tmproot fm-lint-base-cache)
+  dir=$tmp/repo
+  fakebin=$tmp/bin
+  host=$tmp/host
+  log=$tmp/calls
+  : > "$log"
+  fm_lint_host_fixture "$dir"
+  fm_lint_host_stub_shellcheck "$fakebin"
+
+  start_ms=$(fm_lint_host_now_ms)
+  out=$(fm_lint_host_run "$dir" "$fakebin" "$host" FM_LINT_BASE_CACHE=on FM_TEST_STUB_LOG="$log" FM_TEST_STUB_DELAY=1) \
+    || fail "the first lint failed: $out"
+  first_ms=$(($(fm_lint_host_now_ms) - start_ms))
+  runs_before=$(grep -c . "$log")
+  [ "$runs_before" -eq 5 ] || fail "the first lint ran ShellCheck on $runs_before roots, expected 5"
+  assert_not_contains "$out" "reusing the lint pass" "the first lint claimed a reuse with nothing recorded"
+
+  start_ms=$(fm_lint_host_now_ms)
+  out=$(fm_lint_host_run "$dir" "$fakebin" "$host" FM_LINT_BASE_CACHE=on FM_TEST_STUB_LOG="$log" FM_TEST_STUB_DELAY=1) \
+    || fail "the second lint failed: $out"
+  second_ms=$(($(fm_lint_host_now_ms) - start_ms))
+  assert_contains "$out" "reusing the lint pass" "the second lint on the same base did not reuse the pass"
+  [ "$(grep -c . "$log")" -eq "$runs_before" ] || fail "the second lint ran ShellCheck again"
+  [ $((second_ms * 3)) -lt "$first_ms" ] || fail "the reused lint took ${second_ms}ms against ${first_ms}ms for the real one"
+
+  clone=$tmp/clone
+  git clone -q "$dir" "$clone"
+  out=$(fm_lint_host_run "$clone" "$fakebin" "$host" FM_LINT_BASE_CACHE=on FM_TEST_STUB_LOG="$log" FM_TEST_STUB_DELAY=1) \
+    || fail "the lint in a copy of the same commit failed: $out"
+  assert_contains "$out" "reusing the lint pass" "a second copy of the same commit did not reuse the pass"
+  [ "$(grep -c . "$log")" -eq "$runs_before" ] || fail "the second copy ran ShellCheck again"
+  pass "a second lint of the same commit and rules reuses the pass without ShellCheck (${first_ms}ms real, ${second_ms}ms reused), also from another copy"
+}
+
+test_base_cache_runs_again_for_another_base_or_changed_rules() {
+  local tmp dir fakebin host log count out
+  tmp=$(fm_test_tmproot fm-lint-base-cache-miss)
+  dir=$tmp/repo
+  fakebin=$tmp/bin
+  host=$tmp/host
+  log=$tmp/calls
+  : > "$log"
+  fm_lint_host_fixture "$dir"
+  fm_lint_host_stub_shellcheck "$fakebin"
+
+  lint_cached() {
+    out=$(fm_lint_host_run "$dir" "$fakebin" "$host" FM_LINT_BASE_CACHE=on FM_TEST_STUB_LOG="$log") \
+      || fail "lint failed: $out"
+  }
+
+  lint_cached
+  count=$(grep -c . "$log")
+  lint_cached
+  [ "$(grep -c . "$log")" -eq "$count" ] || fail "setup: the repeat on one base was not reused"
+
+  fm_lint_host_commit "$dir" "another base"
+  lint_cached
+  assert_not_contains "$out" "reusing the lint pass" "a different commit reused another commit's pass"
+  [ "$(grep -c . "$log")" -eq $((count * 2)) ] || fail "a different base did not run every root again"
+  lint_cached
+  assert_contains "$out" "reusing the lint pass" "the new base's own pass was not recorded"
+
+  printf '\n# a changed lint rule\n' >> "$dir/bin/fm-lint.sh"
+  fm_lint_host_commit "$dir" "changed rule"
+  count=$(grep -c . "$log")
+  lint_cached
+  assert_not_contains "$out" "reusing the lint pass" "a changed lint rule reused the old pass"
+  [ "$(grep -c . "$log")" -eq $((count + 5)) ] || fail "a changed rule did not run every root again"
+
+  count=$(grep -c . "$log")
+  printf '\n# edited but not committed\n' >> "$dir/bin/fm-timeout-lib.sh"
+  lint_cached
+  lint_cached
+  assert_not_contains "$out" "reusing the lint pass" "a dirty tree reused or recorded a pass"
+  [ "$(grep -c . "$log")" -eq $((count + 10)) ] || fail "a dirty tree did not run every root each time"
+  pass "another commit, a changed rule, and a dirty tree each run ShellCheck again"
+}
+
+test_base_cache_never_records_a_failing_lint() {
+  local tmp dir fakebin host log count out rc
+  tmp=$(fm_test_tmproot fm-lint-base-cache-fail)
+  dir=$tmp/repo
+  fakebin=$tmp/bin
+  host=$tmp/host
+  log=$tmp/calls
+  : > "$log"
+  fm_lint_host_fixture "$dir"
+  fm_lint_host_stub_shellcheck "$fakebin"
+  rc=0
+  out=$(fm_lint_host_run "$dir" "$fakebin" "$host" FM_LINT_BASE_CACHE=on FM_TEST_STUB_LOG="$log" FM_TEST_STUB_FAIL=1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a lint with findings passed"
+  count=$(grep -c . "$log")
+  rc=0
+  out=$(fm_lint_host_run "$dir" "$fakebin" "$host" FM_LINT_BASE_CACHE=on FM_TEST_STUB_LOG="$log" FM_TEST_STUB_FAIL=1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the repeat of a failing lint passed from the cache"
+  assert_not_contains "$out" "reusing the lint pass" "a failing lint was reused"
+  [ "$(grep -c . "$log")" -eq $((count * 2)) ] || fail "the repeat of a failing lint did not run ShellCheck again"
+  pass "a failing lint is never recorded for reuse"
+}
+
 test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_canonical_partitions_preserve_full_lint
@@ -2184,3 +2509,8 @@ test_explicit_path_keeps_external_sources
 test_fast_mode_on_a_local_branch_keeps_source_following
 test_changed_mode_hides_cross_file_codes_that_ci_still_sees
 test_local_exclusion_list_covers_every_no_external_sources_code
+test_host_lock_makes_a_second_lint_wait_and_keeps_the_memory_peak_to_one
+test_host_lock_is_released_when_the_owner_dies
+test_base_cache_reuses_a_pass_for_the_same_commit_and_rules
+test_base_cache_runs_again_for_another_base_or_changed_rules
+test_base_cache_never_records_a_failing_lint

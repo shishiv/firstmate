@@ -334,6 +334,15 @@ trap 'fm_test_cleanup; exit 143' TERM
 trap 'fm_test_cleanup; exit 129' HUP
 trap 'fm_test_cleanup; exit 131' QUIT
 
+# Keep every suite off the machine-wide fm-lint host lock and base cache
+# (bin/fm-lint.sh owns both): each test process gets a private lock directory
+# and no recorded passes, so a suite neither queues behind the operator's real
+# lint nor reads or writes its cache. tests/fm-lint.test.sh turns the cache on
+# for the cases that exercise it.
+FM_LINT_HOST_DIR=$(fm_test_tmproot fm-lint-host) || return 1
+FM_LINT_BASE_CACHE=off
+export FM_LINT_HOST_DIR FM_LINT_BASE_CACHE
+
 # fm_test_reap_orphans: best-effort sweep for fixture roots left behind by a
 # prior run that was killed hard enough to skip the traps above (e.g. a
 # SIGKILL timeout). Only removes directories carrying the .fm-test-fixture
