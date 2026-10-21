@@ -1803,13 +1803,13 @@ work_is_landed() {
 }
 
 # The recorded PR's own forge verdict. bin/fm-pr-lib.sh's
-# fm_pr_read_record_for_url owns the per-provider read (GitHub, GitLab, and the
-# read-only Gerrit adapter), so a PR task on any supported forge is proved the
-# same way. Sets RECORDED_PR_STATE to the forge's state word, or to
-# "unreadable" when the URL does not parse or the forge cannot be read, and
-# returns 0 only when the forge reports the PR merged. A merged verdict is
-# terminal, so it is remembered for this run and the post-lock recheck does
-# not read the forge again.
+# fm_pr_read_record_for_url owns the per-provider read (GitHub, GitLab,
+# Forgejo, and the read-only Gerrit adapter), so a PR task on any supported
+# forge is proved the same way. Sets RECORDED_PR_STATE to the forge's state
+# word, or to "unreadable" when the URL does not parse or the forge cannot be
+# read, and returns 0 only when the forge reports the PR merged. A merged
+# verdict is terminal, so it is remembered for this run and the post-lock
+# recheck does not read the forge again.
 RECORDED_PR_STATE=
 RECORDED_PR_MERGED_URLS=
 recorded_pr_reports_merged() {  # <url>

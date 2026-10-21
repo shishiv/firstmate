@@ -1299,11 +1299,12 @@ fm_pr_gerrit_read_revision() {  # <host> <number>
 
 # The live state of the PR, MR, or change a canonical URL names, read through
 # the provider's own reader above: GitHub through gh (gh-axi as fallback),
-# GitLab through glab, Gerrit through the read-only gerrit-axi adapter. Sets
-# FM_PR_RECORD_STATE to the forge's own state word and FM_PR_RECORD_MERGED to
-# true or false; returns non-zero, with both empty, when the URL does not parse
-# or the forge cannot be read. This also leaves fm_pr_url_parse's FM_PR_*
-# identity set for the caller. bin/fm-teardown.sh's merge proof consumes it.
+# GitLab through glab, Forgejo through tea, Gerrit through the read-only
+# gerrit-axi adapter. Sets FM_PR_RECORD_STATE to the forge's own state word and
+# FM_PR_RECORD_MERGED to true or false; returns non-zero, with both empty, when
+# the URL does not parse or the forge cannot be read. This also leaves
+# fm_pr_url_parse's FM_PR_* identity set for the caller. bin/fm-teardown.sh's
+# merge proof consumes it.
 fm_pr_read_record_for_url() {  # <url>
   # Consumed by bin/fm-teardown.sh recorded_pr_reports_merged.
   # shellcheck disable=SC2034
@@ -1315,6 +1316,7 @@ fm_pr_read_record_for_url() {  # <url>
   case "$FM_PR_PROVIDER" in
     github) fm_pr_github_read_record "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" ;;
     gitlab) fm_pr_gitlab_read_record "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" ;;
+    forgejo) fm_pr_forgejo_read_record "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" ;;
     gerrit) fm_pr_gerrit_read_record "$FM_PR_HOST" "$FM_PR_NUMBER" ;;
     *) return 1 ;;
   esac

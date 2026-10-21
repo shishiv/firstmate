@@ -3207,7 +3207,7 @@ test_inject_msg_kiro_idle_placeholder_is_harness_scoped() {
       fm_backend_send_text_submit() { printf '%s\n' "$3" > "$dir/submitted-$harness"; printf 'empty'; }
       PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=1 \
         FM_DAEMON_PRIMARY_HARNESS=$harness LOG="$dir/log-$harness" \
-        FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=fakepane \
+        FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=firstmate:supervisor \
         inject_msg "done: PR https://example.test/pull/11 checks green" "$state"
     ) || rc=$?
     printf '%s\n' "$rc" > "$dir/rc-$harness"

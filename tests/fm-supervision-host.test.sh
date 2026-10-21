@@ -2956,7 +2956,9 @@ test_kiro_served_pid_proves_ownership_through_the_endpoint() {
   kbin="$home/kirobin"
   mkdir -p "$kbin"
   cp "$(command -v bash)" "$kbin/kiro-cli"
-  printf '#!/usr/bin/env bash\ncase "$1" in display-message) printf "%%%%1\\n" ;; esac\nexit 0\n' > "$kbin/tmux"
+  # list-windows answers the tmux adapter's exact window-membership check for
+  # the published primary:0 target.
+  printf '#!/usr/bin/env bash\ncase "$1" in display-message) printf "%%%%1\\n" ;; list-windows) printf "@1|0|primary\\n" ;; esac\nexit 0\n' > "$kbin/tmux"
   chmod +x "$kbin/kiro-cli" "$kbin/tmux"
   # The record names the root the host resolves (wake-helpers' FM_ROOT_OVERRIDE).
   FM_HOME="$home" PATH="$kbin:$PATH" TMUX_PANE=primary:0 FM_REPO_ROOT="$ROOT" \

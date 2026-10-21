@@ -342,11 +342,17 @@ if [ "$ALLOW_NO_PIPELINE" = true ] && [ "$PROVIDER" != gitlab ]; then
   exit 2
 fi
 if [ -n "$STACK_BASE" ] && [ "$PROVIDER" != github ]; then
-  echo "error: --stack-base applies only to GitHub, where the base-branch guard below runs; this is a $PROVIDER review" >&2
+  case "$PROVIDER" in
+    gitlab) echo "error: --stack-base does not apply to GitLab, where the base-branch guard below is GitHub-only" >&2 ;;
+    *) echo "error: --stack-base does not apply to Forgejo, where the base-branch guard below is GitHub-only" >&2 ;;
+  esac
   exit 2
 fi
 if [ "$ADOPT_EXTERNAL" = true ] && [ "$PROVIDER" != github ]; then
-  echo "error: --adopt-external applies only to GitHub, where bin/fm-pr-check.sh reads the branch and head it adopts from the forge; this is a $PROVIDER review" >&2
+  case "$PROVIDER" in
+    gitlab) echo "error: --adopt-external does not apply to GitLab, where bin/fm-pr-check.sh reads no branch or head from the forge to adopt" >&2 ;;
+    *) echo "error: --adopt-external does not apply to Forgejo, where bin/fm-pr-check.sh reads no branch or head from the forge to adopt" >&2 ;;
+  esac
   exit 2
 fi
 if [ "${#ALLOW_MISSING[@]}" -gt 0 ]; then

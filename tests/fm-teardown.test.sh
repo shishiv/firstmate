@@ -935,6 +935,8 @@ done
 exec "$real_tasks_axi" "\$@"
 SH
   chmod +x "$case_dir/fakebin/tasks-axi"
+  # A recorded PR is landed only when its forge reports it merged.
+  add_glab_mr_state "$case_dir" 12 merged
 
   out=$(run_teardown "$case_dir" 2>&1) || fail "teardown of a landed GitLab task failed: $out"
   [ "$(backlog_row_state "$case_dir")" = "done" ] \
@@ -952,6 +954,21 @@ SH
     printf 'pr=%s\n' "$url" >> "$case_dir/state/task-x1.meta"
     seed_backlog_in_flight "$case_dir"
     cp "$TMP_ROOT/tasks-axi-close-gitlab/fakebin/tasks-axi" "$case_dir/fakebin/tasks-axi"
+    case "$url" in
+      https://github.com/*) forge_pr_state "$case_dir" 7 MERGED ;;
+      *)
+        cat > "$case_dir/fakebin/tea" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "login list" ]; then
+  printf '[{"name":"fj","url":"https://forgejo.example.com"}]\n'
+  exit 0
+fi
+[ "${1:-}" = api ] || exit 1
+printf '{"state":"closed","merged":true,"head":{"sha":"%s"}}\n' 0123456789012345678901234567890123456789
+SH
+        chmod +x "$case_dir/fakebin/tea"
+        ;;
+    esac
     out=$(run_teardown "$case_dir" 2>&1) || fail "teardown of a landed task with $url failed: $out"
     tasks-axi show task-x1 --file "$case_dir/data/backlog.md" \
       | grep -F "links: \"pr:$url\"" >/dev/null \
