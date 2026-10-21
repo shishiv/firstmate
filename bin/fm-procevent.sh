@@ -12,7 +12,7 @@
 #   fm-procevent.sh reconcile
 #   fm-procevent.sh classify <result-file>
 #   fm-procevent.sh handled <source-id> <sequence>
-#   fm-procevent.sh retire <source-id> [--if-absent|--if-matches <adapter> -- <argv>...|--if-owner <registration-token>|--if-task <task-id>]
+#   fm-procevent.sh retire <source-id> [--if-absent|--if-matches <adapter> -- <argv>...|--if-owner <registration-token>|--if-task <task-id>|--if-task-closed <task-id>]
 #   fm-procevent.sh retire-task <task-id>
 #   fm-procevent.sh sweep-home [--preflight]
 #   fm-procevent.sh binding-retirement-preflight <binding-digest>
@@ -69,7 +69,13 @@
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
 #            start a runner for any registered source that has no live owner and
-#            no open task-owned round. This is liveness repair only - it never
+#            no open task-owned round. A task-owned source whose task this home
+#            holds no record of (state/<id>.meta is gone: the task was cleaned
+#            up, possibly by a firstmate older than `retire-task`) is retired
+#            here instead of started or kept running, counted under `stopped`,
+#            so a finished task's board is never revived at a restart. A source
+#            with an unacknowledged captured round is kept for its reader. This is
+#            liveness repair only - it never
 #            discovers results by
 #            polling the source, because the child blocks on the source itself.
 #            A start is REPORTED only once it is confirmed: starting a runner is
@@ -115,7 +121,10 @@
 #            exists, and --if-owner removes only the exact extension registration
 #            token printed by register-extension, so a stale owner cannot retire
 #            a replacement generation. --if-task removes only a task-owned
-#            registration whose owner is exactly <task-id>. A claim that is an
+#            registration whose owner is exactly <task-id>. --if-task-closed does
+#            the same only while this home holds no task record (state/<id>.meta)
+#            for <task-id>, checked under the source lock, so a task spawned
+#            again under that id is never retired by a stale decision. A claim that is an
 #            empty file from an earlier boot (an unsynced write lost in a crash)
 #            names no owner that can still run, so retire drops it; any other
 #            unreadable claim still refuses.
@@ -425,6 +434,11 @@ source_field() {  # <source-id> <field>
 }
 source_kind() { source_field "$1" kind; }
 source_owner_task() { source_field "$1" owner_task; }
+# True while this home still holds a task record for <task-id>. Cleanup removes
+# it last, so its absence is what separates a finished task from a live one.
+task_record_present() {  # <task-id>
+  [ -e "$STATE/$1.meta" ] || [ -L "$STATE/$1.meta" ]
+}
 # Every captured round of one source with no handled acknowledgement yet.
 source_pending() {  # <source-id>
   fm_procevent_pending "$STATE" | awk -v id="$1" 'index($0, "/" id ".") { print }'
@@ -1700,7 +1714,7 @@ stranded_leaderless_detail() {  # <source-id>
 
 cmd_reconcile() {
   local rec id published started=0 stopped=0 uncertain=0 failed=0 claim owner pid token identity claim_state stop_state task_pending
-  local launch_identity launch_stamp launch_mark unconfirmed entry
+  local launch_identity launch_stamp launch_mark unconfirmed entry task_owner
   local -a launched=()
   # Rejected before anything is launched, and by name. A window this command
   # cannot use makes every launch unconfirmable, so validating it later would
@@ -1765,6 +1779,20 @@ cmd_reconcile() {
           task_pending=$(source_pending "$id" | head -1)
           if [ -n "$task_pending" ]; then
             fm_procevent_source_lock_release "$id"
+            continue
+          fi
+          task_owner=$(source_owner_task "$id" 2>/dev/null || true)
+          if fm_pr_task_id_valid "$task_owner" && ! task_record_present "$task_owner"; then
+            # The task this board belongs to is gone. Starting its poll again
+            # would revive a finished task's board at every restart, so retire
+            # it; the retirement rechecks the task record under the source lock.
+            fm_procevent_source_lock_release "$id"
+            if FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+              "$SCRIPT_DIR/fm-procevent.sh" retire "$id" --if-task-closed "$task_owner" >/dev/null 2>&1; then
+              stopped=$((stopped + 1))
+            elif [ -f "$(source_file "$id")" ]; then
+              uncertain=$((uncertain + 1))
+            fi
             continue
           fi
         fi
@@ -2149,7 +2177,7 @@ cmd_retire() {
   case "$condition" in
     '') [ "$#" -eq 1 ] || usage ;;
     --if-absent) [ "$#" -eq 2 ] || usage ;;
-    --if-task)
+    --if-task|--if-task-closed)
       [ "$#" -eq 3 ] || usage
       expected_task=${3-}
       fm_pr_task_id_valid "$expected_task" || die "task id is invalid: $expected_task"
@@ -2196,11 +2224,15 @@ cmd_retire() {
         fm_procevent_source_lock_release "$id"
         die "source registration does not match the expected owner: $id"
         ;;
-      --if-task)
+      --if-task|--if-task-closed)
         if [ "$(source_kind "$id" 2>/dev/null || true)" != task-owned ] \
           || [ "$(source_owner_task "$id" 2>/dev/null || true)" != "$expected_task" ]; then
           fm_procevent_source_lock_release "$id"
           die "source registration does not match the expected owner: $id"
+        fi
+        if [ "$condition" = --if-task-closed ] && task_record_present "$expected_task"; then
+          fm_procevent_source_lock_release "$id"
+          die "task $expected_task still has a task record in this home: $id"
         fi
         ;;
       --if-matches)
