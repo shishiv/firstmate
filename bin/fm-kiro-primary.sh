@@ -82,6 +82,12 @@ fm_kiro_write_settings "$KIRO_HOME_DIR" || {
   exit 1
 }
 
+physical_root=$(cd -- "$FM_ROOT" 2>/dev/null && pwd -P) || physical_root=$FM_ROOT
+fm_kiro_trust_workspace "$KIRO_HOME_DIR" "$FM_ROOT" "$physical_root" || {
+  echo "error: could not pre-register workspace trust in $KIRO_HOME_DIR" >&2
+  exit 1
+}
+
 AGENT_ARGS=()
 TRUST_ARGS=(-a)
 if [ "$ENGINE" = v2 ]; then

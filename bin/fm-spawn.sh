@@ -5146,6 +5146,24 @@ kiro_trust_dialog_is_visible() { # <plain-viewport-capture>
   return 0
 }
 
+# kiro-cli 2.33.1 asks "Trust this workspace?" for a folder missing from
+# <KIRO_HOME>/workspace-roots/<hash>/permissions.yaml. fm_kiro_build_task_home
+# pre-registers that trust, so the dialog normally never renders; if it does,
+# the gate answers it with Enter ONLY while the highlighted option is
+# "Trust, continue" (captain's standing authorization, 2026-10-22) and refuses
+# any other selection by naming the dialog and the permissions.yaml path.
+kiro_workspace_trust_dialog_is_visible() { # <plain-viewport-capture>
+  local pane=$1
+  printf '%s\n' "$pane" | grep -Fq 'Trust this workspace?' || return 1
+  printf '%s\n' "$pane" | grep -Fq 'Trust, continue' || return 1
+  printf '%s\n' "$pane" | grep -Fq "Don't trust, exit" || return 1
+  return 0
+}
+
+kiro_workspace_trust_highlight_is_trust() { # <plain-viewport-capture>
+  printf '%s\n' "$1" | grep -E '^[[:space:]]*❯[[:space:]]+Trust, continue[[:space:]]*$' >/dev/null
+}
+
 kiro_tui_is_live() { # <plain-viewport-capture>
   local pane=$1
   # Any of kiro-cli's persistent chrome proves the interactive TUI is up and past
@@ -5175,7 +5193,7 @@ kiro_wait_for_launch() {
   # did the TUI come up - and it uses the VIEWPORT-BOUNDED capture so a
   # scrolled-away dialog frame can never be mistaken for the live screen.
   local pane capture_rc i=0 max=${FM_KIRO_READY_POLLS:-60} interval=${FM_KIRO_POLL_INTERVAL:-0.5}
-  local live_captures=0
+  local live_captures=0 workspace_trust_answered=0
   KIRO_LAUNCH_FAILURE_DETAIL='kiro-cli did not show a live TUI before the launch timeout'
   while [ "$i" -lt "$max" ]; do
     capture_rc=0
@@ -5185,6 +5203,20 @@ kiro_wait_for_launch() {
       return 1
     fi
     if [ -n "$pane" ]; then
+      if kiro_workspace_trust_dialog_is_visible "$pane"; then
+        live_captures=0
+        if ! kiro_workspace_trust_highlight_is_trust "$pane"; then
+          KIRO_LAUNCH_FAILURE_DETAIL="kiro-cli rendered the 'Trust this workspace?' dialog with a highlighted option other than 'Trust, continue', so firstmate did not answer it; the workspace trust lives in $KIRO_HOME_DIR/workspace-roots/<sha256-16-of-workspace-path>/permissions.yaml (workspaceTrusted: true)"
+          return 1
+        fi
+        if [ "$workspace_trust_answered" -eq 0 ]; then
+          spawn_send_key "$T" Enter
+          workspace_trust_answered=1
+        fi
+        i=$((i + 1))
+        [ "$i" -ge "$max" ] || sleep "$interval"
+        continue
+      fi
       if kiro_trust_dialog_is_visible "$pane"; then
         # The dialog rendered, which means the resolved KIRO_HOME did not carry
         # chat.disableTrustAllConfirmation=true. firstmate cannot navigate to the
@@ -6468,7 +6500,7 @@ kiro-cli)
   if [ "$KIRO_ENGINE" = v2 ]; then
     KIRO_V2_AGENT_NAME=$(fm_kiro_v2_agent_name "$ID") || exit 1
   fi
-  if ! KIRO_TURNEND_TOKEN=$(fm_kiro_build_task_home "$KIRO_HOME_DIR" "$KIRO_V2_AGENT_NAME" "$TURNEND"); then
+  if ! KIRO_TURNEND_TOKEN=$(fm_kiro_build_task_home "$KIRO_HOME_DIR" "$KIRO_V2_AGENT_NAME" "$TURNEND" "$WT"); then
     echo "error: could not build the isolated KIRO_HOME at $KIRO_HOME_DIR" >&2
     exit 1
   fi
