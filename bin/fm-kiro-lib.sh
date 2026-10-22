@@ -186,6 +186,35 @@ fm_kiro_write_settings() {  # <kiro-home>
 EOF
 }
 
+# kiro-cli 2.33.1 opens a "Trust this workspace?" dialog for a folder it has
+# not seen and persists the answer at
+# <KIRO_HOME>/workspace-roots/<hash>/permissions.yaml, where <hash> is the first
+# 16 hex characters of the sha256 of the workspace path string (no trailing
+# slash). Pre-registering that file in Firstmate's own KIRO_HOME removes the
+# dialog; the captain's global ~/.kiro is never written.
+fm_kiro_workspace_hash() {  # <workspace-path>
+  local path=$1
+  while [ "${#path}" -gt 1 ] && [ "${path%/}" != "$path" ]; do path=${path%/}; done
+  printf '%s' "$path" | sha256sum | cut -c1-16
+}
+
+fm_kiro_trust_workspace() {  # <kiro-home> <workspace> [<workspace>...]
+  local home=$1 workspace hash dir
+  shift
+  [ -n "$home" ] && [ "$#" -gt 0 ] || return 1
+  fm_kiro_prepare_home "$home" || return 1
+  for workspace in "$@"; do
+    [ -n "$workspace" ] || continue
+    hash=$(fm_kiro_workspace_hash "$workspace") || return 1
+    dir="$home/workspace-roots/$hash"
+    mkdir -p "$dir" || return 1
+    fm_kiro_publish_owned "$dir/permissions.yaml" <<'EOF2'
+rules: []
+workspaceTrusted: true
+EOF2
+  done
+}
+
 fm_kiro_write_v2_agent() {  # <kiro-home> <agent-name> <hook-command>
   local home=$1 agent=$2 command
   fm_kiro_slug_valid "$agent" || return 1
@@ -421,6 +450,9 @@ fm_kiro_remove_v3_project_config() {  # <workspace> <task-id>
 #                                only when a V2 agent name is given;
 #   agents/fm-turn-end.d/<tok> - this task's registry entry naming
 #                                state/<id>.turn-ended;
+#   workspace-roots/<hash>/permissions.yaml - pre-registered workspace trust
+#                                (see fm_kiro_trust_workspace), when a workspace
+#                                is given;
 #   .fm-kiro-turnend           - the pointer carrying <tok>. The shared hook
 #                                touches the registered file only when both
 #                                agree, so a stray kiro-cli session under this
@@ -430,8 +462,8 @@ fm_kiro_remove_v3_project_config() {  # <workspace> <task-id>
 # record bin/fm-kiro-turnend-hook.sh keeps there, and bin/fm-teardown.sh retires
 # it with `rm -rf`, so no separate registry cleanup is needed
 # (bin/fm-control-lib.sh's auth path is empty for kiro-cli).
-fm_kiro_build_task_home() {  # <kiro-home> <v2-agent-name-or-empty> <turn-end-path>
-  local home=$1 v2_agent=$2 turnend=$3 auth_dir auth_file old_umask hook_command token
+fm_kiro_build_task_home() {  # <kiro-home> <v2-agent-name-or-empty> <turn-end-path> [<workspace>]
+  local home=$1 v2_agent=$2 turnend=$3 workspace=${4:-} physical auth_dir auth_file old_umask hook_command token
   [ -x "$FM_KIRO_TURNEND_HOOK" ] || {
     echo "error: kiro-cli turn-end hook missing or not executable at $FM_KIRO_TURNEND_HOOK" >&2
     return 1
@@ -439,6 +471,10 @@ fm_kiro_build_task_home() {  # <kiro-home> <v2-agent-name-or-empty> <turn-end-pa
   hook_command=$(fm_kiro_task_hook_command "$home") || return 1
   rm -rf "$home" || return 1
   fm_kiro_write_settings "$home" || return 1
+  if [ -n "$workspace" ]; then
+    physical=$(cd -- "$workspace" 2>/dev/null && pwd -P) || physical=$workspace
+    fm_kiro_trust_workspace "$home" "$workspace" "$physical" || return 1
+  fi
   if [ -n "$v2_agent" ]; then
     fm_kiro_write_v2_agent "$home" "$v2_agent" "$hook_command" || return 1
   fi

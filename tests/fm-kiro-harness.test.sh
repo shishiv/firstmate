@@ -64,6 +64,7 @@ unset CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT CURSOR_AGENT CURSOR_IN
 
 HARNESS="$ROOT/bin/fm-harness.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
+export ROOT_FIXTURES="$ROOT/tests/fixtures"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 TMP_ROOT=$(fm_test_tmproot fm-kiro-harness)
 
@@ -582,6 +583,12 @@ fake_screen() {
     trust)
       printf 'Warning: Kiro is running in trust all tools mode\n\n  ❯ No, exit\n    Yes, I accept\n'
       ;;
+    wstrust)
+      cat "$ROOT_FIXTURES/kiro-2.33.1-workspace-trust.txt"
+      ;;
+    wstrust-other)
+      sed -e 's/^ ❯ Trust, continue/   Trust, continue/' -e "s/^   Don't trust, exit/ ❯ Don't trust, exit/" "$ROOT_FIXTURES/kiro-2.33.1-workspace-trust.txt"
+      ;;
     trust-decoy)
       # Prose that merely mentions the phrase, WITHOUT the two navigable
       # options - a dialog-free frame that must NOT read as a dialog.
@@ -663,6 +670,8 @@ case "${1:-}" in
             case "${FM_FAKE_KIRO_TRUST:-suppressed}" in
             present) printf 'trust\n' > "$FM_FAKE_KIRO_STATE" ;;
             decoy) printf 'trust-decoy\n' > "$FM_FAKE_KIRO_STATE" ;;
+            wstrust) printf 'wstrust\n' > "$FM_FAKE_KIRO_STATE" ;;
+            wstrust-other) printf 'wstrust-other\n' > "$FM_FAKE_KIRO_STATE" ;;
             *)
               if [ "${FM_FAKE_KIRO_READY:-yes}" = yes ]; then
                 printf 'idle\n' > "$FM_FAKE_KIRO_STATE"
@@ -671,6 +680,13 @@ case "${1:-}" in
               fi
               ;;
             esac
+            ;;
+          wstrust)
+            printf 'enter\n' >> "$FM_FAKE_KIRO_TRUST_ENTER_LOG"
+            printf 'idle\n' > "$FM_FAKE_KIRO_STATE"
+            ;;
+          wstrust-other)
+            printf 'enter\n' >> "$FM_FAKE_KIRO_TRUST_ENTER_LOG"
             ;;
           trust)
             # firstmate must NEVER answer the trust dialog. Any Enter reaching
@@ -834,6 +850,53 @@ test_kiro_trust_dialog_refuses_without_answering() {
     "$HOME_DIR/state/$id.status" \
     "kiro-cli trust refusal left no supervisor-visible failure line"
   pass "fm-spawn: kiro-cli refuses a rendered trust dialog, names the fix, and never presses Enter"
+}
+
+test_kiro_workspace_trust_is_preregistered_and_gate_handles_the_dialog() {
+  local id rec out rc kh hash
+  id=kiro-wstrust-z1
+  rec=$(make_kiro_spawn_case wstrust-pre "$id")
+  read_kiro_spawn_record "$rec"
+  kh="$HOME_DIR/state/$id.kiro-home"
+  rc=0
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" 2>&1) || rc=$?
+  expect_code 0 "$rc" "a pre-registered workspace spawn should succeed: $out"
+  hash=$(printf '%s' "$(cd "$WT_DIR" && pwd -P)" | sha256sum | cut -c1-16)
+  [ -f "$kh/workspace-roots/$hash/permissions.yaml" ] \
+    || fail "spawn did not pre-register workspace trust at workspace-roots/$hash"
+  [ "$(cat "$kh/workspace-roots/$hash/permissions.yaml")" = $'rules: []\nworkspaceTrusted: true' ] \
+    || fail "permissions.yaml content is not exactly rules: [] and workspaceTrusted: true"
+  [ ! -s "$CASE_DIR/trust-enter.log" ] || fail "a pre-registered workspace still received an Enter"
+
+  id=kiro-wstrust-z2
+  rec=$(make_kiro_spawn_case wstrust-answer "$id")
+  read_kiro_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIRO_TRUST=wstrust run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" 2>&1) || rc=$?
+  expect_code 0 "$rc" "a rendered workspace dialog on 'Trust, continue' should be answered: $out"
+  [ "$(wc -l < "$CASE_DIR/trust-enter.log")" -eq 1 ] || fail "gate must answer the workspace dialog with exactly one Enter"
+
+  id=kiro-wstrust-z3
+  rec=$(make_kiro_spawn_case wstrust-other "$id")
+  read_kiro_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIRO_TRUST=wstrust-other run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a dialog highlighting another option must fail the spawn"
+  assert_contains "$out" "Trust this workspace?" "diagnostic did not name the dialog"
+  assert_contains "$out" "workspace-roots/" "diagnostic did not name the permissions.yaml store"
+  assert_contains "$out" "permissions.yaml" "diagnostic did not name permissions.yaml"
+  [ ! -s "$CASE_DIR/trust-enter.log" ] || fail "gate pressed Enter on a non-trust highlight"
+  pass "fm-spawn: kiro workspace trust is pre-registered; the gate answers only a 'Trust, continue' highlight"
+}
+
+test_kiro_workspace_hash_matches_the_measured_store() {
+  local h
+  . "$ROOT/bin/fm-kiro-lib.sh"
+  h=$(fm_kiro_workspace_hash /home/shiv/.treehouse/lloegrys-live-a2d2c7/44/lloegrys-live)
+  [ "$h" = 2ed4e38a014d6097 ] || fail "hash mismatch: $h"
+  [ "$(fm_kiro_workspace_hash /home/shiv/.treehouse/lloegrys-live-a2d2c7/44/lloegrys-live/)" = "$h" ] \
+    || fail "a trailing slash must not change the hash"
+  pass "fm-kiro-lib: workspace hash is sha256(path)[0:16], measured on kiro-cli 2.33.1"
 }
 
 test_kiro_trust_decoy_does_not_block_the_launch() {
@@ -1672,6 +1735,8 @@ test_kiro_worker_tool_check_stops_a_session_without_its_tools
 test_kiro_pretool_delivers_a_steer_mid_turn_exactly_once
 test_kiro_launch_is_the_interactive_tui_with_brief_model_effort_and_scope
 test_kiro_trust_dialog_refuses_without_answering
+test_kiro_workspace_trust_is_preregistered_and_gate_handles_the_dialog
+test_kiro_workspace_hash_matches_the_measured_store
 test_kiro_trust_decoy_does_not_block_the_launch
 test_kiro_predicates_require_the_complete_signals
 test_kiro_launch_gate_refuses_a_dead_pane
