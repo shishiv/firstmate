@@ -54,7 +54,7 @@ fm_agent_process_classify_name() {  # <path> [argv0] -> agent|shell|other
     # anchored the same way (verified, polytoken 0.8.19: a TUI pane's foreground
     # process is comm `polytoken`, the same binary name as its per-session
     # daemon), so a `*polytoken*` glob never claims an unrelated command.
-    agy|devin|command-code|polytoken) printf 'agent' ;;
+    agy|devin|command-code|polytoken|fm-kirocrew) printf 'agent' ;;
     zsh|bash|sh|dash|ash|ksh|mksh|tcsh|csh|fish) printf 'shell' ;;
     *)
       if fm_harness_path_name "$path" >/dev/null || fm_harness_path_name "$argv0" >/dev/null; then

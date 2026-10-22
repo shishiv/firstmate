@@ -441,6 +441,11 @@ FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc[[:space:]]+to[[:space:]]+cancel'
 # Delivery guard only; recorded worker state comes from the kiro-regex fold in
 # bin/fm-busy-lib.sh, and kiro-cli's authoritative turn-end is its stop hook.
 FM_DELIVERY_KIRO_BUSY_REGEX_DEFAULT='Thinking\.\.\.[[:space:]]*\(esc to cancel\)|Kiro is working'
+# The kirocrew client (bin/fm-kirocrew-run.mjs) owns its pane rendering: a turn
+# shows `Kiro Crew is working`, and every accepted send prints `(sent)` or
+# `(queued for the next turn)` once Kiro Crew took the message. Delivery guard
+# only; recorded worker state comes from the client's kirocrew-client writer.
+FM_DELIVERY_KIROCREW_BUSY_REGEX_DEFAULT='Kiro Crew is working|^\(sent\)$|^\(queued for the next turn\)$'
 # polytoken renders a live elapsed row above its composer separators while a
 # turn runs - ` Running for 11.12s`, with a leading space and an unanchored
 # tail of border furniture (verified live, 0.8.19; the turn-end rows are
@@ -471,6 +476,7 @@ fm_busy_lines_match() {  # [harness]
       grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
       agy) regex=$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT ;;
       kiro-cli) regex=$FM_DELIVERY_KIRO_BUSY_REGEX_DEFAULT ;;
+      kirocrew) regex=$FM_DELIVERY_KIROCREW_BUSY_REGEX_DEFAULT ;;
       polytoken) regex=$FM_DELIVERY_POLYTOKEN_BUSY_REGEX_DEFAULT ;;
       kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
       cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;

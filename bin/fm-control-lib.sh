@@ -70,7 +70,7 @@ fm_control_verb_allowed() {  # <verb>
 # section 4's verified-adapter list; an unverified adapter is refused rather
 # than guessed at, exactly as a spawn on it would be.
 fm_control_harnesses() {
-  printf '%s\n' claude codex opencode pi pi-signed grok kimi cursor gemini muse rovo omp agy devin commandcode polytoken kiro-cli
+  printf '%s\n' claude codex opencode pi pi-signed grok kimi cursor gemini muse rovo omp agy devin commandcode polytoken kiro-cli kirocrew
 }
 
 fm_control_harness_supported() {  # <harness>
@@ -90,7 +90,8 @@ fm_control_harness_supported() {  # <harness>
 # `omp` is exact because an `omp*` prefix would claim unrelated commands, `agy`
 # is exact for the same reason on an even shorter name, `devin` and
 # `commandcode` are exact as well, `kiro-cli` is exact because it is the
-# precise process name firstmate records and launches, and an unrecognized
+# precise process name firstmate records and launches, `kirocrew` is exact
+# because it names firstmate's own Kiro Crew client, and an unrecognized
 # value returns nonzero rather than being guessed into a family.
 fm_control_harness_family() {  # <recorded-harness>
   case "${1-}" in
@@ -102,6 +103,7 @@ fm_control_harness_family() {  # <recorded-harness>
     commandcode) printf 'commandcode' ;;
     polytoken) printf 'polytoken' ;;
     kiro-cli) printf 'kiro-cli' ;;
+    kirocrew) printf 'kirocrew' ;;
     claude*) printf 'claude' ;;
     codex*) printf 'codex' ;;
     opencode*) printf 'opencode' ;;
@@ -128,7 +130,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse|gemini|rovo|agy|devin|commandcode|polytoken) [ "$kind" != secondmate ] || return 1 ;;
+    muse|gemini|rovo|agy|devin|commandcode|polytoken|kirocrew) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
@@ -145,7 +147,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
 fm_control_interrupt_transport() {  # <harness>
   case "${1-}" in
     polytoken) printf 'rest' ;;
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|devin|commandcode|kiro-cli) printf 'key' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|devin|commandcode|kiro-cli|kirocrew) printf 'key' ;;
     *) return 1 ;;
   esac
 }
@@ -165,7 +167,7 @@ fm_control_interrupt_transport() {  # <harness>
 # so Escape is the interrupt (scout report, kiro-cli 2.22.1).
 fm_control_interrupt_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|gemini|muse|rovo|agy|devin|commandcode|kiro-cli) printf 'Escape' ;;
+    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|gemini|muse|rovo|agy|devin|commandcode|kiro-cli|kirocrew) printf 'Escape' ;;
     grok) printf 'C-c' ;;
     *) return 1 ;;
   esac
@@ -178,7 +180,7 @@ fm_control_interrupt_key() {  # <harness>
 fm_control_interrupt_repeat() {  # <harness>
   case "${1-}" in
     opencode|devin) printf '2' ;;
-    claude|codex|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|commandcode|kiro-cli) printf '1' ;;
+    claude|codex|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|commandcode|kiro-cli|kirocrew) printf '1' ;;
     *) return 1 ;;
   esac
 }
@@ -197,7 +199,7 @@ fm_control_interrupt_repeat() {  # <harness>
 fm_control_interrupt_arm_signal() {  # <harness>
   case "${1-}" in
     devin) printf '%s' 'esc again to interrupt' ;;
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|commandcode|kiro-cli) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|commandcode|kiro-cli|kirocrew) ;;
     *) return 1 ;;
   esac
 }
@@ -212,7 +214,7 @@ fm_control_interrupt_arm_signal() {  # <harness>
 fm_control_interrupt_press_gap() {  # <harness>
   case "${1-}" in
     devin|commandcode) printf '0.5' ;;
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|kiro-cli) printf '0.2' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|kiro-cli|kirocrew) printf '0.2' ;;
     *) return 1 ;;
   esac
 }
@@ -235,7 +237,7 @@ fm_control_interrupt_hazard_signal() {  # <harness>
     # a hazard surface on its path; the /quit exit opens only the slash palette,
     # where Enter accepts the preselected /quit row (verified live).
     polytoken) ;;
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|kiro-cli) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy|kiro-cli|kirocrew) ;;
     *) return 1 ;;
   esac
 }
@@ -256,7 +258,7 @@ fm_control_interrupt_hazard_signal() {  # <harness>
 fm_control_interrupt_clear_key() {  # <harness>
   case "${1-}" in
     muse) printf 'C-u' ;;
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy|devin|commandcode|kiro-cli) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy|devin|commandcode|kiro-cli|kirocrew) ;;
     *) return 1 ;;
   esac
 }
@@ -275,7 +277,7 @@ fm_control_interrupt_ack_source() {  # <harness>
     # signal is the rendered busy footer (a delivery guard, not a recorded
     # state source), and kiro-cli arms no semantic busy writer to confirm
     # against, so its cancellation makes no claim either.
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy|devin|commandcode|kiro-cli) printf 'none' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy|devin|commandcode|kiro-cli|kirocrew) printf 'none' ;;
     *) return 1 ;;
   esac
 }
@@ -284,7 +286,7 @@ fm_control_interrupt_ack_source() {  # <harness>
 fm_control_exit_command() {  # <harness>
   case "${1-}" in
     claude|opencode|grok|kimi|cursor|muse|rovo) printf '/exit' ;;
-    codex|pi|pi-signed|omp|gemini|agy|devin|commandcode|polytoken|kiro-cli) printf '/quit' ;;
+    codex|pi|pi-signed|omp|gemini|agy|devin|commandcode|polytoken|kiro-cli|kirocrew) printf '/quit' ;;
     *) return 1 ;;
   esac
 }

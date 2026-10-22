@@ -216,7 +216,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|devin|commandcode|kiro-cli)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|devin|commandcode|kiro-cli|kirocrew)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -245,6 +245,14 @@
 #   task's generation in --mod-option values; no global or project config is
 #   edited. Its --effort is passed only where the model's accepted set is
 #   verified, because an unknown value exits the launch.
+#   Kiro Crew (`kirocrew`) is worker-only and tmux/herdr-only (see the backend
+#   refusal below): the pane runs bin/fm-kirocrew-run.mjs, which runs the task
+#   as one chat of the captain's Kiro Crew gateway (config/kirocrew,
+#   docs/configuration.md) and mirrors it into the pane. The program receives
+#   the task's busy generation and writes busy state through
+#   bin/fm-busy-event.sh; a relaunch passes --resume so it reopens the task's
+#   recorded chat instead of starting a new one. fm-spawn checks the gateway
+#   and the firstmate app before it creates anything.
 #   For omp (Oh My Pi), fm-spawn resolves the `omp` executable from PATH once and
 #   refuses when it is absent. Every omp launch clears the foreign harness
 #   markers (omp publishes none of its own), sets the Firstmate-owned
@@ -536,7 +544,7 @@
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
-# log; muse, gemini, agy, devin, and commandcode are crewmate/scout only and are refused for --secondmate.
+# log; muse, gemini, agy, devin, commandcode, and kirocrew are crewmate/scout only and are refused for --secondmate.
 # rovo installs no hook either - its eventHooks fire at tool granularity only,
 # never turn-end - so it carries no busy-source wiring at all and no turn-end
 # hook. A positional brief is dead-on-arrival (rovo loads, never works, and drops
@@ -2722,6 +2730,9 @@ launch_template() {
   # NO_COLOR is cleared and COLORTERM pinned so the composer placeholder keeps
   # the truecolor styling the shared composer guard reads.
   commandcode) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u FM_OMP_HARNESS -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI -u NO_COLOR COLORTERM=truecolor __COMMANDCODEBIN__ --yolo --trust --skip-onboarding --no-auto-update __MODELFLAG____EFFORTFLAG____COMMANDCODEMOD__-- "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+  # Kiro Crew runs the agent inside its gateway, so the pane runs only the
+  # firstmate client for that chat; the launch envelope is its first message.
+  kirocrew) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u FM_OMP_HARNESS -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI __KIROCREWNODE__ __KIROCREWRUN__ --home __KIROCREWHOME__ --config-dir __KIROCREWCONFIG__ --task __KIROCREWTASK__ --state __KIROCREWSTATE__ --label __KIROCREWLABEL__ --cwd __WORKTREE__ __KIROCREWBUSY____KIROCREWRESUME____KIROCREWHERDR____MODELFLAG____EFFORTFLAG__-- "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   # Kimi Code rejects a positional prompt, so it launches bare and receives
   # only an absolute brief pointer after the TUI readiness gate below.
   # Its turn-end signal is a globally configured Stop hook plus a guarded
@@ -2854,7 +2865,7 @@ esac
 # hook and a verified primary supervision protocol
 # (docs/supervision-protocols/kiro-cli.md), so it runs a secondmate like any
 # other primary-capable adapter.
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ] || [ "$HARNESS" = kirocrew ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -2873,6 +2884,13 @@ fi
 # there the composer would never read empty and steering would stall.
 if [ "$HARNESS" = commandcode ] && [ "$BACKEND" != tmux ] && [ "$BACKEND" != herdr ]; then
   echo "error: commandcode is verified on the tmux and herdr backends only; backend=$BACKEND cannot prove its composer empty. Select backend tmux or herdr." >&2
+  exit 1
+fi
+
+# The kirocrew pane contract (composer row, busy row, Escape) is verified live
+# on tmux and herdr only (docs/verification/kirocrew.md).
+if [ "$HARNESS" = kirocrew ] && [ "$BACKEND" != tmux ] && [ "$BACKEND" != herdr ]; then
+  echo "error: kirocrew is verified on the tmux and herdr backends only; backend=$BACKEND has no verified kirocrew pane contract. Select backend tmux or herdr." >&2
   exit 1
 fi
 
@@ -2895,6 +2913,22 @@ commandcode)
     echo "error: commandcode executable not found on PATH" >&2
     exit 1
   }
+  ;;
+kirocrew)
+  KIROCREW_NODE=$(command -v node) || {
+    echo "error: node executable not found on PATH; kirocrew runs bin/fm-kirocrew-run.mjs on Node 22 or newer" >&2
+    exit 1
+  }
+  if ! "$KIROCREW_NODE" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
+    echo "error: kirocrew needs Node 22 or newer; $KIROCREW_NODE is $("$KIROCREW_NODE" --version 2>/dev/null)" >&2
+    exit 1
+  fi
+  # Refuse before any endpoint or worktree exists when the gateway or the
+  # firstmate app is not usable; the error names the setup step.
+  if ! KIROCREW_PING=$("$KIROCREW_NODE" "$FM_ROOT/bin/fm-kirocrew.mjs" ping --home "$FM_HOME" --config-dir "$CONFIG" --state-dir "$STATE" 2>&1); then
+    echo "error: Kiro Crew is not usable for this home: ${KIROCREW_PING#fm-kirocrew: } (run bin/fm-kirocrew-setup.sh)" >&2
+    exit 1
+  fi
   ;;
 pi | pi-signed)
   PI_BIN=$(resolve_pi_executable "$HARNESS") || {
@@ -3289,7 +3323,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-  claude | codex | opencode | pi | pi-signed | grok | kimi | cursor | gemini | muse | rovo | omp | agy | devin | commandcode | kiro-cli)
+  claude | codex | opencode | pi | pi-signed | grok | kimi | cursor | gemini | muse | rovo | omp | agy | devin | commandcode | kiro-cli | kirocrew)
     printf -- '--model %s ' "$(shell_quote "$model")"
     ;;
   # polytoken encodes reasoning effort inside the model reference, so the
@@ -3345,6 +3379,13 @@ effort_flag_for_harness() {
     # (e.g. low, medium, high, xhigh, max)"), so every level maps straight
     # across. max is only ever reached through an explicit captain choice
     # (AGENTS.md section 4); the fallback never selects it.
+    case "$effort" in
+    low | medium | high | xhigh | max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+    esac
+    ;;
+  kirocrew)
+    # Kiro Crew sets a chat's reasoning effort from the five standard levels and
+    # refuses any other value (effort_rejected), so only those pass.
     case "$effort" in
     low | medium | high | xhigh | max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
     esac
@@ -5666,7 +5707,7 @@ BUSY_GEN=
     }
     [ "$RELAUNCH" -ne 1 ] || RELAUNCH_REPLACEMENT_BUSY_GEN=$BUSY_GEN
     ;;
-  gemini | devin | commandcode | polytoken)
+  gemini | devin | commandcode | polytoken | kirocrew)
     if [ "$RAW_LAUNCH" -eq 0 ]; then
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
@@ -6448,6 +6489,32 @@ commandcode)
   fi
   LAUNCH=${LAUNCH//__COMMANDCODEMOD__/$COMMANDCODEMOD}
   ;;
+kirocrew)
+  # shellcheck source=bin/fm-backend-hometag-lib.sh
+  . "$SCRIPT_DIR/fm-backend-hometag-lib.sh"
+  LAUNCH=${LAUNCH//__KIROCREWNODE__/"$(shell_quote "$KIROCREW_NODE")"}
+  LAUNCH=${LAUNCH//__KIROCREWRUN__/"$(shell_quote "$FM_ROOT/bin/fm-kirocrew-run.mjs")"}
+  LAUNCH=${LAUNCH//__KIROCREWHOME__/"$(shell_quote "$FM_HOME")"}
+  LAUNCH=${LAUNCH//__KIROCREWCONFIG__/"$(shell_quote "$CONFIG")"}
+  LAUNCH=${LAUNCH//__KIROCREWTASK__/"$(shell_quote "$ID")"}
+  LAUNCH=${LAUNCH//__KIROCREWSTATE__/"$(shell_quote "$STATE_REAL")"}
+  LAUNCH=${LAUNCH//__KIROCREWLABEL__/"$(shell_quote "$(fm_backend_hometag)")"}
+  KIROCREWBUSY=
+  if [ -n "${BUSY_GEN:-}" ]; then
+    KIROCREWBUSY="--busy-writer $(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") --busy-gen $(shell_quote "$BUSY_GEN") "
+  fi
+  LAUNCH=${LAUNCH//__KIROCREWBUSY__/$KIROCREWBUSY}
+  KIROCREWRESUME=
+  [ "$RELAUNCH" -eq 1 ] && KIROCREWRESUME='--resume '
+  LAUNCH=${LAUNCH//__KIROCREWRESUME__/$KIROCREWRESUME}
+  # On Herdr the client registers itself as the task pane's agent, so it gets
+  # the exact pane and session here rather than reading inherited variables.
+  KIROCREWHERDR=
+  if [ "$BACKEND" = herdr ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SES:-}" ]; then
+    KIROCREWHERDR="--herdr-pane $(shell_quote "$HERDR_PANE_ID") --herdr-session $(shell_quote "$HERDR_SES") "
+  fi
+  LAUNCH=${LAUNCH//__KIROCREWHERDR__/$KIROCREWHERDR}
+  ;;
 agy) LAUNCH=${LAUNCH//__AGYBIN__/"$(shell_quote "$AGY_BIN")"} ;;
 kiro-cli)
   # The ONE build site for the per-task KIRO_HOME, for EVERY kind (ship, scout,
@@ -6536,7 +6603,7 @@ case "$LAUNCH" in
   ;;
 esac
 case "$HARNESS" in
-claude | codex | opencode | pi | pi-signed | grok | kimi | gemini | muse | rovo | agy | devin | commandcode)
+claude | codex | opencode | pi | pi-signed | grok | kimi | gemini | muse | rovo | agy | devin | commandcode | kirocrew)
   LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
   ;;
 esac

@@ -936,6 +936,8 @@ commandcode (Command Code) is verified for crewmate and scout launches only; a s
 It runs only on the tmux and Herdr backends; a zellij, cmux, orca, or paseo launch is refused because those backends supply no Command Code pane identity, without which its idle composer placeholder never reads empty and steering stalls.
 Its busy-state wiring is a tracked mod loaded per process with `--mod`, so no user or project Command Code settings are edited; [its adapter reference](../.agents/skills/harness-adapters/references/harness/commandcode.md) owns the launch facts and [Command Code verification](verification/commandcode.md) owns the live evidence.
 
+kirocrew (Kiro Crew) is verified for crewmate and scout launches only, on the tmux and Herdr backends; a secondmate is refused because it has no primary supervision protocol, and ["Kiro Crew (config/kirocrew)"](#kiro-crew-configkirocrew) owns its one-time setup.
+
 Polytoken is verified for crewmate and scout launches only; [its adapter reference](../.agents/skills/harness-adapters/references/harness/polytoken.md) owns the operating contract and [verification record](verification/polytoken.md) owns the live evidence.
 It has no primary or secondmate supervision protocol.
 The launch generates a private per-task config directory that mirrors the operator's provider/model configuration and enforces unattended permissions without modifying global configuration.
@@ -1329,6 +1331,26 @@ An absent file, or any other content, keeps the oracle on.
 `fm-spawn.sh` reads the file on every spawn and relaunch, so a change applies to the next launch and leaves running workers unchanged.
 The setting is local to each home and is not inherited into secondmate homes, so each home sets its own.
 The [Kiro adapter reference](../.agents/skills/harness-adapters/references/harness/kiro.md) describes the oracle itself.
+
+## Kiro Crew (config/kirocrew)
+
+The `kirocrew` harness runs each worker as a chat of the captain's Kiro Crew gateway, so the captain can read the workers in Crew's dashboard while firstmate supervises them from their task panes.
+[Its adapter reference](../.agents/skills/harness-adapters/references/harness/kirocrew.md) owns the launch and pane contract, and [its verification record](verification/kirocrew.md) owns the live evidence.
+
+The local, gitignored `config/kirocrew` is optional and holds `key=value` lines:
+
+| Key | Meaning | Default |
+| --- | --- | --- |
+| `url` | The gateway's dashboard address | `http://127.0.0.1:5476` |
+| `crew-home` | The gateway's data home, where Crew writes the `firstmate` app secret | `~/.kiro/crew` |
+| `agent` | The Kiro agent file every worker chat runs | `firstmate-worker` |
+
+Run `bin/fm-kirocrew-setup.sh` once from the captain's own shell before the first `kirocrew` spawn.
+It writes the agent file into Crew's Kiro agents folder (`--kiro-home`, default `~/.kiro`), registers the self-managed app `firstmate` as the dashboard owner, adds it to Crew's trusted apps, and prints the steps only the captain can take: restarting the gateway when the agent file is new, and enabling the app on its page in the Crew dashboard.
+Enabling grants the app's `sessionApproval` permission, which lets firstmate put each worker chat in Trust mode; without it every shell and file tool of a worker waits for an approval in the dashboard.
+`bin/fm-kirocrew-setup.sh --check` opens and closes one empty chat and reports the agent and whether Trust is granted.
+`fm-spawn.sh` refuses a `kirocrew` launch, before any endpoint or worktree exists, when the gateway or the app cannot be reached.
+The file is home-local and not inherited.
 
 ## Project capacity (config/project-capacity)
 
