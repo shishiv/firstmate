@@ -3,6 +3,7 @@
 The `kirocrew` harness runs a worker as one chat of the captain's Kiro Crew gateway, so the captain can read every worker in Crew's dashboard while firstmate supervises it from an ordinary task pane.
 Verified as a CREWMATE and SCOUT adapter on 2026-10-22 with KiroCrew `main` 0be5bcd9 (0.11.0), its "Kiro Agent" engine, and kiro-cli 2.33.1 on Linux, on the tmux and Herdr backends ([verification](../../../../../docs/verification/kirocrew.md)).
 Trust mode is verified on tmux with the gateway's YOLO off; the earlier live runs approved tools through the lab's YOLO.
+On 2026-10-23 the `firstmate` app moved to a registry install from `../../../../../apps/firstmate/app.json`, verified live on a gateway under Crew's own system service.
 It is refused for `--secondmate`: it has no primary supervision protocol.
 
 ## Operating facts
