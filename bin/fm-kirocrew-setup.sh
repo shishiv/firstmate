@@ -23,9 +23,14 @@
 # empty chat and reports the agent and whether Trust is granted.
 #
 # The owner token comes from `kirocrew token` and is used for the two owner
-# calls only. It is never printed or stored, and neither is the app secret in
-# the registration answer. Crew refuses to let its own agents mint a dashboard
-# token, so this script refuses to run inside a Crew session too.
+# calls only. It is never printed, stored, or passed as a command argument, and
+# the app secret in the registration answer is never printed either. Crew
+# refuses to let its own agents mint a dashboard token, so this script refuses
+# to run inside a Crew session too.
+#
+# --kiro-home must be the KIRO_HOME of the gateway (default $KIRO_HOME, then
+# ~/.kiro, the same default Crew uses): Crew offers only the agent files it
+# finds in <KIRO_HOME>/agents when its gateway starts.
 #
 # config/kirocrew in the firstmate home (optional) names the gateway url=,
 # crew-home= and agent=; docs/configuration.md "Kiro Crew (config/kirocrew)".
@@ -113,10 +118,12 @@ owner_url=$("$KIROCREW_BIN" token 2>/dev/null | grep -o 'https\{0,1\}://[^ ]*tok
 OWNER_TOKEN=${owner_url##*token=}
 [ -n "$owner_url" ] && [ -n "$OWNER_TOKEN" ] || { echo "error: \`kirocrew token\` printed no dashboard token; is the gateway at $URL running?" >&2; exit 1; }
 PORT=$(node -e 'const u=new URL(process.argv[1]); process.stdout.write(u.port || (u.protocol === "https:" ? "443" : "80"))' "$URL")
+# The owner cookie reaches curl through a config on stdin, never through its
+# argv, which every local user can read in the process list.
 owner_call() {  # <method> <path> [json]
-  local args=(-sS -X "$1" -H "Cookie: mc_token_${PORT}=${OWNER_TOKEN}" -w '\n%{http_code}')
+  local args=(-sS -K - -X "$1" -w '\n%{http_code}') token=${OWNER_TOKEN//\\/\\\\}
   [ $# -lt 3 ] || args+=(-H 'Content-Type: application/json' --data-binary "$3")
-  curl "${args[@]}" "$URL$2"
+  printf 'header = "Cookie: mc_token_%s=%s"\n' "$PORT" "${token//\"/\\\"}" | curl "${args[@]}" "$URL$2"
 }
 
 manifest=$(jq -n --arg v "$APP_VERSION" '{

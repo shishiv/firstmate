@@ -351,9 +351,10 @@
 #     closed and the work proved landed, bin/fm-task-resources-stop.sh stops
 #     the processes whose environment proves this task of this home started
 #     them (dev servers), brings down the Compose project fm-<id> without
-#     removing its volumes, and removes the task's big folders named by
-#     config/task-cleanup-dirs, never a shared build cache. It owns those
-#     proofs and refusals. Best effort: it never blocks cleanup.
+#     removing its volumes, removes the task's big folders named by
+#     config/task-cleanup-dirs, never a shared build cache, and closes a
+#     kirocrew worker's Kiro Crew chat. It owns those proofs and refusals.
+#     Best effort: it never blocks cleanup.
 # After Fix 1 and Fix 2, when config/pipeline-spend opts this home in, a ship
 # task whose local copy this teardown owns has its no-mistakes pipeline spend
 # recorded by bin/fm-pipeline-spend.sh, which owns the attribution and the

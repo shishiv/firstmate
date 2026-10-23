@@ -1,19 +1,26 @@
 #!/usr/bin/env node
 // A stand-in Kiro Crew gateway for tests/fm-kirocrew-harness.test.sh. It
 // implements the app-token routes bin/fm-kirocrew.mjs uses, with the response
-// shapes recorded in docs/verification/kirocrew.md, and a few /__test routes
-// that let the suite drop live chats (a gateway restart) and read the calls.
+// shapes recorded in docs/verification/kirocrew.md, the two owner routes
+// bin/fm-kirocrew-setup.sh calls, and a few /__test routes that let the suite
+// drop live chats (a gateway restart), hold every request unanswered (a hung
+// gateway), and read the calls.
 //
 // Usage: fm-kirocrew-fake-gateway.mjs <port-file>
 // Env:   FAKE_SECRET (required), FAKE_AGENT (default firstmate-worker),
-//        FAKE_TRUST=1 to grant Trust, FAKE_TURN_MS (default 300)
-import { writeFileSync } from 'node:fs';
+//        FAKE_TRUST=1 to grant Trust, FAKE_TURN_MS (default 300),
+//        FAKE_CREW_HOME where a registration writes the app files,
+//        FAKE_OWNER_TOKEN the dashboard owner's token (default owner-token)
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 
 const SECRET = process.env.FAKE_SECRET || '';
 const AGENT = process.env.FAKE_AGENT || 'firstmate-worker';
 const TOKEN = 'fake-app-token';
+const OWNER_TOKEN = process.env.FAKE_OWNER_TOKEN || 'owner-token';
 let turnMs = Number(process.env.FAKE_TURN_MS || 300);
+let hang = false;
 let port = 0;
 const live = new Map();
 const transcripts = new Map();
@@ -83,8 +90,24 @@ const server = createServer((req, res) => {
       turnMs = Number(body.ms);
       return send(res, 200, { ok: true });
     }
+    if (path === '/__test/hang') {
+      hang = Boolean(body.on);
+      return send(res, 200, { ok: true });
+    }
+    // A hung gateway: the connection stays open and nothing answers.
+    if (hang) return undefined;
     if (path === '/api/apps/firstmate/token' && req.method === 'POST') {
       return req.headers['x-app-secret'] === SECRET ? send(res, 200, { token: TOKEN }) : send(res, 403, { error: 'bad secret' });
+    }
+    if (path === '/api/apps/register' || path.startsWith('/api/security/')) {
+      if ((req.headers.cookie || '') !== `mc_token_${port}=${OWNER_TOKEN}`) return send(res, 401, { error: 'Token required' });
+      if (path === '/api/security/trusted-apps/firstmate' && req.method === 'POST') return send(res, 200, { ok: true });
+      if (path !== '/api/apps/register' || req.method !== 'POST' || body.name !== 'firstmate') return send(res, 404, { error: 'no route' });
+      const dir = join(process.env.FAKE_CREW_HOME || '', 'apps', 'firstmate');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, '.app_secret'), `${SECRET}\n`, { mode: 0o600 });
+      writeFileSync(join(dir, 'installed.json'), JSON.stringify({ name: 'firstmate', version: body.version, enabled: false, sessionApprovalConsentPending: true }));
+      return send(res, 201, { ok: true, message: 'app registered', secret: SECRET });
     }
     if ((req.headers.cookie || '') !== `mc_token_${port}=${TOKEN}`) return send(res, 401, { error: 'Token required' });
     if (path === '/api/chat/slots' && req.method === 'GET') return send(res, 200, [...live.values()].map(row));

@@ -15,6 +15,9 @@
 // never parse Crew JSON. docs/verification/kirocrew.md records the live
 // behavior each mapping relies on.
 //
+// Every HTTP exchange is bounded by FM_KIROCREW_TIMEOUT_MS (default 15000): a
+// gateway that accepts the connection and never answers fails as unreachable.
+//
 // CLI verbs (plain key=value output, exit 0 ok, 2 usage, 3 unreachable,
 // 4 auth, 5 not found, 6 refused, 7 invalid):
 //   (every verb also takes --config-dir <dir> and --state-dir <dir>)
@@ -34,6 +37,7 @@ export const DEFAULT_URL = 'http://127.0.0.1:5476';
 export const DEFAULT_AGENT = 'firstmate-worker';
 
 const EXIT = { usage: 2, unreachable: 3, auth: 4, not_found: 5, refused: 6, invalid: 7 };
+const TIMEOUT_MS = Number(process.env.FM_KIROCREW_TIMEOUT_MS) || 15000;
 
 export class CrewError extends Error {
   constructor(code, message, detail = {}) {
@@ -89,19 +93,28 @@ function writePrivate(path, text) {
   renameSync(tmp, path);
 }
 
+// The only function that talks HTTP. The timeout covers the body as well as
+// the headers, because a gateway can send headers and then stall.
+async function exchange(cfg, method, path, headers, body) {
+  try {
+    const res = await fetch(cfg.baseUrl + path, { method, headers, body, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    return { status: res.status, ok: res.ok, text: await res.text() };
+  } catch (err) {
+    const why = err?.name === 'TimeoutError' ? `no answer within ${TIMEOUT_MS} ms` : err.cause?.code || err.message;
+    throw new CrewError('unreachable', `Kiro Crew at ${cfg.baseUrl} is unreachable: ${why}`);
+  }
+}
+
 async function exchangeToken(cfg) {
   const secret = readSecret(cfg);
-  let res;
+  const res = await exchange(cfg, 'POST', `/api/apps/${APP_NAME}/token`, { 'X-App-Secret': secret, 'Content-Type': 'application/json' });
+  let data;
   try {
-    res = await fetch(`${cfg.baseUrl}/api/apps/${APP_NAME}/token`, {
-      method: 'POST',
-      headers: { 'X-App-Secret': secret, 'Content-Type': 'application/json' },
-    });
-  } catch (err) {
-    throw new CrewError('unreachable', `Kiro Crew at ${cfg.baseUrl} is unreachable: ${err.cause?.code || err.message}`);
+    data = JSON.parse(res.text);
+  } catch {
+    data = null;
   }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || typeof data.token !== 'string' || !data.token) {
+  if (!res.ok || typeof data?.token !== 'string' || !data.token) {
     throw new CrewError('auth', `Kiro Crew refused the firstmate app secret (HTTP ${res.status})`);
   }
   writePrivate(cfg.tokenCache, data.token);
@@ -120,25 +133,19 @@ async function appToken(cfg, { refresh = false } = {}) {
   return exchangeToken(cfg);
 }
 
-// The only function that talks HTTP. The token travels as Crew's auth cookie,
-// as kirocrew-client sends it, so it never lands in a URL or a log line. A
-// loopback request without an Origin header passes Crew's CSRF barrier.
+// The token travels as Crew's auth cookie, as kirocrew-client sends it, so it
+// never lands in a URL or a log line. A loopback request without an Origin
+// header passes Crew's CSRF barrier.
 export async function request(cfg, method, path, body) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const token = await appToken(cfg, { refresh: attempt > 0 });
     const headers = { Cookie: `mc_token_${cfg.port}=${token}` };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    let res;
-    try {
-      res = await fetch(cfg.baseUrl + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-    } catch (err) {
-      throw new CrewError('unreachable', `Kiro Crew at ${cfg.baseUrl} is unreachable: ${err.cause?.code || err.message}`);
-    }
+    const res = await exchange(cfg, method, path, headers, body === undefined ? undefined : JSON.stringify(body));
     if (res.status === 401 && attempt === 0) continue;
-    const text = await res.text();
     let data;
     try {
-      data = text ? JSON.parse(text) : {};
+      data = res.text ? JSON.parse(res.text) : {};
     } catch {
       throw new CrewError('invalid', `Kiro Crew answered ${method} ${path} with non-JSON (HTTP ${res.status})`);
     }
@@ -194,7 +201,12 @@ export async function createSlot(cfg, name, title = '') {
   // because firstmate keeps durable task memory in its own records.
   const body = { name, agent: cfg.agent, agent_kind: 'template', memory_mode: 'temporary' };
   if (title) body.title = title;
-  return parseSlot(await request(cfg, 'POST', '/api/chat/slots', body));
+  try {
+    return parseSlot(await request(cfg, 'POST', '/api/chat/slots', body));
+  } catch (err) {
+    if (!(err instanceof CrewError && err.detail.crewCode === 'agent_choice_unavailable')) throw err;
+    throw new CrewError('refused', `Kiro Crew does not offer the agent ${cfg.agent}. Crew reads agent files only when its gateway starts, from <KIRO_HOME>/agents of the gateway; bin/fm-kirocrew-setup.sh --kiro-home writes the file there`, err.detail);
+  }
 }
 
 // Crew drops live chats when its gateway restarts but keeps their transcripts;

@@ -27,7 +27,12 @@
 // Busy lifecycle: a turn start applies busy; a turn end applies idle and
 // touches state/<id>.turn-ended; an interrupt or exit applies idle without
 // the wake. A chat that Crew dropped (gateway restart) is resumed from its
-// transcript, and the lost turn counts as ended so the watcher looks at it.
+// transcript, and the lost turn counts as ended so the watcher looks at it. A
+// gateway that stays unreachable for 30 poll intervals turns the record
+// `unknown`, and the next answer writes the chat's real state back.
+//
+// SIGHUP and SIGTERM end the program at once, whatever request is in flight:
+// the record goes idle, and the chat close gets CLOSE_WAIT_MS (3 s) before exit.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -52,7 +57,8 @@ process.title = 'fm-kirocrew';
 const POLL_MS = Number(process.env.FM_KIROCREW_POLL_MS || 1000);
 const PROGRESS_EVERY_MS = 15000;
 const RESUME_EVERY_MS = 30000;
-const UNKNOWN_AFTER_MS = 30000;
+const UNKNOWN_AFTER_MS = 30 * POLL_MS;
+const CLOSE_WAIT_MS = 3000;
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -91,11 +97,21 @@ const tty = Boolean(process.stdout.isTTY);
 
 // ---- busy-state writer ------------------------------------------------------
 
-function busy(state, event, { turnEnded = false } = {}) {
+let quitting = false;
+// True while the record holds `unknown` from this program's last write.
+let recordUnknown = false;
+
+function writeBusy(state, event, turnEnded) {
   if (typeof args['busy-writer'] !== 'string' || typeof args['busy-gen'] !== 'string') return;
   const argv = ['apply', args.state, task, state, '--gen', args['busy-gen'], '--source', 'kirocrew-client', '--event', event];
   if (turnEnded) argv.push('--turn-ended');
   spawnSync(args['busy-writer'], argv, { stdio: 'ignore', timeout: 10000 });
+  recordUnknown = state === 'unknown';
+}
+
+// Once quit() wrote the final idle, a poll still in flight must not reopen it.
+function busy(state, event, { turnEnded = false } = {}) {
+  if (!quitting) writeBusy(state, event, turnEnded);
 }
 
 let lastProgress = 0;
@@ -119,7 +135,7 @@ function herdr(argv) {
 }
 
 function herdrReport(state) {
-  if (!herdrPane || state === herdrState) return;
+  if (!herdrPane || quitting || state === herdrState) return;
   herdrState = state;
   // A clock-based sequence keeps rising across relaunches of this program.
   herdr(['pane', 'report-agent', '--source', 'fm-kirocrew', '--agent', 'kirocrew', '--state', state, '--seq', String(Date.now()), herdrPane]);
@@ -213,7 +229,6 @@ let slot;
 let printedTotal = 0;
 let lastSeen = -1;
 let turnState = 'idle';
-let quitting = false;
 
 async function catchUp() {
   const page = await history(cfg, slot.key, 50);
@@ -248,22 +263,17 @@ async function start() {
 
 let lastResume = 0;
 let unreachableSince = 0;
-let markedUnknown = false;
 
 async function tick() {
   let current;
   try {
     current = (await listSlots(cfg)).find((s) => s.key === slot.key) || null;
     unreachableSince = 0;
-    markedUnknown = false;
   } catch (err) {
     if (!(err instanceof CrewError && err.code === 'unreachable')) throw err;
     if (!unreachableSince) unreachableSince = Date.now();
     setStatus('Kiro Crew gateway is unreachable · retrying');
-    if (!markedUnknown && Date.now() - unreachableSince > UNKNOWN_AFTER_MS) {
-      busy('unknown', 'gateway-unreachable');
-      markedUnknown = true;
-    }
+    if (!recordUnknown && Date.now() - unreachableSince > UNKNOWN_AFTER_MS) busy('unknown', 'gateway-unreachable');
     return;
   }
   if (!current) {
@@ -292,7 +302,8 @@ async function tick() {
     if ((await catchUp()) && active) progress();
   }
   if (active && turnState === 'idle') busy('busy', 'turn-start');
-  if (!active && turnState !== 'idle') busy('idle', 'turn-end', { turnEnded: true });
+  else if (!active && turnState !== 'idle') busy('idle', 'turn-end', { turnEnded: true });
+  else if (recordUnknown) busy(active ? 'busy' : 'idle', 'gateway-reachable');
   turnState = active ? 'working' : 'idle';
   herdrReport(current.state === 'approval' ? 'blocked' : active ? 'working' : 'idle');
   if (current.state === 'approval') setStatus('Kiro Crew is waiting for a tool approval in the Crew dashboard');
@@ -327,12 +338,15 @@ async function interrupt() {
 async function quit(code, { close }) {
   if (quitting) return;
   quitting = true;
-  try {
-    busy('idle', 'session-end');
-    herdrRelease();
-    if (close && slot) await closeSlot(cfg, slot.key);
-  } catch (err) {
-    process.stderr.write(`fm-kirocrew-run: ${err.message}\n`);
+  writeBusy('idle', 'session-end', false);
+  herdrRelease();
+  if (close && slot) {
+    const outcome = await Promise.race([
+      closeSlot(cfg, slot.key).then(() => 'closed', (err) => err),
+      new Promise((resolve) => setTimeout(resolve, CLOSE_WAIT_MS, 'timeout')),
+    ]);
+    if (outcome instanceof Error) process.stderr.write(`fm-kirocrew-run: ${outcome.message}\n`);
+    else if (outcome === 'timeout') process.stderr.write(`fm-kirocrew-run: Kiro Crew did not confirm the close of ${slot.key} within ${CLOSE_WAIT_MS} ms\n`);
   }
   if (tty) {
     process.stdout.write('\x1b[?2004l\n');
@@ -410,7 +424,8 @@ function readLines() {
 
 // ---- main -------------------------------------------------------------------
 
-for (const sig of ['SIGHUP', 'SIGTERM']) process.on(sig, () => serial(() => quit(0, { close: true })));
+// A signal must not wait behind a request that is still in flight.
+for (const sig of ['SIGHUP', 'SIGTERM']) process.on(sig, () => quit(0, { close: true }));
 
 try {
   await start();

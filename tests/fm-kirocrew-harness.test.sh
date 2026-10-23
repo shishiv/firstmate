@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Portable Kiro Crew (kirocrew) worker adapter regression. It drives
-# bin/fm-kirocrew.mjs, bin/fm-kirocrew-run.mjs and the fm-spawn launch against
+# bin/fm-kirocrew.mjs, bin/fm-kirocrew-run.mjs, bin/fm-kirocrew-setup.sh, the
+# fm-spawn launch, and the chat close in bin/fm-task-resources-stop.sh against
 # tests/fixtures/fm-kirocrew-fake-gateway.mjs, so it needs Node 22 and no Kiro
 # Crew install; docs/verification/kirocrew.md records the live gateway facts the
 # fake reproduces.
@@ -41,7 +42,7 @@ trap 'kirocrew_stop_all; fm_test_cleanup' EXIT
 GW_DIR="$TMP_ROOT/gateway"
 mkdir -p "$GW_DIR/crew-home/apps/firstmate"
 printf '%s\n' fake-secret > "$GW_DIR/crew-home/apps/firstmate/.app_secret"
-FAKE_SECRET=fake-secret node "$ROOT/tests/fixtures/fm-kirocrew-fake-gateway.mjs" "$GW_DIR/port" &
+FAKE_SECRET=fake-secret FAKE_CREW_HOME="$TMP_ROOT/setup-crew" node "$ROOT/tests/fixtures/fm-kirocrew-fake-gateway.mjs" "$GW_DIR/port" &
 PIDS+=("$!")
 for _ in $(seq 1 100); do [ -s "$GW_DIR/port" ] && break; sleep 0.05; done
 [ -s "$GW_DIR/port" ] || fail 'fake gateway did not start'
@@ -81,7 +82,20 @@ node "$WIRE" ping --home "$down" >/dev/null 2>&1
 [ "$?" = 3 ] || fail 'an unreachable gateway must exit 3'
 printf 'stale-token\n' > "$home/state/.kirocrew-token"
 node "$WIRE" ping --home "$home" >/dev/null || fail 'a rejected cached token must be re-exchanged once'
-pass "wire: app token exchange and cache, auth and reachability exit codes, token refresh"
+rc=0
+out=$(node "$WIRE" probe --home "$home" --slot fm-lab-noagent --agent no-such-agent 2>&1) || rc=$?
+[ "$rc" = 6 ] || fail "an agent Crew does not offer must exit 6 (refused), got $rc: $out"
+assert_contains "$out" 'does not offer the agent no-such-agent' 'the refusal must name the missing agent'
+assert_contains "$out" 'KIRO_HOME' 'the refusal must say where Crew reads agent files'
+gw_post /__test/hang '{"on":true}'
+started=$(date +%s)
+rc=0
+out=$(FM_KIROCREW_TIMEOUT_MS=300 node "$WIRE" ping --home "$home" 2>&1) || rc=$?
+gw_post /__test/hang '{"on":false}'
+[ "$rc" = 3 ] || fail "a gateway that never answers must exit 3 (unreachable), got $rc: $out"
+assert_contains "$out" 'no answer within 300 ms' 'the timeout must say why'
+[ $(( $(date +%s) - started )) -le 3 ] || fail 'the request timeout did not bound the call'
+pass "wire: app token exchange and cache, auth and reachability exit codes, token refresh, missing agent, request timeout"
 
 # ---- harness client ----------------------------------------------------------
 
@@ -132,6 +146,11 @@ assert_contains "$(calls_for '.path == "/api/chat/mode"')" "\"slot\":\"$slot\"" 
 assert_contains "$(calls_for '.path == "/api/chat?ws=1"')" 'FIRSTMATE_OP: v1 launch-brief: hello' 'brief not sent'
 assert_contains "$(cat "$TMP_ROOT/kc1.out")" 'waits for approval in the Crew dashboard' 'missing Trust notice'
 assert_contains "$(cat "$TMP_ROOT/kc1.out")" 'echo: FIRSTMATE_OP' 'transcript not mirrored'
+if [ -r "/proc/$CLIENT_PID/comm" ]; then
+  comm=$(cat "/proc/$CLIENT_PID/comm")
+  [ "$comm" = fm-kirocrew ] || fail "the running client's kernel process name is $comm, not fm-kirocrew"
+  [ "$(fm_agent_process_classify_name "$comm")" = agent ] || fail 'liveness does not read the running client as the agent'
+fi
 pass "launch: chat on the worker agent in the worktree, model and effort, brief turn ends idle with a wake"
 
 rm -f "$state/kc1.turn-ended"
@@ -159,7 +178,8 @@ gw_post /__test/drop '{}'
 wait_for 10 test -e "$state/kc1.turn-ended" || fail "a dropped chat raised no wake: $(tail -5 "$TMP_ROOT/kc1.out")"
 busy_is kc1 'idle kirocrew-client' || fail 'the lost turn did not settle idle'
 assert_contains "$(calls_for ".path == \"/api/chat/slots/$slot/resume\"")" "dashboard_$slot" 'dropped chat not resumed'
-[ "$(calls_for '.method == "POST" and .path == "/api/chat/slots"' | jq length)" = 1 ] || fail 'a dropped chat was replaced by a new chat'
+[ "$(calls_for '.method == "POST" and .path == "/api/chat/slots" and (.body.name | startswith("fm-lab-kc1-"))' | jq length)" = 1 ] \
+  || fail 'a dropped chat was replaced by a new chat'
 wait_for 5 sh -c "curl -s '$GW/api/chat/slots' -H 'Cookie: mc_token_${GW##*:}=fake-app-token' | jq -e '.[] | select(.project == \"$cwd\")' >/dev/null" \
   || fail 'the resumed chat did not get its worktree back'
 pass "gateway restart: the client resumes the chat from its transcript, and the lost turn ends with a wake"
@@ -203,6 +223,51 @@ grep -Eq -- '^pane report-agent --source fm-kirocrew --agent kirocrew --state wo
   || fail "no working report for the given pane: $(cat "$TMP_ROOT/herdr.log")"
 grep -Fxq -- 'pane release-agent --source fm-kirocrew --agent kirocrew w9:p9 --session fm-lab-x' "$TMP_ROOT/herdr.log" || fail 'no release on exit'
 pass "Herdr registration uses only the pane fm-spawn passed, and is released on exit"
+
+gen=$("$WRITER" arm "$state" kc3)
+FM_KIROCREW_TIMEOUT_MS=200 client_start kc3 "$gen" -- 'outage brief'
+wait_for 10 test -e "$state/kc3.turn-ended" || fail "kc3 brief turn did not end: $(cat "$TMP_ROOT/kc3.out")"
+wait_for 5 busy_is kc3 'idle kirocrew-client' || fail 'kc3 did not settle idle'
+gw_post /__test/hang '{"on":true}'
+wait_for 10 busy_is kc3 'unknown kirocrew-client' \
+  || fail "a gateway that stopped answering did not turn the record unknown: $(fm_busy_classify tmux fake:w kirocrew kc3 "$state")"
+gw_post /__test/hang '{"on":false}'
+wait_for 10 busy_is kc3 'idle kirocrew-client' || fail 'the record stayed unknown after the gateway answered again'
+client_end
+pass "outage: a gateway that stops answering turns the record unknown, and its next answer restores the chat's state"
+
+gen=$("$WRITER" arm "$state" kc4)
+client_start kc4 "$gen" -- 'signal brief'
+wait_for 10 test -e "$state/kc4.turn-ended" || fail 'kc4 brief turn did not end'
+wait_for 5 busy_is kc4 'idle kirocrew-client' || fail 'kc4 did not settle idle'
+kc4_slot=$(slot_of kc4)
+gw_post /__test/hang '{"on":true}'
+sleep 0.3
+started=$(date +%s)
+kill -TERM "$CLIENT_PID"
+wait "$CLIENT_PID" 2>/dev/null
+elapsed=$(( $(date +%s) - started ))
+exec {CLIENT_FD}>&-
+gw_post /__test/hang '{"on":false}'
+[ "$elapsed" -le 6 ] || fail "SIGTERM waited ${elapsed}s behind a request the gateway never answered"
+busy_is kc4 'idle kirocrew-client' || fail 'SIGTERM did not leave the record idle'
+assert_contains "$(cat "$TMP_ROOT/kc4.out")" 'did not confirm the close' 'the bounded close must say it gave up'
+pass "SIGTERM ends the client at once while a request hangs, and leaves the record idle"
+
+fakedocker=$(fm_fakebin "$TMP_ROOT/teardown-bin")
+fm_fake_exit0 "$fakedocker" docker
+resources_stop() {  # <task>
+  PATH="$fakedocker:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-task-resources-stop.sh" "$1" 2>&1
+}
+live_chats() { curl -s "$GW/api/chat/slots" -H "Cookie: mc_token_${GW##*:}=fake-app-token"; }
+live_chats | jq -e --arg k "$kc4_slot" 'any(.[]; .key == $k)' >/dev/null || fail 'the hung close should have left the kc4 chat open'
+out=$(resources_stop kc4) || fail "resources stop failed: $out"
+assert_contains "$out" "Kiro Crew chat $kc4_slot of kc4 is closed" "teardown did not close the chat: $out"
+live_chats | jq -e --arg k "$kc4_slot" 'any(.[]; .key == $k) | not' >/dev/null || fail 'the kc4 chat is still live after teardown'
+out=$(resources_stop kc4) || fail "a second resources stop failed: $out"
+assert_contains "$out" "Kiro Crew chat $kc4_slot of kc4 is closed" 'closing an already closed chat must succeed'
+pass "teardown closes the recorded chat a client left open, and a repeat is a no-op"
 
 # ---- firstmate adapter tables --------------------------------------------------
 
@@ -273,4 +338,66 @@ for backend in zellij cmux; do
   assert_contains "$out" "kirocrew is verified on the tmux and herdr backends only; backend=$backend" "wrong refusal on $backend: $out"
   assert_absent "$shome/state/kc-$backend.meta" "the refused $backend spawn left a task record"
 done
+ext="$case_dir/ext-home"
+fm_test_spawn_home "$ext" kirocrew
+printf 'url=%s\ncrew-home=%s\n' "$GW" "$GW_DIR/crew-home" > "$ext/config/kirocrew"
+# shellcheck disable=SC2016 # Backticks are literal adapter text.
+printf '%s\n' 'Run `review-tool upload --draft`.' > "$ext/config/external-review.md"
+printf -- '- project [direct-PR forge=external] - fixture (added 2026-01-01)\n' > "$ext/data/projects.md"
+mkdir -p "$ext/data/kc-ext"
+cat > "$ext/data/kc-ext/brief.md" <<'EOF'
+# Task
+## Captain's intent
+Ship a change through the review tool.
+
+## Firstmate spec
+Exercise the kirocrew refusal on a forge=external project.
+
+# Definition of done
+Delivery contract: mode=direct-PR forge=external
+Ship branch: fm/kc-ext
+EOF
+if out=$(FM_FAKE_LAUNCH_LOG="$case_dir/kc-ext.launch" fm_test_run_spawn "$ext" "$wt" "$fakebin" kc-ext "$proj" \
+  --harness kirocrew --mode direct-PR --yolo off 2>&1)
+then fail 'a kirocrew ship on a forge=external project was accepted'; fi
+assert_contains "$out" 'kirocrew is refused for kc-ext' "wrong forge=external refusal: $out"
+assert_contains "$out" 'pre-push guard' 'the refusal must name the guard it cannot carry'
+assert_absent "$case_dir/kc-ext.launch" 'launched a forge=external kirocrew ship'
+assert_absent "$ext/state/kc-ext.meta" 'the refused forge=external spawn left a task record'
 pass "scout launch carries the client, worktree, busy wiring, model, effort and brief; refusals leave nothing behind"
+
+# ---- setup ----------------------------------------------------------------------
+
+setup_home="$TMP_ROOT/setup-home"
+kiro_home="$TMP_ROOT/setup-kiro"
+mkdir -p "$setup_home/config" "$setup_home/state"
+printf 'url=%s\ncrew-home=%s\n' "$GW" "$TMP_ROOT/setup-crew" > "$setup_home/config/kirocrew"
+fakecrew="$TMP_ROOT/fake-kirocrew"
+# shellcheck disable=SC2016 # $1 belongs to the generated script.
+printf '#!/bin/sh\n[ "$1" = token ] && printf "Dashboard: %s/?token=owner-token\\n"\n' "$GW" > "$fakecrew"
+shim=$(fm_fakebin "$TMP_ROOT/curl-shim")
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec %s "$@"\n' "$TMP_ROOT/curl-argv.log" "$(command -v curl)" > "$shim/curl"
+chmod +x "$fakecrew" "$shim/curl"
+run_setup() {
+  env -u KIROCREW_SPAWNED PATH="$shim:$PATH" "$ROOT/bin/fm-kirocrew-setup.sh" --home "$setup_home" \
+    --kiro-home "$kiro_home" --kirocrew-bin "$fakecrew" "$@" 2>&1
+}
+out=$(run_setup) || fail "setup failed: $out"
+jq -e '.name == "firstmate-worker" and .tools == ["*"] and .allowedTools == [] and .includeMcpJson == false' \
+  "$kiro_home/agents/firstmate-worker.json" >/dev/null || fail 'setup did not write the worker agent file'
+assert_contains "$out" 'registered app firstmate' 'setup did not register the app'
+assert_contains "$out" "app firstmate is on Crew's trusted apps list" 'setup did not trust the app'
+assert_contains "$out" 'Restart the Kiro Crew gateway' 'a new agent file needs the restart step'
+assert_contains "$out" 'enable it' 'an app without consent needs the dashboard step'
+assert_contains "$(calls_for '.path == "/api/apps/register"')" '"sessionApproval":true' 'the manifest must ask for sessionApproval'
+assert_contains "$(calls_for '.path == "/api/security/trusted-apps/firstmate"')" POST 'the trusted-apps call is missing'
+[ -s "$TMP_ROOT/curl-argv.log" ] || fail 'the curl shim saw no call'
+assert_no_grep 'owner-token' "$TMP_ROOT/curl-argv.log" 'the owner token reached a curl argument'
+out=$(run_setup) || fail "a second setup run failed: $out"
+assert_contains "$out" 'agent file is current' 'a second run rewrote the agent file'
+assert_contains "$out" 'is already registered' 'a second run registered the app again'
+case "$out" in *'Restart the Kiro Crew gateway'*) fail 'an unchanged agent file asked for a restart' ;; esac
+out=$(run_setup --check) || fail "setup --check failed: $out"
+assert_contains "$out" 'agent=firstmate-worker' 'check did not report the agent'
+assert_contains "$out" 'trust=not-granted' 'check did not report the missing Trust'
+pass "setup writes the agent file, registers and trusts the app without the owner token in argv, is idempotent, and checks"

@@ -4063,6 +4063,12 @@ if [ "$KIND" = ship ]; then
       echo "error: --yolo on is refused for $ID: $PROJ_NAME is registered forge=external, where firstmate can neither observe nor perform the review tool's approval or merge; spawn with --yolo off" >&2
       exit 1
     fi
+    # The push guard below reaches a worker's git through the pane environment.
+    # A kirocrew worker's git runs inside the Kiro Crew gateway instead.
+    if [ "$HARNESS" = kirocrew ]; then
+      echo "error: kirocrew is refused for $ID: $PROJ_NAME is registered forge=external, and a kirocrew worker's git runs inside the Kiro Crew gateway, out of reach of the per-task pre-push guard that keeps task branches off the shared origin; select another harness" >&2
+      exit 1
+    fi
     fm_external_review_adapter_body "$CONFIG" >/dev/null || exit 1
     fm_external_review_backup "$CONFIG" || exit 1
     EXTERNAL_REVIEW=1

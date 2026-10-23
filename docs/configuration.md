@@ -1346,10 +1346,10 @@ The local, gitignored `config/kirocrew` is optional and holds `key=value` lines:
 | `agent` | The Kiro agent file every worker chat runs | `firstmate-worker` |
 
 Run `bin/fm-kirocrew-setup.sh` once from the captain's own shell before the first `kirocrew` spawn.
-It writes the agent file into Crew's Kiro agents folder (`--kiro-home`, default `~/.kiro`), registers the self-managed app `firstmate` as the dashboard owner, adds it to Crew's trusted apps, and prints the steps only the captain can take: restarting the gateway when the agent file is new, and enabling the app on its page in the Crew dashboard.
+It writes the agent file into the Kiro agents folder of the gateway (`--kiro-home`, which must be the gateway's `KIRO_HOME`; default `$KIRO_HOME`, then `~/.kiro`, the same default Crew uses), registers the self-managed app `firstmate` as the dashboard owner, adds it to Crew's trusted apps, and prints the steps only the captain can take: restarting the gateway when the agent file is new, and enabling the app on its page in the Crew dashboard.
 Enabling grants the app's `sessionApproval` permission, which lets firstmate put each worker chat in Trust mode; without it every shell and file tool of a worker waits for an approval in the dashboard.
 `bin/fm-kirocrew-setup.sh --check` opens and closes one empty chat and reports the agent and whether Trust is granted.
-`fm-spawn.sh` refuses a `kirocrew` launch, before any endpoint or worktree exists, when the gateway or the app cannot be reached.
+`fm-spawn.sh` refuses a `kirocrew` launch, before any endpoint or worktree exists, when the gateway or the app cannot be reached, and refuses a ship on a `forge=external` project, because a kirocrew worker's git runs inside the gateway, out of reach of that project's per-task pre-push guard.
 The file is home-local and not inherited.
 
 ## Project capacity (config/project-capacity)
