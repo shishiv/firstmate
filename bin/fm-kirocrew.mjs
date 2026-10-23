@@ -3,17 +3,18 @@
 //
 // Kiro Crew is a gateway that drives Kiro sessions over ACP and shows them in
 // its dashboard. Firstmate reaches it only through Crew's supported external
-// app identity: the self-managed app `firstmate`, whose secret Crew writes to
-// <crew-home>/apps/firstmate/.app_secret. POST /api/apps/firstmate/token trades
-// that secret for an app token, and Crew confines the token to the app's own
-// chats ("slots") and to the manifest's permissions.api prefixes. Firstmate
-// never reads Crew's .local_secret and never calls /api/session-control: those
-// belong to Crew's own processes.
+// app identity: the Crew app `firstmate` (apps/firstmate/app.json), which
+// bin/fm-kirocrew-setup.sh installs from this repository through a Crew app
+// registry. Crew writes its secret to <crew-home>/apps/firstmate/.app_secret,
+// and POST /api/apps/firstmate/token trades that secret for an app token, which
+// Crew confines to the app's own chats ("slots") and to the manifest's
+// permissions.api prefixes. Firstmate never reads Crew's .local_secret and never
+// calls /api/session-control: those belong to Crew's own processes.
 //
-// Every Crew route, JSON shape, and HTTP status mapping lives here, so
-// bin/fm-kirocrew-run.mjs (the harness program) and bin/fm-kirocrew-setup.sh
-// never parse Crew JSON. docs/verification/kirocrew.md records the live
-// behavior each mapping relies on.
+// Every app-token route, JSON shape, and HTTP status mapping lives here, so
+// bin/fm-kirocrew-run.mjs (the harness program) never parses Crew JSON;
+// bin/fm-kirocrew-setup.sh owns the few dashboard-owner calls of the install.
+// docs/verification/kirocrew.md records the live behavior each mapping relies on.
 //
 // Every HTTP exchange is bounded by FM_KIROCREW_TIMEOUT_MS (default 15000): a
 // gateway that accepts the connection and never answers fails as unreachable.
@@ -35,6 +36,8 @@ import { dirname, join } from 'node:path';
 export const APP_NAME = 'firstmate';
 export const DEFAULT_URL = 'http://127.0.0.1:5476';
 export const DEFAULT_AGENT = 'firstmate-worker';
+// The git repository whose apps/firstmate/app.json Crew installs the app from.
+export const DEFAULT_APP_REGISTRY = 'https://github.com/shishiv/firstmate';
 
 const EXIT = { usage: 2, unreachable: 3, auth: 4, not_found: 5, refused: 6, invalid: 7 };
 const TIMEOUT_MS = Number(process.env.FM_KIROCREW_TIMEOUT_MS) || 15000;
@@ -48,8 +51,9 @@ export class CrewError extends Error {
 }
 
 // <config-dir>/kirocrew (default <fm-home>/config) holds optional key=value
-// lines (url=, crew-home=, agent=). Explicit options win over the file, and the
-// file wins over defaults. The app token cache lives in the state directory.
+// lines (url=, crew-home=, agent=, app-registry=, app-registry-branch=).
+// Explicit options win over the file, and the file wins over defaults. The app
+// token cache lives in the state directory.
 export function loadConfig({ home, configDir, stateDir, url, crewHome, agent } = {}) {
   if (!home) throw new CrewError('usage', 'a firstmate home is required');
   const file = {};
@@ -73,6 +77,8 @@ export function loadConfig({ home, configDir, stateDir, url, crewHome, agent } =
     port: parsed.port || (parsed.protocol === 'https:' ? '443' : '80'),
     crewHome: crewHome || file['crew-home'] || join(homedir(), '.kiro', 'crew'),
     agent: agent || file.agent || DEFAULT_AGENT,
+    appRegistry: file['app-registry'] || DEFAULT_APP_REGISTRY,
+    appRegistryBranch: file['app-registry-branch'] || 'main',
     tokenCache: join(stateDir || join(home, 'state'), '.kirocrew-token'),
   };
 }
@@ -311,7 +317,7 @@ async function main(argv) {
   const cfg = loadConfig({ home: args.home, configDir: args['config-dir'], stateDir: args['state-dir'], url: args.url, crewHome: args['crew-home'], agent: args.agent });
   switch (verb) {
     case 'config':
-      console.log(`url=${cfg.baseUrl}\ncrew-home=${cfg.crewHome}\nagent=${cfg.agent}`);
+      console.log(`url=${cfg.baseUrl}\ncrew-home=${cfg.crewHome}\nagent=${cfg.agent}\napp-registry=${cfg.appRegistry}\napp-registry-branch=${cfg.appRegistryBranch}`);
       return;
     case 'ping': {
       const slots = await listSlots(cfg);

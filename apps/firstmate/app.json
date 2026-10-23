@@ -1,0 +1,13 @@
+{
+  "name": "firstmate",
+  "version": "0.3.0",
+  "displayName": "firstmate",
+  "description": "Shows firstmate workers as Kiro Crew chats. firstmate creates, supervises and closes them; talk to firstmate, not to the workers.",
+  "author": "firstmate",
+  "minKiroCrewVersion": "0.11.0",
+  "permissions": {
+    "api": ["/api/chat"],
+    "events": ["slots:own"],
+    "sessionApproval": true
+  }
+}
