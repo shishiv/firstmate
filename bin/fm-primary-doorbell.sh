@@ -46,12 +46,31 @@
 #   fm-primary-doorbell.sh ensure   idempotently start the owner; prints one line:
 #     doorbell-owner: started pid=<N>        exit 0
 #     doorbell-owner: running pid=<N>        exit 0
+#     doorbell-owner: starting - ...         exit 0 (a Kiro Crew primary: the
+#                                            doorbell service starts the owner)
 #     doorbell-owner: not needed             exit 0 (no supervision need)
 #     doorbell-owner: away mode              exit 0 (state/.afk exists)
 #     doorbell-owner: unavailable - <why>    exit 3 (no loadable endpoint)
 #     doorbell-owner: cooling down - <why>   exit 4 (recent continuity failure)
+#     doorbell-owner: unavailable - <why>    exit 5 (a Kiro Crew primary with no
+#                                            doorbell service)
 #     doorbell-owner: FAILED - <why>         exit 1
 #   fm-primary-doorbell.sh run      the owner loop (started by ensure, detached)
+#   fm-primary-doorbell.sh serve    the doorbell service of a Kiro Crew primary
+#   fm-primary-doorbell.sh unit     print the systemd user unit that runs serve
+#
+# DOORBELL SERVICE (Kiro Crew). A Kiro primary in a Kiro Crew chat runs its
+# hooks inside Crew's sandbox, which keeps them off the user's service manager
+# on purpose, and a gateway restart kills the gateway pid the owner serves. So
+# `ensure` never forks an owner for a `kirocrew` endpoint. The home's systemd
+# user unit (`unit`, installed by bin/fm-kirocrew-setup.sh --primary) runs
+# `serve` instead: one process per home (state/.primary-doorbell-service.lock)
+# that runs `run` whenever state/.primary-endpoint names a Crew chat that needs
+# supervision. After a gateway restart it resumes the chat once per dead
+# gateway pid and sends the restart line, so the chat's next prompt retakes the
+# lock (state/.primary-doorbell-recovery records each recovery). A ring that
+# finds the chat gone under a live gateway retires the record and stops the
+# owner, because the captain closed that chat.
 #
 # SUPERVISION HOST. When the home runs the host (fm_supervision_host_enabled:
 # config/supervision-host and no config/supervision-host-off, read at every
@@ -77,13 +96,19 @@
 # Records (state/): .primary-doorbell.lock (singleton, pid + pid-identity),
 # .primary-doorbell-failed (continuity-failure episode: epoch and reason),
 # .primary-doorbell-note (supervision-host lines for the next doorbell turn;
-# the hook that attaches it prints only its newest 8 KB).
+# the hook that attaches it prints only its newest 8 KB),
+# .primary-doorbell-service.lock (the doorbell service's singleton) and
+# .primary-doorbell-recovery (the last restart recovery: dead gateway pid,
+# outcome, epoch).
 #
 # Tunables: FM_PRIMARY_DOORBELL_POLL (seconds between polls, default 1; a
 # fraction such as 0.2 is accepted),
 # FM_PRIMARY_DOORBELL_READY_TIMEOUT (seconds to wait for an arm's status line,
 # default 20), FM_PRIMARY_DOORBELL_RETRY_LIMIT (default 5),
-# FM_PRIMARY_DOORBELL_FAILURE_COOLDOWN (default 300), FM_GUARD_GRACE (300).
+# FM_PRIMARY_DOORBELL_FAILURE_COOLDOWN (default 300), FM_GUARD_GRACE (300),
+# FM_PRIMARY_DOORBELL_SERVE_POLL (the service's poll, default 2, fractions
+# accepted), FM_PRIMARY_DOORBELL_RECOVER_TIMEOUT (seconds one restart recovery
+# may take, default 600).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,20 +123,27 @@ NOTE="$STATE/.primary-doorbell-note"
 HOST_LINE_RE='^supervision-host:'
 OWNER_LOCK="$STATE/.primary-doorbell.lock"
 FAILURE_RECORD="$STATE/.primary-doorbell-failed"
+SERVICE_LOCK="$STATE/.primary-doorbell-service.lock"
+RECOVERY_RECORD="$STATE/.primary-doorbell-recovery"
 WAKE_RE='^(signal:|stale:|check:|heartbeat($|:))'
 
 positive_int() {  # <value> <default>
   case "$1" in ''|*[!0-9]*|0) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac
 }
-case "${FM_PRIMARY_DOORBELL_POLL:-}" in
-  [1-9]|[1-9][0-9]|0.[0-9]|0.[0-9][0-9]|[1-9].[0-9]) POLL=$FM_PRIMARY_DOORBELL_POLL ;;
-  *) POLL=1 ;;
-esac
+poll_seconds() {  # <value> <default>
+  case "$1" in
+    [1-9]|[1-9][0-9]|0.[0-9]|0.[0-9][0-9]|[1-9].[0-9]) printf '%s' "$1" ;;
+    *) printf '%s' "$2" ;;
+  esac
+}
+POLL=$(poll_seconds "${FM_PRIMARY_DOORBELL_POLL:-}" 1)
+SERVE_POLL=$(poll_seconds "${FM_PRIMARY_DOORBELL_SERVE_POLL:-}" 2)
 READY_TIMEOUT=$(positive_int "${FM_PRIMARY_DOORBELL_READY_TIMEOUT:-}" 20)
+RECOVER_TIMEOUT=$(positive_int "${FM_PRIMARY_DOORBELL_RECOVER_TIMEOUT:-}" 600)
 RETRY_LIMIT=$(positive_int "${FM_PRIMARY_DOORBELL_RETRY_LIMIT:-}" 5)
 FAILURE_COOLDOWN=$(positive_int "${FM_PRIMARY_DOORBELL_FAILURE_COOLDOWN:-}" 300)
 
-[ -d "$STATE" ] || { echo "doorbell-owner: FAILED - state directory $STATE is absent"; exit 1; }
+[ -d "$STATE" ] || [ "${1:-}" = unit ] || { echo "doorbell-owner: FAILED - state directory $STATE is absent"; exit 1; }
 
 # shellcheck source=bin/fm-primary-endpoint-lib.sh
 . "$SCRIPT_DIR/fm-primary-endpoint-lib.sh"
@@ -120,39 +152,49 @@ FAILURE_COOLDOWN=$(positive_int "${FM_PRIMARY_DOORBELL_FAILURE_COOLDOWN:-}" 300)
 # shellcheck source=bin/fm-supervision-engine-lib.sh
 . "$SCRIPT_DIR/fm-supervision-engine-lib.sh"
 
-# The live owner's pid, or fail. A lock whose recorded pid is dead or whose
-# recorded identity no longer matches is not a live owner.
-live_owner_pid() {
+# The live holder of lock dir <lock>, or fail. A lock whose recorded pid is
+# dead or whose recorded identity no longer matches is not a live holder.
+live_lock_pid() {  # <lock>
   local pid recorded current
-  pid=$(cat "$OWNER_LOCK/pid" 2>/dev/null || true)
+  pid=$(cat "$1/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" || return 1
-  recorded=$(cat "$OWNER_LOCK/pid-identity" 2>/dev/null || true)
+  recorded=$(cat "$1/pid-identity" 2>/dev/null || true)
   current=$(fm_pid_identity "$pid" 2>/dev/null || true)
   [ -n "$recorded" ] && [ "$recorded" = "$current" ] || return 1
   printf '%s' "$pid"
 }
+live_owner_pid() { live_lock_pid "$OWNER_LOCK"; }
+live_service_pid() { live_lock_pid "$SERVICE_LOCK"; }
 
 # fm_lock_try_acquire reclaims a lock whose pid is dead, but treats any live pid
 # as the holder. A live pid whose identity no longer matches the recorded one is
 # a reused pid, so the lock is removed under the same steal mutex acquire uses,
 # after re-checking inside it.
-lock_names_reused_pid() {
+lock_names_reused_pid() {  # <lock>
   local pid recorded current
-  pid=$(cat "$OWNER_LOCK/pid" 2>/dev/null || true)
+  pid=$(cat "$1/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" || return 1
-  recorded=$(cat "$OWNER_LOCK/pid-identity" 2>/dev/null || true)
+  recorded=$(cat "$1/pid-identity" 2>/dev/null || true)
   [ -n "$recorded" ] || return 1
   current=$(fm_pid_identity "$pid" 2>/dev/null || true)
   [ -n "$current" ] && [ "$current" != "$recorded" ]
 }
 
-reclaim_reused_owner_lock() {
-  lock_names_reused_pid || return 0
-  fm_lock_try_acquire_steal_mutex "$OWNER_LOCK.steal" || return 0
-  if lock_names_reused_pid; then
-    fm_lock_remove_path "$OWNER_LOCK" || true
+reclaim_reused_lock() {  # <lock>
+  lock_names_reused_pid "$1" || return 0
+  fm_lock_try_acquire_steal_mutex "$1.steal" || return 0
+  if lock_names_reused_pid "$1"; then
+    fm_lock_remove_path "$1" || true
   fi
-  fm_lock_release "$OWNER_LOCK.steal"
+  fm_lock_release "$1.steal"
+}
+
+# The systemd user unit that runs `serve` for this home.
+service_unit() {
+  local tag
+  # shellcheck source=bin/fm-backend-hometag-lib.sh
+  tag=$(. "$SCRIPT_DIR/fm-backend-hometag-lib.sh" && fm_backend_hometag)
+  printf 'fm-doorbell-%s.service' "$tag"
 }
 
 failure_cooling_down() {
@@ -177,6 +219,13 @@ cmd_ensure() {
   if failure_cooling_down; then
     echo "doorbell-owner: cooling down - a continuity failure is recorded in $FAILURE_RECORD"
     return 4
+  fi
+  # A Kiro Crew primary's hooks run inside Crew's sandbox, so its owner is
+  # started by the home's doorbell service (`serve`), never forked from here.
+  if [ "$FM_PRIMARY_ENDPOINT_BACKEND" = kirocrew ]; then
+    if pid=$(live_service_pid); then echo "doorbell-owner: starting - the doorbell service pid=$pid starts the owner"; return 0; fi
+    echo "doorbell-owner: unavailable - no doorbell service runs for this home; install it with bin/fm-kirocrew-setup.sh --primary, or start it with: systemctl --user start $(service_unit)"
+    return 5
   fi
   command -v setsid >/dev/null 2>&1 || { echo "doorbell-owner: FAILED - setsid is unavailable"; return 1; }
   setsid --fork "$SCRIPT_DIR/fm-primary-doorbell.sh" run </dev/null >/dev/null 2>&1 \
@@ -285,10 +334,25 @@ ring_if_pending() {
     RUNG_SEQ=$seq
     return 0
   fi
-  fm_primary_endpoint_ring_kiro "$STATE" "$FM_ROOT" "$FM_HOME" "$RING_KIND" || return 1
+  if ! fm_primary_endpoint_ring_kiro "$STATE" "$FM_ROOT" "$FM_HOME" "$RING_KIND"; then
+    [ "$FM_PRIMARY_ENDPOINT_RING_RESULT" != absent ] || crew_chat_gone
+    return 1
+  fi
   RING_WANTED=0
   RING_FORCED=0
   RUNG_SEQ=$seq
+}
+
+# Kiro Crew stopped listing the served chat. Under the same live gateway that
+# means the captain closed it, so this owner retires the record and exits; a
+# gateway that died meanwhile leaves the record to the doorbell service's
+# restart recovery.
+crew_chat_gone() {
+  sleep 2
+  still_serving || exit 0
+  [ "$(fm_primary_endpoint_crew_state "$STATE" "$FM_HOME" "$FM_PRIMARY_ENDPOINT_TARGET" 2>/dev/null)" = absent ] || return 0
+  fm_primary_endpoint_retire_crew "$STATE" "$FM_PRIMARY_ENDPOINT_TARGET" "$SERVED_PID"
+  exit 0
 }
 
 start_arm() {  # <predecessor-arm-pid>
@@ -408,7 +472,7 @@ owner_close() {
 
 cmd_run() {
   local ready
-  reclaim_reused_owner_lock
+  reclaim_reused_lock "$OWNER_LOCK"
   fm_lock_try_acquire "$OWNER_LOCK" || exit 0
   trap owner_cleanup EXIT
   trap 'exit 129' HUP
@@ -462,9 +526,88 @@ cmd_run() {
   done
 }
 
+# ---- doorbell service (Kiro Crew) --------------------------------------------
+
+# The doorbell service's recovery after a Kiro Crew gateway restart. The
+# restart killed the gateway pid that the record and the fleet lock name, and
+# Crew dropped the live chat but kept its transcript. Once per dead gateway pid,
+# it waits for the new gateway, resumes the chat when Crew does not list it, and
+# sends the restart line, whose prompt makes the Kiro hook take the lock on the
+# new gateway and republish the record. Only a final outcome is recorded, so a
+# gateway that stays down past RECOVER_TIMEOUT is waited for again. Nothing is resumed for a gateway that
+# still runs: a chat missing under a live gateway was closed by the captain,
+# and the owner retires that record (crew_chat_gone). A lock that moved to
+# another pid belongs to another session, so its record is not recovered either.
+serve_recover() {
+  local pid chat deadline st line outcome rc
+  [ ! -e "$STATE/.afk" ] || return 0
+  fm_primary_endpoint_read "$STATE" "$FM_ROOT" "$FM_HOME" || return 0
+  [ "$FM_PRIMARY_ENDPOINT_REC_BACKEND" = kirocrew ] || return 0
+  pid=$FM_PRIMARY_ENDPOINT_REC_PID
+  chat=$FM_PRIMARY_ENDPOINT_REC_TARGET
+  [ "$(fm_pid_identity "$pid" 2>/dev/null || true)" != "$FM_PRIMARY_ENDPOINT_REC_IDENTITY" ] || return 0
+  [ "$(cat "$STATE/.lock" 2>/dev/null || true)" = "$pid" ] || return 0
+  [ "$(cut -f1 "$RECOVERY_RECORD" 2>/dev/null | head -n 1)" != "$pid" ] || return 0
+  line=$(fm_primary_endpoint_restart_line "$FM_ROOT") || return 0
+  deadline=$(( $(date +%s) + RECOVER_TIMEOUT ))
+  outcome=
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    # The chat may take the helm by itself first, for a prompt the captain sent.
+    if fm_primary_endpoint_read "$STATE" "$FM_ROOT" "$FM_HOME" && [ "$FM_PRIMARY_ENDPOINT_REC_PID" != "$pid" ]; then
+      outcome='the chat republished the record itself'
+      break
+    fi
+    if ! st=$(fm_primary_endpoint_crew_state "$STATE" "$FM_HOME" "$chat"); then
+      sleep 5
+      continue
+    fi
+    if [ "$st" = absent ]; then
+      rc=0
+      fm_primary_endpoint_crew_resume "$STATE" "$FM_HOME" "$chat" || rc=$?
+      [ "$rc" != 0 ] || continue
+      # Exit 5: Crew has no transcript for the chat, so nothing can bring it back.
+      if [ "$rc" = 5 ]; then
+        outcome="Kiro Crew has no transcript to resume the chat $chat from"
+        break
+      fi
+      sleep "$SERVE_POLL"
+      continue
+    fi
+    if fm_primary_endpoint_ring_crew "$STATE" "$FM_HOME" "$chat" "$line"; then
+      outcome='rung'
+      break
+    fi
+    sleep "$SERVE_POLL"
+  done
+  [ -n "$outcome" ] || return 0
+  printf '%s\t%s\t%s\n' "$pid" "$outcome" "$(date +%s)" > "$RECOVERY_RECORD" 2>/dev/null || true
+}
+
+cmd_serve() {
+  reclaim_reused_lock "$SERVICE_LOCK"
+  fm_lock_try_acquire "$SERVICE_LOCK" || { echo "doorbell-service: another doorbell service runs for this home"; exit 0; }
+  trap 'trap - EXIT; fm_lock_release "$SERVICE_LOCK" 2>/dev/null || true' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  fm_pid_identity "${BASHPID:-$$}" > "$SERVICE_LOCK/pid-identity" 2>/dev/null || exit 1
+  while :; do
+    serve_recover
+    if [ ! -e "$STATE/.afk" ] && ! failure_cooling_down \
+      && fm_primary_endpoint_load "$STATE" "$FM_ROOT" "$FM_HOME" \
+      && [ "$FM_PRIMARY_ENDPOINT_BACKEND" = kirocrew ] \
+      && fm_supervision_needed "$STATE" "$GRACE"; then
+      "$SCRIPT_DIR/fm-primary-doorbell.sh" run </dev/null >/dev/null 2>&1 || true
+    fi
+    sleep "$SERVE_POLL"
+  done
+}
+
 case "${1:-}" in
   ensure) cmd_ensure ;;
   run) cmd_run ;;
+  serve) cmd_serve ;;
+  unit) service_unit; echo ;;
   -h|--help) sed -n '2,/^set -u$/p' "$0" | sed 's/^# \{0,1\}//; $d' ;;
-  *) echo "usage: fm-primary-doorbell.sh ensure|run" >&2; exit 2 ;;
+  *) echo "usage: fm-primary-doorbell.sh ensure|run|serve|unit" >&2; exit 2 ;;
 esac

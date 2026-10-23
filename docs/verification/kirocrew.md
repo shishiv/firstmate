@@ -2,6 +2,7 @@
 
 This page records the live evidence behind the `kirocrew` adapter contract in [the harness reference](../../.agents/skills/harness-adapters/references/harness/kirocrew.md).
 `tests/fm-kirocrew-harness.test.sh` replays these facts against `tests/fixtures/fm-kirocrew-fake-gateway.mjs` and needs no Crew install.
+`tests/fm-kirocrew-primary.test.sh` replays the facts behind a primary that runs in a Crew chat ([configuration](../configuration.md#a-primary-in-a-kiro-crew-chat)).
 
 ## Setup verified
 
@@ -19,6 +20,7 @@ This page records the live evidence behind the `kirocrew` adapter contract in [t
 | An app installed from a registry gets `resources: gateway`, `origin: registry` and `source: registry:<registry>`, and its detail page shows "Enable and allow chat control" with a confirmation dialog. Crew lists an app from `apps/<app>/app.json` in a registry repository that has no `app-registry.json`. It checks execution trust before an install clones anything, and a trust grant for a registry app must name the app's repository. | `bin/fm-kirocrew-setup.sh` against the instance on 2026-10-23: it installed the app from a branch in 15 s; the captain enabled it with that button, and the record then read `enabled: true`, `sessionApprovalConsentPending: false`; `registry_pipeline/indexes.py` and `security_trusted_apps.py` for the listing and trust rules |
 | The consent reaches past the app's own chats. Crew's permission text says the app can send messages, approve or deny tool prompts, and switch the approval mode in the owner's chats, and after the consent the app's chat list also showed the owner's own chats. | detail page permission text; `GET /api/chat/slots` as the app listed the owner's `chat-3-…` and mate chats |
 | `POST /api/apps/<app>/token` with `X-App-Secret` returns an app token that works as the `mc_token_<port>` cookie; a loopback request without an Origin header passes the CSRF barrier. The token survived gateway restarts. | `GET /api/chat/slots` HTTP 200 as the app |
+| The cookie session of an app token ends one hour after the token is minted, and then Crew answers it 403 `forbidden`, its auth gate's answer, not 401. | a token minted at 12:21 UTC on 2026-10-23 answered 403 at 14:49 UTC; its claims read `session_exp - iat = 3600` |
 | `POST /api/chat/slots {name, agent, agent_kind: "template", memory_mode: "temporary", title}` creates a chat owned by the app (`app=firstmate`, `origin=app`). An agent file added after the gateway started answers 409 `agent_choice_unavailable` until a restart. | slot rows |
 | `POST .../project {project}`, `.../model {model}`, `.../reasoning-effort {reasoning_effort}`, `.../turn-timeout {secs}` apply to the app's own chat. `PATCH .../muted` answers 403 `muted_user_only` to an app. | HTTP 200 and 403 |
 | `POST /api/chat?ws=1 {slot, message}` answers a receipt and runs the turn on the gateway; a busy chat answers `{queued: true}`. App messages never steer a running turn: `steer: true` queues too. A 60,288-character message arrived whole. | slot history |
@@ -29,6 +31,18 @@ This page records the live evidence behind the `kirocrew` adapter contract in [t
 | `DELETE /api/chat/slots/<chat>` closes the chat and keeps its transcript in the owner's session list. | `GET /api/sessions` as owner |
 | A worker on the `firstmate-worker` agent ran `git ls-remote` over SSH from its key file with no SSH agent, read `gh auth status` from the keyring, and called a project agent from `<project>/.kiro/agents/` through its sub-agent tool. | chat transcripts |
 | Every gateway start links `~/.local/bin/kirocrew` to its own launcher when the name is free. | `ls -la ~/.local/bin/kirocrew` after a start |
+
+## Primary facts
+
+A Kiro primary in a Crew chat runs on the agent `firstmate-primary`. These facts come from probe chats on 2026-10-23 on the instance above.
+
+| Fact | Evidence |
+|---|---|
+| On the Kiro Agent engine Crew runs an agent file's own `hooks` itself, in kiro-cli's object form (`agentSpawn`, `userPromptSubmit`, `preToolUse`, `postToolUse`, `stop`), with `/bin/sh -c` in the chat's project folder. A project's `.kiro/hooks` files do not fire. The stdin payload carries `hook_event_name` (`AgentSpawn`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`), `cwd`, `session_key` (`dashboard:<chat>`), and `prompt` or `assistant_text`. | a probe agent whose hooks logged their payloads; `agent_sdk/spec_hooks.py`; a probe project hook never ran |
+| The standard output of an `AgentSpawn` or `UserPromptSubmit` hook reaches the model's context. A hook times out after 30 s unless its `timeout_ms` sets another bound, at most 300 s. | the probe chat's model, told to use no tool, reported the marker each hook printed; `hooks.py` `HOOK_TIMEOUT_MAX` |
+| Crew runs every hook inside its sandbox: its own user and mount namespaces, the host's pid and network namespaces, and an environment allowlist (`PATH`, `HOME`, `LANG`, `KIROCREW_HOME`, `TMPDIR` and a few more, plus `KIROCREW_SPAWNED` and `KIROCREW_SANDBOX_*`). Crew removes the user-bus variables on purpose, because a bus address would let a sandboxed process start a unit outside the sandbox, so `systemd-run --user` fails there. The gateway answers on loopback, the home's state folder is writable, and a detached child outlives the turn and the chat close inside the hook's scope. | a probe hook compared its namespace ids with the host's and listed its environment names; `sandbox_spawn.py` |
+| A hook runs under Crew's sandbox launcher, a `python3.12` child of the gateway process (comm `kirocrew`, argv `kirocrew gateway`). A tool shell runs under the chat's `kiro-cli-chat acp` and `kiro-cli acp` runtime, also a child of the gateway, in the host's mount namespace. The gateway is the one frame both share. | `ps` ancestry from a probe hook and from the probe chat's runtime |
+| The app token sends a message into a chat the dashboard owner created, and that chat runs the turn. After the consent the app lists the owner's chats. | the probe's message ran a turn in an owner chat; `GET /api/chat/slots` as the app |
 
 ## Live firstmate runs
 

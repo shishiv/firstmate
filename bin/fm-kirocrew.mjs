@@ -29,6 +29,17 @@
 //   fm-kirocrew.mjs probe   --home <fm-home> --slot <name>
 //       create an empty chat on the configured agent, report whether Crew
 //       granted Trust to the app, then close it (bin/fm-kirocrew-setup.sh --check)
+//   fm-kirocrew.mjs state   --home <fm-home> --slot <name>
+//       state=idle|working|approval|queued, or state=absent when Crew does not
+//       list the chat
+//   fm-kirocrew.mjs ring    --home <fm-home> --slot <name> --message <text>
+//       send one message only while the chat is idle: exit 5 when Crew does not
+//       list the chat, 6 when it is not idle (bin/fm-primary-endpoint-lib.sh)
+//   fm-kirocrew.mjs resume  --home <fm-home> --slot <name>
+//       restore a chat that a gateway restart dropped, with Trust requested again
+//       (bin/fm-primary-doorbell.sh serve)
+// The app's consent ("Enable and allow chat control") lets it list, message,
+// and resume every chat of the instance, the captain's own chats included.
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -141,22 +152,26 @@ async function appToken(cfg, { refresh = false } = {}) {
 
 // The token travels as Crew's auth cookie, as kirocrew-client sends it, so it
 // never lands in a URL or a log line. A loopback request without an Origin
-// header passes Crew's CSRF barrier.
+// header passes Crew's CSRF barrier. Crew refuses an app token one hour after
+// it was minted (its session lifetime) with a plain 403 `forbidden`, the
+// answer its auth gate gives, and a missing or forged one with 401, so either
+// answer to a cached token gets one fresh token before it counts.
 export async function request(cfg, method, path, body) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const token = await appToken(cfg, { refresh: attempt > 0 });
     const headers = { Cookie: `mc_token_${cfg.port}=${token}` };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const res = await exchange(cfg, method, path, headers, body === undefined ? undefined : JSON.stringify(body));
-    if (res.status === 401 && attempt === 0) continue;
     let data;
     try {
       data = res.text ? JSON.parse(res.text) : {};
     } catch {
+      if (attempt === 0 && (res.status === 401 || res.status === 403)) continue;
       throw new CrewError('invalid', `Kiro Crew answered ${method} ${path} with non-JSON (HTTP ${res.status})`);
     }
-    if (res.ok) return data;
     const code = typeof data?.code === 'string' ? data.code : '';
+    if (attempt === 0 && (res.status === 401 || (res.status === 403 && code === 'forbidden'))) continue;
+    if (res.ok) return data;
     const message = `${method} ${path}: HTTP ${res.status}${code ? ` ${code}` : ''}${data?.error ? `: ${data.error}` : ''}`;
     if (res.status === 401) throw new CrewError('auth', message, { status: res.status, crewCode: code });
     if (res.status === 404) throw new CrewError('not_found', message, { status: res.status, crewCode: code });
@@ -334,6 +349,27 @@ async function main(argv) {
       await closeSlot(cfg, args.slot);
       console.log(`closed=${args.slot}`);
       return;
+    case 'state': {
+      if (typeof args.slot !== 'string') throw new CrewError('usage', 'state needs --slot');
+      const slot = await findSlot(cfg, args.slot);
+      console.log(`state=${slot ? slot.state : 'absent'}`);
+      return;
+    }
+    case 'ring': {
+      if (typeof args.slot !== 'string' || typeof args.message !== 'string' || !args.message) throw new CrewError('usage', 'ring needs --slot and --message');
+      const slot = await findSlot(cfg, args.slot);
+      if (!slot) throw new CrewError('not_found', `Kiro Crew does not list the chat ${args.slot}`);
+      if (slot.state !== 'idle') throw new CrewError('refused', `the chat ${args.slot} is ${slot.state}`);
+      console.log(`rung=${slot.key} delivery=${await sendMessage(cfg, slot.key, args.message)}`);
+      return;
+    }
+    case 'resume': {
+      if (typeof args.slot !== 'string') throw new CrewError('usage', 'resume needs --slot');
+      const slot = await resumeSlot(cfg, args.slot);
+      if (!slot) throw new CrewError('not_found', `Kiro Crew resumed the chat ${args.slot} but does not list it`);
+      console.log(`resumed=${slot.key} trust=${await requestTrust(cfg, slot.key)}`);
+      return;
+    }
     case 'probe': {
       if (typeof args.slot !== 'string') throw new CrewError('usage', 'probe needs --slot');
       const slot = await createSlot(cfg, args.slot);
@@ -345,7 +381,7 @@ async function main(argv) {
       return;
     }
     default:
-      throw new CrewError('usage', 'usage: fm-kirocrew.mjs config|ping|slots|close|probe --home <fm-home> [...]');
+      throw new CrewError('usage', 'usage: fm-kirocrew.mjs config|ping|slots|close|probe|state|ring|resume --home <fm-home> [...]');
   }
 }
 

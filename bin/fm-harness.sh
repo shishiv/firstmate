@@ -280,7 +280,10 @@ harness_process_verdict() {  # <pid>
     # which keeps the contiguous kiro-cli ancestry unbroken across the bun
     # frame. They sit above the interpreter fallback for the same reason omp
     # does, and a bun that is not kiro-cli's (omp's, Pi's) matches nothing.
-    kiro-cli|kiro-cli-chat|bun|bun-*)
+    # The Kiro Crew gateway frame (`kirocrew gateway`) is the nearest match
+    # for an agent-file hook of a Crew chat, which runs under the gateway with
+    # no kiro-cli frame above it; Crew runs its chats on kiro-cli.
+    kiro-cli|kiro-cli-chat|bun|bun-*|kirocrew)
       args=$(ps -o args= -p "$pid" 2>/dev/null)
       if fm_kiro_cli_process_matches "$comm" "$args"; then
         echo "comm kiro-cli"
