@@ -889,6 +889,60 @@ test_kiro_workspace_trust_is_preregistered_and_gate_handles_the_dialog() {
   pass "fm-spawn: kiro workspace trust is pre-registered; the gate answers only a 'Trust, continue' highlight"
 }
 
+test_kiro_user_skills_are_linked_into_the_task_home() {
+  local id rec out rc kh real
+  id=kiro-userskills-z1
+  rec=$(make_kiro_spawn_case userskills-absent "$id")
+  read_kiro_spawn_record "$rec"
+  kh="$HOME_DIR/state/$id.kiro-home"
+  rc=0
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" 2>&1) || rc=$?
+  expect_code 0 "$rc" "spawn without user skills should succeed: $out"
+  [ ! -e "$kh/skills" ] && [ ! -L "$kh/skills" ] || fail "no user skills directory must leave no skills entry"
+
+  id=kiro-userskills-z2
+  rec=$(make_kiro_spawn_case userskills-present "$id")
+  read_kiro_spawn_record "$rec"
+  kh="$HOME_DIR/state/$id.kiro-home"
+  real="$CASE_DIR/real-skills"
+  mkdir -p "$real/poteto-mode" "$HOME_DIR/.kiro"
+  printf 'x\n' > "$real/poteto-mode/SKILL.md"
+  ln -s "$real" "$HOME_DIR/.kiro/skills"
+  rc=0
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" 2>&1) || rc=$?
+  expect_code 0 "$rc" "spawn with user skills should succeed: $out"
+  [ -L "$kh/skills" ] || fail "the task KIRO_HOME must link the user skills directory"
+  [ "$(readlink "$kh/skills")" = "$(cd "$real" && pwd -P)" ] || fail "link must point at the resolved user skills directory"
+  mkdir -p "$real/late-skill"
+  [ -d "$kh/skills/late-skill" ] || fail "a skill added later must show through the link without a respawn"
+
+  (
+    . "$ROOT/bin/fm-kiro-lib.sh"
+    HOME="$HOME_DIR" fm_kiro_build_task_home "$kh" "" "$HOME_DIR/state/$id.turn-ended" "$WT_DIR" >/dev/null
+  ) || fail "rebuilding the task KIRO_HOME for a respawn failed"
+  [ -L "$kh/skills" ] && [ -d "$kh/skills/poteto-mode" ] || fail "respawn must rebuild the user skills link"
+  [ -d "$real/poteto-mode" ] && [ -d "$real/late-skill" ] || fail "the user's skills must be untouched by respawn"
+  pass "fm-spawn: the task KIRO_HOME links the user's skills, absent when none, rebuilt on respawn"
+}
+
+test_kiro_primary_home_links_user_skills_and_drops_a_stale_link() {
+  local dir fakebin ph
+  dir="$TMP_ROOT/primary-skills"; fakebin=$(fm_fakebin "$dir/fake")
+  mkdir -p "$dir/home/state" "$dir/login/.kiro/skills/poteto-mode"
+  cat > "$fakebin/kiro-cli" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then printf 'kiro-cli 2.33.1\n'; fi
+SH
+  chmod +x "$fakebin/kiro-cli"
+  ph="$dir/home/state/.kiro-primary-home"
+  HOME="$dir/login" PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" "$ROOT/bin/fm-kiro-primary.sh" >/dev/null 2>&1
+  [ -d "$ph/skills/poteto-mode" ] || fail "the primary home must expose the user skills"
+  rm -rf "$dir/login/.kiro"
+  HOME="$dir/login" PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" "$ROOT/bin/fm-kiro-primary.sh" >/dev/null 2>&1
+  [ ! -e "$ph/skills" ] && [ ! -L "$ph/skills" ] || fail "a stale link must be dropped when the user directory is gone"
+  pass "fm-kiro-primary: the persistent home links user skills and drops a stale link"
+}
+
 test_kiro_workspace_hash_matches_the_measured_store() {
   local h
   . "$ROOT/bin/fm-kiro-lib.sh"
@@ -1737,6 +1791,8 @@ test_kiro_launch_is_the_interactive_tui_with_brief_model_effort_and_scope
 test_kiro_trust_dialog_refuses_without_answering
 test_kiro_workspace_trust_is_preregistered_and_gate_handles_the_dialog
 test_kiro_workspace_hash_matches_the_measured_store
+test_kiro_user_skills_are_linked_into_the_task_home
+test_kiro_primary_home_links_user_skills_and_drops_a_stale_link
 test_kiro_trust_decoy_does_not_block_the_launch
 test_kiro_predicates_require_the_complete_signals
 test_kiro_launch_gate_refuses_a_dead_pane
