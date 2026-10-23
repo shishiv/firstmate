@@ -93,7 +93,7 @@ Without a loadable endpoint no owner can run, and the `Stop` hook falls back to 
 A Kiro primary in a Kiro Crew chat ([configuration](configuration.md#a-primary-in-a-kiro-crew-chat)) runs its hooks inside Crew's sandbox, which keeps them away from the user's service manager, and a gateway restart kills the gateway pid that the owner serves.
 So its hooks never start the owner and never fall back to a plain arm.
 The home's doorbell service (`bin/fm-primary-doorbell.sh serve`, a systemd user unit) runs the owner whenever the endpoint names a Crew chat that needs supervision, and the ring is a Crew message.
-After a gateway restart, which it tells by Crew's gateway generation, the service resumes the chat if Crew dropped it and sends a restart line once, so the chat's next turn takes the helm again and republishes the endpoint.
+After a gateway restart, which it tells by Crew's gateway generation, the service waits for Crew to restore the chat and sends a restart line once, so the chat's next turn takes the helm again and republishes the endpoint.
 
 ### Claude Stop hook
 
@@ -515,7 +515,7 @@ It checks that a newly appended keyed decision is classified without rereading e
 
 `tests/fm-primary-endpoint.test.sh` pins that the watcher's own `wake` no longer types into the endpoint and that the `Stop` hook ensures the owner, falling back to one plain arm only when no owner can run.
 
-`tests/fm-kirocrew-primary.test.sh` runs the Kiro hook in Kiro Crew's process shape against a fake gateway, and checks that the hooks never start an owner or an arm, that the doorbell service starts the owner, that a gateway restart, also one in place under the same pid, gets one restart line and a resume only for a dropped chat, and that a chat the captain closed is retired and never resumed.
+`tests/fm-kirocrew-primary.test.sh` runs the Kiro hook in Kiro Crew's process shape against a fake gateway, and checks that the hooks never start an owner or an arm, that the doorbell service starts the owner, that a gateway restart, also one in place under the same pid, gets one restart line, and that a chat the captain closed is retired and never resumed.
 
 ### Claude auto-arm and turn-end guard
 

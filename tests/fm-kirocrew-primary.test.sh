@@ -168,6 +168,8 @@ pass "setup --primary writes the primary agent file and this home's doorbell ser
 
 CHAT=fm-test-primary
 owner POST /api/chat/slots "{\"name\":\"$CHAT\",\"agent\":\"firstmate-primary\",\"agent_kind\":\"template\",\"memory_mode\":\"temporary\"}" >/dev/null
+# Another chat of the captain's, as a real gateway has.
+owner POST /api/chat/slots '{"name":"captain-notes","agent":"firstmate-worker","agent_kind":"template","memory_mode":"temporary"}' >/dev/null
 [ "$(chat_state "$home" "$CHAT")" = "state=idle gen=gen-1" ] || fail "the test chat was not created, or Crew reports no generation: $(chat_state "$home" "$CHAT")"
 state="$home/state"
 : > "$state/task.meta"
@@ -246,7 +248,7 @@ pass "kirocrew ring: an idle chat gets the doorbell line as a message, and a bus
 
 doorbell() {
   FM_HOME="$home" FM_PRIMARY_DOORBELL_POLL=0.2 FM_PRIMARY_DOORBELL_SERVE_POLL=0.2 FM_PRIMARY_DOORBELL_CREW_CHECK=0 \
-    "$home/bin/fm-primary-doorbell.sh" "$@"
+    FM_PRIMARY_DOORBELL_RESTORE_GRACE=1 "$home/bin/fm-primary-doorbell.sh" "$@"
 }
 rc=0
 out=$(doorbell ensure) || rc=$?
@@ -262,19 +264,20 @@ out=$(doorbell serve) || fail "a second serve failed: $out"
 assert_contains "$out" 'another doorbell service runs' 'a second service did not stand down'
 pass "doorbell service: ensure never forks a Crew owner, the service starts it, and one service runs per home"
 
-# A service restart: the gateway pid dies and Crew drops the live chat but keeps
-# its transcript. The service resumes the chat once and sends the restart line.
+# A service restart: the gateway pid dies, Crew's generation changes, the turn
+# in flight is lost, and Crew restores the captain's own chat. The service
+# sends the restart line once, and the app never resumes the captain's chat.
 dead=$GATEWAY_PID
 gw_post /__test/drop '{}'
 rm -f "$case_dir/keep"
 wait_for 10 sh -c "! kill -0 $dead 2>/dev/null" || fail 'the fake gateway did not stop'
-wait_for 20 grep -qs "	rung	" "$state/.primary-doorbell-recovery" \
+wait_for 20 grep -qs "^gen-2	rung	" "$state/.primary-doorbell-recovery" \
   || fail "the service did not recover the chat after the gateway restart: $(cat "$state/.primary-doorbell-recovery" 2>/dev/null)"
-assert_contains "$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"")" "dashboard_$CHAT" 'the dropped chat was not resumed'
-assert_contains "$(sent_to "$CHAT")" 'the Kiro Crew gateway restarted' 'the resumed chat did not get the restart line'
+assert_contains "$(sent_to "$CHAT")" 'the Kiro Crew gateway restarted' 'the restored chat did not get the restart line'
 sleep 1
 [ "$(sent_to "$CHAT" | grep -c 'gateway restarted')" = 1 ] || fail 'the restart line was sent more than once for one restart'
-pass "doorbell service: after a gateway restart it resumes the dropped chat once and sends the restart line"
+[ "$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)" = 0 ] || fail 'the app tried to resume the captain'"'"'s chat'
+pass "doorbell service: after a gateway restart it sends the restored chat the restart line once"
 
 # The chat's next prompt takes the lock on the new gateway, here in the form a
 # dashboard restart leaves, and republishes the record.
@@ -285,18 +288,26 @@ has_line "pid=$GATEWAY_PID" "$record" 'the prompt after the restart did not repu
 wait_for 10 sh -c "[ \"\$(grep -cx arm '$log')\" -gt $arms ]" || fail 'the service did not serve the new gateway'
 pass "doorbell service: the chat retakes the lock on the new gateway in its re-executed form, and the service serves it"
 
-# A dashboard restart re-executes the gateway in place: the pid stays, Crew's
-# generation changes, the turn in flight is lost, and the captain's own chat is
-# restored. The owner sees the generation change, and the service sends the
-# restart line once, with nothing to resume.
-resumes=$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)
-gw_post /__test/drop '{"keep_owner":true}'
+# A dashboard restart re-executes the gateway in place: the pid stays and only
+# Crew's generation changes. The owner sees that change, and the service sends
+# the restart line once.
+gw_post /__test/drop '{}'
 wait_for 20 grep -qs "^gen-3	rung	" "$state/.primary-doorbell-recovery" \
   || fail "the service did not recover from an in-place restart: $(cat "$state/.primary-doorbell-recovery" 2>/dev/null)"
 [ "$(sent_to "$CHAT" | grep -c 'gateway restarted')" = 2 ] || fail 'an in-place restart did not get exactly one restart line'
-[ "$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)" = "$resumes" ] || fail 'a chat Crew restored was resumed'
 has_line "pid=$GATEWAY_PID" "$record" 'an in-place restart moved the record off the gateway pid'
-pass "doorbell service: an in-place gateway restart under the same pid gets one restart line and no resume"
+pass "doorbell service: an in-place gateway restart under the same pid gets one restart line"
+
+# A restart after which Crew does not restore the chat: the service waits out the
+# restore grace and sends nothing, because the app may not resume the captain's
+# chat. The captain brings it back, and its next prompt republishes the record.
+gw_post /__test/drop "{\"only\":[\"$CHAT\"]}"
+wait_for 20 grep -qs "^gen-4	Kiro Crew did not restore the chat $CHAT" "$state/.primary-doorbell-recovery" \
+  || fail "a chat Crew did not restore was not reported: $(cat "$state/.primary-doorbell-recovery" 2>/dev/null)"
+[ "$(sent_to "$CHAT" | grep -c 'gateway restarted')" = 2 ] || fail 'a chat Crew did not restore got a restart line'
+owner POST "/api/chat/slots/$CHAT/resume" "{\"key\":\"dashboard_$CHAT\"}" >/dev/null
+[ "$(chat_state "$home" "$CHAT")" = "state=idle gen=gen-4" ] || fail "the captain's resume did not bring the chat back: $(chat_state "$home" "$CHAT")"
+pass "doorbell service: a chat Crew does not restore after a restart is reported and left to the captain"
 
 # Then the captain closes the chat under that live gateway: the owner's next
 # ring finds it gone, retires the record, and nothing resumes it.
@@ -329,13 +340,14 @@ pass "Crew hook: a session that is no dashboard chat publishes no doorbell and a
 
 launch() { env -u KIROCREW_SPAWNED -u FM_HOME PATH="$SYSTEMD:$PATH" "$home/bin/fm-kirocrew-primary.sh" --kirocrew-bin "$fakecrew" "$@" 2>&1; }
 TAG=$(. "$ROOT/bin/fm-backend-hometag-lib.sh" && FM_HOME=$home FM_ROOT=$home fm_backend_hometag)
-PCHAT="fm-$TAG-primary"
 rm -f "$TMP_ROOT/service.active"
 out=$(launch) && fail "the launcher opened a chat while the doorbell service is down: $out"
 assert_contains "$out" 'is not running' 'the launcher must say the doorbell service is down'
 : > "$TMP_ROOT/service.active"
 out=$(launch --model claude-opus-5.5 --effort high --title 'firstmate · principal' --message 'assuma') \
   || fail "the launcher failed: $out"
+PCHAT=$(cat "$home/state/.kirocrew-primary-chat")
+case "$PCHAT" in "fm-$TAG-primary-"*) ;; *) fail "the launcher recorded an unexpected chat name: $PCHAT" ;; esac
 assert_contains "$out" "chat $PCHAT is created" "the launcher did not create the chat: $out"
 row=$(owner GET /api/chat/slots | jq -c --arg k "$PCHAT" '.[] | select(.key == $k)')
 [ "$(jq -r '[.agent, .origin, .project, .model, .reasoning_effort, .trust, .title] | join("|")' <<<"$row")" \
@@ -343,13 +355,41 @@ row=$(owner GET /api/chat/slots | jq -c --arg k "$PCHAT" '.[] | select(.key == $
 [ "$(sent_to "$PCHAT")" = assuma ] || fail "the first message was not sent once: $(sent_to "$PCHAT")"
 out=$(launch) || fail "a second launch failed: $out"
 assert_contains "$out" 'nothing changed' 'a second launch changed an open chat'
-gw_post /__test/drop '{}'
-out=$(launch) || fail "a launch after a restart failed: $out"
-assert_contains "$out" "chat $PCHAT is resumed" 'a launch after a restart did not resume the chat'
+gw_post /__test/drop "{\"only\":[\"$PCHAT\"]}"
+out=$(launch) || fail "a launch for a dropped chat failed: $out"
+assert_contains "$out" "chat $PCHAT is resumed" 'a launch for a dropped chat did not resume it'
 [ "$(sent_to "$PCHAT")" = assuma ] || fail 'a resumed chat got the first message again'
 [ "$(owner GET /api/chat/slots | jq -r --arg k "$PCHAT" '.[] | select(.key == $k) | .agent')" = firstmate-primary ] \
   || fail 'the resumed chat lost the primary agent'
 owner POST "/api/chat/slots/$PCHAT/agent" '{"agent":"firstmate-worker"}' >/dev/null
 out=$(launch) && fail "the launcher took over a conversation on another agent: $out"
 assert_contains "$out" "holds a conversation on the agent 'firstmate-worker'" 'the refusal must name the other agent'
-pass "launcher: refuses without the doorbell service, turns the empty chat Crew opens into the captain's own primary in Trust, resumes it after a restart, and refuses a chat on another agent"
+# A chat the owner's resume opened for a name with no transcript has no recorded
+# origin, so the firstmate app may not message it.
+orphan="fm-$TAG-primary-1"
+owner POST "/api/chat/slots/$orphan/resume" "{\"key\":\"dashboard_$orphan\"}" >/dev/null
+printf '%s\n' "$orphan" > "$home/state/.kirocrew-primary-chat"
+out=$(launch) && fail "the launcher took a chat the app may not message: $out"
+assert_contains "$out" "is not the captain's own chat" 'the refusal must say the chat is not the captain'"'"'s own'
+got=$(FM_STATE_OVERRIDE="$state" bash -c '. "$0/bin/fm-primary-endpoint-lib.sh"
+  fm_primary_endpoint_ring_crew "$FM_STATE_OVERRIDE" "$0" "$1" ": Firstmate wake waiting: test" || :
+  printf "%s" "$FM_PRIMARY_ENDPOINT_RING_RESULT"' "$home" "$orphan")
+[ "$got" = forbidden ] || fail "a ring to a chat the app may not message gave '$got', not forbidden"
+[ -z "$(sent_to "$orphan")" ] || fail 'a ring reached a chat the app may not message'
+pass "launcher: refuses without the doorbell service, creates the captain's own primary chat in Trust under a recorded name, resumes it when Crew dropped it, and refuses a chat on another agent or one the app may not message"
+
+# A record that names a chat the app may not message: the owner's ring is
+# refused, so it records a continuity failure and stops instead of retrying.
+start_gateway 'AgentSpawn' "dashboard:$orphan"
+has_line "target=$orphan" "$record" 'the hook did not publish the orphan chat'
+FM_STATE_OVERRIDE="$state" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" bash -c \
+  '. "$0/bin/fm-wake-lib.sh"; fm_wake_append check primary-doorbell "check: primary doorbell again"' "$home" \
+  || fail 'could not queue a wake row'
+rm -f "$state/.primary-doorbell-failed"
+rc=0
+timeout 60 env FM_HOME="$home" FM_PRIMARY_DOORBELL_POLL=0.2 FM_PRIMARY_DOORBELL_CREW_CHECK=0 \
+  "$home/bin/fm-primary-doorbell.sh" run >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail "the owner did not stop on a chat it may not message (exit $rc)"
+assert_grep 'does not let the firstmate app message the chat' "$state/.primary-doorbell-failed" 'the refusal was not recorded as a continuity failure'
+rm -f "$case_dir/keep"
+pass "doorbell owner: a chat Crew does not let the app message is a recorded continuity failure, not a retry loop"

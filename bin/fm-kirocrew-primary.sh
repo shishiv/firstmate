@@ -10,14 +10,16 @@
 # from the dashboard or a phone. It runs the agent firstmate-primary
 # (bin/fm-kirocrew-setup.sh --primary) with this checkout as its project, in
 # Trust mode, so the primary's shell and file tools wait for no approval. Its
-# name is fm-<home tag>-primary, one per home:
+# name, fm-<home tag>-primary-<hex epoch>, is recorded in
+# state/.kirocrew-primary-chat, one chat per home:
 #   - a chat Crew lists with a conversation is left as it is;
-#   - a chat that a gateway restart dropped is resumed from its transcript;
-#   - an empty chat, which Crew's resume opens for a name it keeps no
-#     transcript of, or a new one, becomes the primary: it gets the agent, the
+#   - a chat that Crew dropped is resumed from its transcript;
+#   - otherwise a new chat is created under a new name, because Crew would
+#     reopen an older transcript under a used name, and it gets the agent, the
 #     title, the project, and the first message, whose turn runs the startup
 #     digest through the agent's hooks;
-#   - a chat that holds a conversation on another agent is refused.
+#   - a chat the firstmate app may not message (its origin is not `user`), or
+#     one that holds a conversation on another agent, is refused.
 # The home is the checkout this script lives in, because the agent's hooks run
 # the firstmate of the chat's project folder. The home's doorbell service
 # (bin/fm-primary-doorbell.sh serve) must be running, or nothing rings the
@@ -71,7 +73,13 @@ systemctl --user -q is-active "$UNIT" || {
 URL=$(node "$SCRIPT_DIR/fm-kirocrew.mjs" config --home "$FM_ROOT_DIR" | sed -n 's/^url=//p')
 # shellcheck source=bin/fm-backend-hometag-lib.sh
 TAG=$(. "$SCRIPT_DIR/fm-backend-hometag-lib.sh" && FM_HOME=$FM_ROOT_DIR FM_ROOT=$FM_ROOT_DIR fm_backend_hometag)
-CHAT="fm-$TAG-primary"
+CHAT_RECORD="$FM_ROOT_DIR/state/.kirocrew-primary-chat"
+CHAT=$(tr -d '[:space:]' < "$CHAT_RECORD" 2>/dev/null || true)
+case "$CHAT" in
+  "fm-$TAG-primary-"*) case "${CHAT#fm-"$TAG"-primary-}" in ''|*[!0-9a-f]*) CHAT= ;; esac ;;
+  *) CHAT= ;;
+esac
+[ -n "$CHAT" ] || CHAT=$(printf 'fm-%s-primary-%x' "$TAG" "$(date +%s)")
 if [ -z "$KIROCREW_BIN" ]; then
   KIROCREW_BIN=$(command -v kirocrew 2>/dev/null || true)
   [ -n "$KIROCREW_BIN" ] || KIROCREW_BIN="$HOME/.kiro/crew-venv-current/bin/kirocrew"
@@ -112,30 +120,34 @@ agent_refused() {  # <what>
 row=$(chat_row)
 HOW=open
 if [ -z "$row" ]; then
-  # A chat that a gateway restart dropped comes back with its transcript. For a
-  # name Crew keeps no transcript of, the owner's resume opens an empty chat on
-  # Crew's default agent, which the steps below make the primary.
-  fm_kirocrew_owner_call POST "$chat_path/resume" "$(jq -cn --arg k "dashboard_$CHAT" '{key: $k}')"
-  case "$FM_KIROCREW_OWNER_CODE" in
-    200|201) HOW=resumed ;;
-    404)
-      HOW=created
-      fm_kirocrew_owner_call POST /api/chat/slots "$(jq -cn --arg n "$CHAT" --arg a "$AGENT" --arg t "$TITLE" \
-        '{name: $n, agent: $a, agent_kind: "template", memory_mode: "temporary", title: $t}')"
-      case "$FM_KIROCREW_OWNER_CODE" in 200|201) ;; *) agent_refused "creating the chat $CHAT" ;; esac
-      ;;
-    *) echo "error: resuming the chat $CHAT failed (HTTP $FM_KIROCREW_OWNER_CODE)" >&2; exit 1 ;;
-  esac
+  call 'reading the Crew session history' GET "/api/sessions?name=$CHAT"
+  if [ "$(printf '%s' "$FM_KIROCREW_OWNER_BODY" | jq -r '.total // 0')" != 0 ]; then
+    HOW=resumed
+    call "resuming the chat $CHAT" POST "$chat_path/resume" "$(jq -cn --arg k "dashboard_$CHAT" '{key: $k}')"
+  else
+    HOW=created
+    fm_kirocrew_owner_call POST /api/chat/slots "$(jq -cn --arg n "$CHAT" --arg a "$AGENT" --arg t "$TITLE" \
+      '{name: $n, agent: $a, agent_kind: "template", memory_mode: "temporary", title: $t}')"
+    case "$FM_KIROCREW_OWNER_CODE" in 200|201) ;; *) agent_refused "creating the chat $CHAT" ;; esac
+  fi
   row=$(chat_row)
   [ -n "$row" ] || { echo "error: Kiro Crew does not list the chat $CHAT after opening it" >&2; exit 1; }
 fi
 agent=$(printf '%s' "$row" | jq -r '.agent // ""')
 messages=$(printf '%s' "$row" | jq -r '.messages // 0')
+origin=$(printf '%s' "$row" | jq -r '.origin // ""')
+# The doorbell messages the chat through the firstmate app, which Crew allows
+# only on the captain's own chats.
+if [ "$origin" != user ]; then
+  echo "error: the chat $CHAT is not the captain's own chat (origin '${origin:-unrecorded}'), so the firstmate app may not message it; close it in the Crew dashboard, delete $CHAT_RECORD, and run this again" >&2
+  exit 1
+fi
 # A chat that holds a conversation is the primary's only on the primary agent.
 if [ "$messages" != 0 ] && [ "$agent" != "$AGENT" ]; then
   echo "error: the chat $CHAT holds a conversation on the agent '${agent:-Crew default}', not $AGENT; close it in the Crew dashboard first" >&2
   exit 1
 fi
+printf '%s\n' "$CHAT" > "$CHAT_RECORD.$$" && mv -f -- "$CHAT_RECORD.$$" "$CHAT_RECORD"
 if [ "$messages" != 0 ] && [ "$HOW" = open ]; then
   echo "chat $CHAT is open; nothing changed"
   exit 0

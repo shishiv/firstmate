@@ -326,7 +326,9 @@ fm_primary_endpoint_restart_line() {  # <root>
 
 # Why the last ring returned: sent; refused (no loadable record, away mode, a
 # busy pane or chat, or a composer holding text); absent (Kiro Crew no longer
-# lists the chat); or failed (the gateway or the message failed).
+# lists the chat); forbidden (Crew lets the firstmate app message only its own
+# chats and the captain's own chats); or failed (the gateway or the message
+# failed).
 FM_PRIMARY_ENDPOINT_RING_RESULT=
 
 # Run one bin/fm-kirocrew.mjs verb for home <home>, with the app token cached in
@@ -364,12 +366,6 @@ fm_primary_endpoint_crew_observe() {  # <state-dir> <home> <chat>
   return 0
 }
 
-# Restore Kiro Crew chat <chat> from its transcript after a gateway restart
-# dropped it, and ask for Trust again.
-fm_primary_endpoint_crew_resume() {  # <state-dir> <home> <chat>
-  fm_primary_endpoint_crew_cli "$1" "$2" resume --slot "$3" >/dev/null 2>&1
-}
-
 # Send <line> to Kiro Crew chat <chat> through the firstmate app, only while
 # Crew reports the chat idle (bin/fm-kirocrew.mjs ring). Sets
 # FM_PRIMARY_ENDPOINT_RING_RESULT.
@@ -380,6 +376,7 @@ fm_primary_endpoint_ring_crew() {  # <state-dir> <home> <chat> <line>
     0) FM_PRIMARY_ENDPOINT_RING_RESULT=sent; return 0 ;;
     5) FM_PRIMARY_ENDPOINT_RING_RESULT=absent ;;
     6) FM_PRIMARY_ENDPOINT_RING_RESULT=refused ;;
+    8) FM_PRIMARY_ENDPOINT_RING_RESULT=forbidden ;;
     *) FM_PRIMARY_ENDPOINT_RING_RESULT=failed ;;
   esac
   return 1

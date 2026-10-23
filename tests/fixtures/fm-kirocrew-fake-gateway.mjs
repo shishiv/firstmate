@@ -62,7 +62,7 @@ const row = (slot) => ({
   pending_approval: false,
   messages: slot.rows.length * 2,
   trust: slot.trust,
-  app: slot.origin === 'user' ? '' : 'firstmate',
+  app: slot.origin === 'app' ? 'firstmate' : '',
   origin: slot.origin,
   turn_gen: gen,
 });
@@ -161,8 +161,8 @@ const server = createServer((req, res) => {
     if (!path.startsWith('/__test/')) calls.push({ method: req.method, path: path + url.search, body });
     if (path === '/__test/calls') return send(res, 200, calls);
     // A gateway restart: a new generation, every live chat's turn lost, and
-    // every chat dropped but its transcript, except the owner's own chats when
-    // keep_owner is set (Crew restores the owner's open chats).
+    // every chat dropped but its transcript, except the owner's own chats,
+    // which Crew restores; `only` names the chats Crew does not restore.
     if (path === '/__test/drop') {
       gen = `gen-${Number(gen.slice(4)) + 1}`;
       for (const slot of [...live.values()]) {
@@ -171,7 +171,7 @@ const server = createServer((req, res) => {
         slot.running = false;
         slot.queue = [];
         transcripts.set(slot.key, slot.rows);
-        if (!(body.keep_owner && slot.origin === 'user')) live.delete(slot.key);
+        if (Array.isArray(body.only) ? body.only.includes(slot.key) : slot.origin !== 'user') live.delete(slot.key);
       }
       return send(res, 200, { ok: true, gen });
     }
@@ -203,6 +203,14 @@ const server = createServer((req, res) => {
     if (expiredTokens.has(cookie.replace(`mc_token_${port}=`, ''))) return send(res, 403, { error: 'Forbidden', code: 'forbidden' });
     if (!owner && cookie !== `mc_token_${port}=${liveToken}`) return send(res, 401, { error: 'Token required' });
     if (path === '/api/chat/slots' && req.method === 'GET') return send(res, 200, [...live.values()].map(row));
+    if (path === '/api/sessions' && req.method === 'GET') {
+      if (!owner) return send(res, 403, { error: 'Forbidden', code: 'forbidden' });
+      const name = url.searchParams.get('name');
+      const sessions = [...new Set([...transcripts.keys(), ...live.keys()])]
+        .filter((key) => name === null || key === name)
+        .map((key) => ({ key: `dashboard_${key}` }));
+      return send(res, 200, { sessions, total: sessions.length, has_more: false });
+    }
     if (path === '/api/chat/slots' && req.method === 'POST') {
       if (!AGENTS.includes(body.agent)) return send(res, 409, { error: 'the selected agent choice is not available', code: 'agent_choice_unavailable' });
       const slot = newSlot(body.name, { title: body.title || '', agent: body.agent, origin: owner ? 'user' : 'app' });
@@ -219,7 +227,8 @@ const server = createServer((req, res) => {
     }
     if (path === '/api/chat' && req.method === 'POST') {
       const slot = live.get(body.slot);
-      if (!slot) return send(res, 404, { error: 'slot not found', code: 'slot_not_found' });
+      // An app may message its own chats and the captain's own (origin user).
+      if (!slot || (!owner && slot.origin !== 'app' && slot.origin !== 'user')) return send(res, 404, { error: 'slot not found', code: 'slot_not_found' });
       if (slot.running) {
         slot.queue.push(body.message);
         return send(res, 200, { ok: true, queued: true, queue_id: `q${calls.length}` });
@@ -236,9 +245,10 @@ const server = createServer((req, res) => {
     // agent, while an app gets the uniform 404.
     if (verb === 'resume') {
       if (live.has(name) || body.key !== `dashboard_${name}`) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
+      // An app may resume only a transcript it owns.
+      if (!owner && (kept.get(name) || {}).origin !== 'app') return send(res, 404, { error: 'not found', code: 'slot_not_found' });
       if (!transcripts.has(name)) {
-        if (!owner) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
-        const fresh = newSlot(name, { agent: '', title: 'New Session…', origin: 'user' });
+        const fresh = newSlot(name, { agent: '', title: 'New Session…', origin: '' });
         live.set(name, fresh);
         keep(fresh);
         return send(res, 200, { ok: true, key: name, messages: [] });

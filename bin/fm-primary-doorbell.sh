@@ -68,11 +68,12 @@
 # that runs `run` whenever state/.primary-endpoint names a Crew chat that needs
 # supervision. Crew gives every gateway process a new generation, also when a
 # dashboard restart re-executes the gateway in place under the same pid, so
-# the owner exits when the generation changes, and the service then resumes
-# the chat if Crew dropped it and sends the restart line, once per restart
+# the owner exits when the generation changes, and the service then waits for
+# Crew to restore the chat and sends the restart line, once per restart
 # (state/.primary-doorbell-crew-gen and state/.primary-doorbell-recovery). A
 # ring that finds the chat gone under the same gateway process retires the
-# record and stops the owner, because the captain closed that chat.
+# record and stops the owner, because the captain closed that chat; a chat
+# Crew does not let the firstmate app message records a continuity failure.
 #
 # SUPERVISION HOST. When the home runs the host (fm_supervision_host_enabled:
 # config/supervision-host and no config/supervision-host-off, read at every
@@ -111,8 +112,9 @@
 # FM_PRIMARY_DOORBELL_FAILURE_COOLDOWN (default 300), FM_GUARD_GRACE (300),
 # FM_PRIMARY_DOORBELL_SERVE_POLL (the service's poll, default 2, fractions
 # accepted), FM_PRIMARY_DOORBELL_RECOVER_TIMEOUT (seconds one restart recovery
-# may take, default 600), FM_PRIMARY_DOORBELL_CREW_CHECK (seconds between two
-# reads of the Crew gateway generation, default 15).
+# may take, default 600), FM_PRIMARY_DOORBELL_RESTORE_GRACE (seconds a recovery
+# waits for Crew to restore the chat, default 60), FM_PRIMARY_DOORBELL_CREW_CHECK
+# (seconds between two reads of the Crew gateway generation, default 15).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -145,6 +147,7 @@ POLL=$(poll_seconds "${FM_PRIMARY_DOORBELL_POLL:-}" 1)
 SERVE_POLL=$(poll_seconds "${FM_PRIMARY_DOORBELL_SERVE_POLL:-}" 2)
 READY_TIMEOUT=$(positive_int "${FM_PRIMARY_DOORBELL_READY_TIMEOUT:-}" 20)
 RECOVER_TIMEOUT=$(positive_int "${FM_PRIMARY_DOORBELL_RECOVER_TIMEOUT:-}" 600)
+RESTORE_GRACE=$(positive_int "${FM_PRIMARY_DOORBELL_RESTORE_GRACE:-}" 60)
 case "${FM_PRIMARY_DOORBELL_CREW_CHECK:-}" in
   ''|*[!0-9]*) CREW_CHECK=15 ;;
   *) CREW_CHECK=$FM_PRIMARY_DOORBELL_CREW_CHECK ;;
@@ -344,7 +347,10 @@ ring_if_pending() {
     return 0
   fi
   if ! fm_primary_endpoint_ring_kiro "$STATE" "$FM_ROOT" "$FM_HOME" "$RING_KIND"; then
-    [ "$FM_PRIMARY_ENDPOINT_RING_RESULT" != absent ] || crew_chat_gone
+    case "$FM_PRIMARY_ENDPOINT_RING_RESULT" in
+      absent) crew_chat_gone ;;
+      forbidden) crew_chat_forbidden ;;
+    esac
     return 1
   fi
   RING_WANTED=0
@@ -361,6 +367,7 @@ ring_if_pending() {
 # signal.
 recorded_gen() {  # <chat>
   local chat gen
+  [ -f "$GEN_RECORD" ] || return 1
   IFS=$'\t' read -r chat gen < "$GEN_RECORD" 2>/dev/null || return 1
   [ "$chat" = "$1" ] && [ -n "$gen" ] || return 1
   printf '%s' "$gen"
@@ -416,6 +423,16 @@ crew_chat_gone() {
   ! crew_restarted "$SERVED_CHAT" "$SERVED_PID" "$SERVED_IDENTITY" || exit 0
   fm_primary_endpoint_retire_crew "$STATE" "$SERVED_CHAT" "$SERVED_PID"
   exit 0
+}
+
+# Kiro Crew refuses the firstmate app every message to the served chat, which
+# is not the app's own chat or the captain's own (bin/fm-kirocrew.mjs ring).
+# No retry changes that, so the owner records a continuity failure, which
+# `ensure` and the service respect for the cooldown, and exits.
+crew_chat_forbidden() {
+  printf '%s\t%s\n' "$(date +%s)" "Kiro Crew does not let the firstmate app message the chat $SERVED_CHAT; open the primary with bin/fm-kirocrew-primary.sh" \
+    > "$FAILURE_RECORD" 2>/dev/null || true
+  exit 1
 }
 
 start_arm() {  # <predecessor-arm-pid>
@@ -595,18 +612,21 @@ cmd_run() {
 # ---- doorbell service (Kiro Crew) --------------------------------------------
 
 # The doorbell service's recovery after a Kiro Crew gateway restart
-# (crew_restarted). Crew dropped the turn in flight, and maybe the chat itself
-# with its transcript kept. The service resumes a chat Crew does not list, and,
-# when the home needs supervision or main has something pending, sends the
-# restart line, whose turn makes the Kiro hook take the helm again. Then it
-# records the new generation, so each restart is recovered once. A gateway that
-# does not answer within RECOVER_TIMEOUT is waited for again on a later check.
-# A chat missing under the same gateway process was closed by the captain, and
-# the owner retires its record (crew_chat_gone); a lock that moved to another
-# pid belongs to another session, so its record is not recovered either.
+# (crew_restarted). Crew dropped the turn in flight and restores the captain's
+# open chats a moment after it starts, so the service waits up to
+# RESTORE_GRACE seconds for the chat to be listed. Then, when the home needs
+# supervision or main has something pending, it sends the restart line, whose
+# turn makes the Kiro hook take the helm again. It records the new generation,
+# so each restart is recovered once. A chat Crew does not restore stays down:
+# the firstmate app may resume only its own chats, so the captain reopens the
+# primary with bin/fm-kirocrew-primary.sh. A gateway that does not answer
+# within RECOVER_TIMEOUT is waited for again on a later check. A chat missing
+# under the same gateway process was closed by the captain, and the owner
+# retires its record (crew_chat_gone); a lock that moved to another pid belongs
+# to another session, so its record is not recovered either.
 SERVE_CHECKED_AT=0
 serve_recover() {  # [<force>]
-  local pid identity chat episode deadline line outcome rc now
+  local pid identity chat episode deadline restore_until line outcome now
   [ ! -e "$STATE/.afk" ] || return 0
   fm_primary_endpoint_read "$STATE" "$FM_ROOT" "$FM_HOME" || return 0
   [ "$FM_PRIMARY_ENDPOINT_REC_BACKEND" = kirocrew ] || return 0
@@ -624,21 +644,22 @@ serve_recover() {  # [<force>]
   [ "$(cut -f1 "$RECOVERY_RECORD" 2>/dev/null | head -n 1)" != "$episode" ] || return 0
   line=$(fm_primary_endpoint_restart_line "$FM_ROOT") || return 0
   deadline=$(( now + RECOVER_TIMEOUT ))
+  restore_until=$(( now + RESTORE_GRACE ))
   outcome=
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if [ "$FM_PRIMARY_ENDPOINT_CREW_STATE" = absent ]; then
-      rc=0
-      fm_primary_endpoint_crew_resume "$STATE" "$FM_HOME" "$chat" || rc=$?
-      # Exit 5: Crew has no transcript for the chat, so nothing can bring it back.
-      if [ "$rc" = 5 ]; then
-        outcome="Kiro Crew has no transcript to resume the chat $chat from"
+      if [ "$(date +%s)" -ge "$restore_until" ]; then
+        outcome="Kiro Crew did not restore the chat $chat; reopen it with bin/fm-kirocrew-primary.sh"
         break
       fi
     elif ! fm_supervision_needed "$STATE" "$GRACE" && ! main_pending; then
-      outcome='resumed; nothing to supervise, so no restart line'
+      outcome='restored; nothing to supervise, so no restart line'
       break
     elif fm_primary_endpoint_ring_crew "$STATE" "$FM_HOME" "$chat" "$line"; then
       outcome=rung
+      break
+    elif [ "$FM_PRIMARY_ENDPOINT_RING_RESULT" = forbidden ]; then
+      outcome="Kiro Crew does not let the firstmate app message the chat $chat"
       break
     fi
     sleep "$SERVE_POLL"

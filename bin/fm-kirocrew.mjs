@@ -20,7 +20,7 @@
 // gateway that accepts the connection and never answers fails as unreachable.
 //
 // CLI verbs (plain key=value output, exit 0 ok, 2 usage, 3 unreachable,
-// 4 auth, 5 not found, 6 refused, 7 invalid):
+// 4 auth, 5 not found, 6 refused, 7 invalid, 8 a chat the app may not control):
 //   (every verb also takes --config-dir <dir> and --state-dir <dir>)
 //   fm-kirocrew.mjs config  --home <fm-home>
 //   fm-kirocrew.mjs ping    --home <fm-home>
@@ -35,12 +35,13 @@
 //       listed chat, or empty when Crew lists none
 //   fm-kirocrew.mjs ring    --home <fm-home> --slot <name> --message <text>
 //       send one message only while the chat is idle: exit 5 when Crew does not
-//       list the chat, 6 when it is not idle (bin/fm-primary-endpoint-lib.sh)
-//   fm-kirocrew.mjs resume  --home <fm-home> --slot <name>
-//       restore a chat that a gateway restart dropped, with Trust requested again
-//       (bin/fm-primary-doorbell.sh serve)
-// The app's consent ("Enable and allow chat control") lets it list, message,
-// and resume every chat of the instance, the captain's own chats included.
+//       list the chat, 6 when it is not idle, 8 when the app may not control it
+//       (bin/fm-primary-endpoint-lib.sh)
+// The app's consent ("Enable and allow chat control") lets it list every chat
+// of the instance, and message the app's own chats and the captain's own
+// chats, the ones whose origin is `user`. Crew refuses it every other chat,
+// such as one a resume opened with no recorded origin, and it may resume only
+// a transcript the app owns.
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -51,7 +52,7 @@ export const DEFAULT_AGENT = 'firstmate-worker';
 // The git repository whose apps/firstmate/app.json Crew installs the app from.
 export const DEFAULT_APP_REGISTRY = 'https://github.com/shishiv/firstmate';
 
-const EXIT = { usage: 2, unreachable: 3, auth: 4, not_found: 5, refused: 6, invalid: 7 };
+const EXIT = { usage: 2, unreachable: 3, auth: 4, not_found: 5, refused: 6, invalid: 7, uncontrolled: 8 };
 const TIMEOUT_MS = Number(process.env.FM_KIROCREW_TIMEOUT_MS) || 15000;
 
 export class CrewError extends Error {
@@ -202,6 +203,7 @@ export function parseSlot(raw) {
     effort: raw.reasoning_effort || '',
     trust: Boolean(raw.trust),
     app: raw.app || '',
+    origin: raw.origin || '',
     // One random value per gateway process (Crew's chunk generation), so a
     // changed value means the gateway restarted, even when a dashboard restart
     // re-executed it under the same pid.
@@ -366,15 +368,17 @@ async function main(argv) {
       if (typeof args.slot !== 'string' || typeof args.message !== 'string' || !args.message) throw new CrewError('usage', 'ring needs --slot and --message');
       const slot = await findSlot(cfg, args.slot);
       if (!slot) throw new CrewError('not_found', `Kiro Crew does not list the chat ${args.slot}`);
+      if (slot.app !== APP_NAME && slot.origin !== 'user') {
+        throw new CrewError('uncontrolled', `the firstmate app may not message the chat ${args.slot}, whose origin is ${slot.origin || 'unrecorded'}`);
+      }
       if (slot.state !== 'idle') throw new CrewError('refused', `the chat ${args.slot} is ${slot.state}`);
-      console.log(`rung=${slot.key} delivery=${await sendMessage(cfg, slot.key, args.message)}`);
-      return;
-    }
-    case 'resume': {
-      if (typeof args.slot !== 'string') throw new CrewError('usage', 'resume needs --slot');
-      const slot = await resumeSlot(cfg, args.slot);
-      if (!slot) throw new CrewError('not_found', `Kiro Crew resumed the chat ${args.slot} but does not list it`);
-      console.log(`resumed=${slot.key} trust=${await requestTrust(cfg, slot.key)}`);
+      try {
+        console.log(`rung=${slot.key} delivery=${await sendMessage(cfg, slot.key, args.message)}`);
+      } catch (err) {
+        // Crew answers a send it refuses on a listed chat with its uniform 404.
+        if (err instanceof CrewError && err.code === 'not_found') throw new CrewError('uncontrolled', `Kiro Crew refused the firstmate app's message to the chat ${args.slot}`, err.detail);
+        throw err;
+      }
       return;
     }
     case 'probe': {
@@ -388,7 +392,7 @@ async function main(argv) {
       return;
     }
     default:
-      throw new CrewError('usage', 'usage: fm-kirocrew.mjs config|ping|slots|close|probe|state|ring|resume --home <fm-home> [...]');
+      throw new CrewError('usage', 'usage: fm-kirocrew.mjs config|ping|slots|close|probe|state|ring --home <fm-home> [...]');
   }
 }
 
