@@ -98,7 +98,8 @@ A new tool remains undispatchable until the `verify` plan, its harness entry, ev
     "devin": "references/harness/devin.md",
     "commandcode": "references/harness/commandcode.md",
     "polytoken": "references/harness/polytoken.md",
-    "kiro-cli": "references/harness/kiro.md"
+    "kiro-cli": "references/harness/kiro.md",
+    "kirocrew": "references/harness/kirocrew.md"
   }
 }
 ```

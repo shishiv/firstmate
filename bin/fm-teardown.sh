@@ -351,9 +351,10 @@
 #     closed and the work proved landed, bin/fm-task-resources-stop.sh stops
 #     the processes whose environment proves this task of this home started
 #     them (dev servers), brings down the Compose project fm-<id> without
-#     removing its volumes, and removes the task's big folders named by
-#     config/task-cleanup-dirs, never a shared build cache. It owns those
-#     proofs and refusals. Best effort: it never blocks cleanup.
+#     removing its volumes, removes the task's big folders named by
+#     config/task-cleanup-dirs, never a shared build cache, and closes a
+#     kirocrew worker's Kiro Crew chat. It owns those proofs and refusals.
+#     Best effort: it never blocks cleanup.
 # After Fix 1 and Fix 2, when config/pipeline-spend opts this home in, a ship
 # task whose local copy this teardown owns has its no-mistakes pipeline spend
 # recorded by bin/fm-pipeline-spend.sh, which owns the attribution and the
@@ -4189,7 +4190,7 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/$ID.reconcile-nudged" "$STATE/$ID.gemini-settings.json" \
   "$STATE/$ID.claude-settings.json" "$STATE/$ID.devin-config.json" \
-  "$STATE/$ID.polytoken-busy.sh" \
+  "$STATE/$ID.polytoken-busy.sh" "$STATE/$ID.kirocrew-slot" \
   "$STATE/.$ID.branch-outcome-index" "$STATE/$ID.unclosed-relay" \
   "$STATE/.secondmate-relaunch-$ID" "$STATE/.secondmate-relaunch-bound-$ID"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the

@@ -36,6 +36,9 @@
 #                    cancellation emits no Stop, so control invalidates to unknown.
 #   commandcode-mod  Command Code per-task mod (run_start opens; run_end, including
 #                    an Escape interrupt, and session end close)
+#   kirocrew-client  bin/fm-kirocrew-run.mjs, from the turn flags Kiro Crew reports
+#                    for the task's chat (a turn start opens; a turn end, an
+#                    interrupt, and the program's exit close)
 #   gemini-hook      Gemini agent hooks (BeforeAgent opens; AfterAgent and
 #                    SessionEnd close)
 #   kiro-hook        Kiro V2/V3 hooks (UserPromptSubmit opens, Stop closes,
@@ -248,6 +251,7 @@ fm_busy_sources_for_harness() {  # <harness>
     devin) adapter=devin-hook ;;
     kiro-cli) adapter=kiro-hook ;;
     commandcode) adapter=commandcode-mod ;;
+    kirocrew) adapter=kirocrew-client ;;
     polytoken) adapter=polytoken-hook ;;
     pi|pi-signed) adapter=pi-ext ;;
     omp) adapter=omp-ext ;;

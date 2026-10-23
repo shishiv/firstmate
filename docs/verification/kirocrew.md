@@ -1,0 +1,53 @@
+# Kiro Crew (kirocrew) verification
+
+This page records the live evidence behind the `kirocrew` adapter contract in [the harness reference](../../.agents/skills/harness-adapters/references/harness/kirocrew.md).
+`tests/fm-kirocrew-harness.test.sh` replays these facts against `tests/fixtures/fm-kirocrew-fake-gateway.mjs` and needs no Crew install.
+
+## Setup verified
+
+- 2026-10-22, Linux, KiroCrew `main` 0be5bcd9 (version 0.11.0; the stable channel then offered 0.9.0, which was not checked), Python 3.12.14, kiro-cli 2.33.1, Herdr 0.9.5, tmux, Node 26.
+- An isolated gateway: its own data home, `KIRO_HOME=<data home>/kiro`, port 5477, no service, no tunnel, `agent.acp_backend=kas` (the "Kiro Agent" engine), auto-update and telemetry off.
+- The first live runs approved tools through Crew's ad hoc auto-approve (YOLO). The Trust run below ran with YOLO off.
+
+## Gateway facts
+
+| Fact | Evidence |
+|---|---|
+| A self-managed app registers with `POST /api/apps/register` as the dashboard owner, and Crew writes `<data home>/apps/<app>/.app_secret`. The registration answer also carries the secret. `POST /api/security/trusted-apps/<app>` as the owner puts the app on Crew's trusted apps list. The `firstmate` manifest asks for `permissions {api: ["/api/chat"], events: ["slots:own"], sessionApproval: true}` and names `minKiroCrewVersion` 0.11.0. | HTTP 201 on registration; `bin/fm-kirocrew-setup.sh` against the lab gateway: trusted-apps accepted, the owner cookie passed to curl on stdin and in none of its arguments, `--check` printed `agent=firstmate-worker` and `trust=not-granted` before the consent and `trust=granted` after it |
+| The 0.11.0 dashboard shows no Enable button for a self-managed app (`resources: app`). Its detail page shows only Installed and Uninstall, and the Library's enable sends no consent and then opens that same page. `POST /api/apps/<app>/enable {sessionApprovalConsent: true}` from the owner's dashboard session, the request the dashboard's own enable sends, enables the app and records the consent. | the captain's screenshot of `/apps/detail/firstmate`; `website/src/pages/AppDetailPage.tsx`; the captain ran that request in the browser console on that page, and `installed.json` then read `enabled: true`, `sessionApprovalConsentPending: false` |
+| The consent reaches past the app's own chats. Crew's permission text says the app can send messages, approve or deny tool prompts, and switch the approval mode in the owner's chats, and after the consent the app's chat list also showed the owner's own chats. | detail page permission text; `GET /api/chat/slots` as the app listed the owner's `chat-3-…` and mate chats |
+| `POST /api/apps/<app>/token` with `X-App-Secret` returns an app token that works as the `mc_token_<port>` cookie; a loopback request without an Origin header passes the CSRF barrier. The token survived gateway restarts. | `GET /api/chat/slots` HTTP 200 as the app |
+| `POST /api/chat/slots {name, agent, agent_kind: "template", memory_mode: "temporary", title}` creates a chat owned by the app (`app=firstmate`, `origin=app`). An agent file added after the gateway started answers 409 `agent_choice_unavailable` until a restart. | slot rows |
+| `POST .../project {project}`, `.../model {model}`, `.../reasoning-effort {reasoning_effort}`, `.../turn-timeout {secs}` apply to the app's own chat. `PATCH .../muted` answers 403 `muted_user_only` to an app. | HTTP 200 and 403 |
+| `POST /api/chat?ws=1 {slot, message}` answers a receipt and runs the turn on the gateway; a busy chat answers `{queued: true}`. App messages never steer a running turn: `steer: true` queues too. A 60,288-character message arrived whole. | slot history |
+| Crew starts an app's turn before it sends the `ws=1` receipt, so the next chat read already shows `running`. The handler spawns the turn task first (`chat_api/chat_send.py`), and `running` reads that task (`ChatSlot.turn_running`). | lab probe: receipt after 6 ms, the chat read 12 ms later showed the turn running, the turn ended after 10.9 s |
+| `POST .../stop` cancels the running turn and keeps the chat. `POST .../interrupt` answers 400 `queue empty, use /stop instead` when nothing is queued. | live runs |
+| In Normal mode every shell and file tool asks for approval; an agent file cannot pre-approve them on the Kiro Agent engine (`WITHHELD_FROM_AUTO_APPROVE`). `POST /api/chat/mode {mode: "trust", slot}` answers 403 `session_approval_not_granted` without the app's `sessionApproval` permission, and Crew accepts that consent only from its dashboard (`session_approval_consent_required` from the API and the CLI). An unanswered approval expires after 180 s as a refusal. | HTTP 403; expired approval row |
+| A gateway restart drops the live chats and the turn in flight, keeps the transcripts, and resets YOLO. `POST .../resume {key: "dashboard_<chat>"}` restores the chat with agent, project, model, effort and conversation memory. A chat with no messages is not saved. | resumed chat recalled an earlier marker |
+| `DELETE /api/chat/slots/<chat>` closes the chat and keeps its transcript in the owner's session list. | `GET /api/sessions` as owner |
+| A worker on the `firstmate-worker` agent ran `git ls-remote` over SSH from its key file with no SSH agent, read `gh auth status` from the keyring, and called a project agent from `<project>/.kiro/agents/` through its sub-agent tool. | chat transcripts |
+| Every gateway start links `~/.local/bin/kirocrew` to its own launcher when the name is free. | `ls -la ~/.local/bin/kirocrew` after a start |
+
+## Live firstmate runs
+
+The runs before `kc-trust3` approved tools through the lab's YOLO.
+
+| Run | Result |
+|---|---|
+| `fm-spawn.sh kc-trust3 ... --scout --harness kirocrew --backend tmux` with the app consented and YOLO off (`/api/admin/compliance/yolo-status` read `active: false` before and after) | Crew put the chat in Trust mode (`trust: true`). Both shell tool calls ran with no approval wait, and Crew's security event log records each one as `auto_approved` with `reason: trust`. The worker wrote its report and `done` line 26 s after the spawn. `fm-teardown.sh kc-trust3` printed `Kiro Crew chat … of kc-trust3 is closed`, and the chat left Crew's live list. |
+| `fm-spawn.sh kc-live2 ... --scout --harness kirocrew --backend tmux` in a lab home on a private tmux server | The pane ran the program; Crew showed the chat `firstmate · kc-live2` in its sidebar, with the agent, project, model and effort in the chat footer; the worker wrote its report and `done` line; the busy record ended `idle kirocrew-client` with the turn-ended wake; `fm-crew-state.sh` read `done`. |
+| `fm-send.sh kc-live2 ...` | The doorbell landed, the record went busy (`user-message`), and the worker read its inbox. Its shell has no `FM_TASK_INBOX`, so it listed the full inbox path from its brief (`find '<state>/kc-live2.inbox' ...` in the chat transcript). |
+| `fm-control.sh kc-live2 interrupt` | `interrupt-delivered ... verified=agent-alive`; Crew recorded a soft stop; the record went `idle` (`interrupted`) without a wake. |
+| `fm-control.sh kc-live2 relaunch` | The new program resumed the same chat (`(resumed)`), received the relaunch brief, and the worker continued from its inbox. |
+| `fm-spawn.sh kc-live3 ... --backend herdr` in an isolated Herdr lab session (`bin/fm-herdr-lab.sh`) | Same outcome as tmux. Before the program registered with Herdr, firstmate read the live pane as `dead`; after it, `herdr agent list` showed the pane as agent `kirocrew`, and `fm-send`, `fm-control interrupt` and `relaunch` worked. |
+| `fm-control.sh kc-live3 exit` | The program closed the chat and exited. |
+
+## Not verified
+
+- A gateway with neither Trust nor YOLO, where every tool waits for an approval: the program's status row and its Herdr `blocked` report during that wait have not run live.
+- KiroCrew 0.9.0 (stable). The manifest names 0.11.0 as its minimum.
+- The kernel process name `fm-kirocrew` outside Linux.
+
+## Refresh
+
+Repeat the lab runs after a Crew release that touches app routes, chat routes, approvals, or restart handling, and after a Herdr release that changes `pane report-agent`.

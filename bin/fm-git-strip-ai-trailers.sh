@@ -73,6 +73,13 @@
 # managers therefore cannot install from inside fleet panes until a registered
 # project genuinely needs it. Whoever removes the directory restores the owner
 # write bit first.
+#
+# ACCEPTED RESIDUAL, ruled 2026-10-22. A kirocrew worker's git runs inside the
+# captain's Kiro Crew gateway, not under the pane, so it never reads this
+# directory and its commits keep any AI trailer. The gap touches only commit
+# message text; the push guard this directory also carries is the safety part,
+# and bin/fm-spawn.sh refuses a kirocrew ship on a forge=external project
+# rather than run it without that guard.
 set -u
 unset CDPATH
 

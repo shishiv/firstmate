@@ -4,7 +4,7 @@
 # Usage: fm-task-resources-stop.sh <task-id>
 #
 # bin/fm-teardown.sh calls this once the task's work is proved landed and its
-# endpoint is closed. Three things outlive a worker that is gone, each released
+# endpoint is closed. Four things outlive a worker that is gone, each released
 # here by exact ownership and never by a name pattern:
 #
 #   1. Processes the task started (dev servers, watchers, anything backgrounded).
@@ -33,6 +33,12 @@
 #      Shared build caches are never removed, whatever a template expands to:
 #      a folder that is, contains, or lies inside /var/tmp/fm-cliente-base or
 #      ~/.cache/lloegrys is refused. Docker volumes are never touched here.
+#   4. The Kiro Crew chat of a kirocrew worker, named in
+#      state/<id>.kirocrew-slot. bin/fm-kirocrew-run.mjs closes it when it
+#      exits, but a killed program or a pane that was already gone leaves it
+#      open in the captain's Crew. It is closed through bin/fm-kirocrew.mjs,
+#      which treats a chat Crew no longer has as closed. Crew keeps the
+#      transcript of a closed chat.
 #
 # Best effort: it prints one line per thing released or left, exits 0 either
 # way so cleanup never fails over a leak, and exits 2 on a usage error.
@@ -256,7 +262,27 @@ remove_task_dirs() {
   done < "$file"
 }
 
+# --- 4. the task's Kiro Crew chat --------------------------------------------
+
+close_kirocrew_chat() {
+  local file="$TASK_STATE/$ID.kirocrew-slot" chat out
+  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  chat=$(tr -d '[:space:]' < "$file")
+  [ -n "$chat" ] || return 0
+  if ! command -v node >/dev/null 2>&1; then
+    echo "warning: node is not on PATH; Kiro Crew chat $chat of $ID was not closed" >&2
+    return 0
+  fi
+  if out=$(node "$SCRIPT_DIR/fm-kirocrew.mjs" close --home "$FM_HOME" --config-dir "$CONFIG" \
+      --state-dir "$TASK_STATE" --slot "$chat" 2>&1); then
+    echo "teardown: Kiro Crew chat $chat of $ID is closed (Crew keeps its transcript)" >&2
+  else
+    echo "warning: Kiro Crew chat $chat of $ID may still be open: ${out#fm-kirocrew: }" >&2
+  fi
+}
+
 stop_marked_processes
 stop_compose_project
 remove_task_dirs
+close_kirocrew_chat
 exit 0

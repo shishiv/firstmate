@@ -214,6 +214,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/harness-adapters/references/harness/kirocrew.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/harness-adapters/references/harness/kiro.md",
       "audience": "agent-runtime"
     },
@@ -531,6 +535,10 @@
     },
     {
       "path": "docs/verification/muse.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/kirocrew.md",
       "audience": "maintainer-verification"
     },
     {
