@@ -31,7 +31,8 @@
 //       granted Trust to the app, then close it (bin/fm-kirocrew-setup.sh --check)
 //   fm-kirocrew.mjs state   --home <fm-home> --slot <name>
 //       state=idle|working|approval|queued, or state=absent when Crew does not
-//       list the chat
+//       list the chat, then gen=<the gateway process generation>, read from any
+//       listed chat, or empty when Crew lists none
 //   fm-kirocrew.mjs ring    --home <fm-home> --slot <name> --message <text>
 //       send one message only while the chat is idle: exit 5 when Crew does not
 //       list the chat, 6 when it is not idle (bin/fm-primary-endpoint-lib.sh)
@@ -201,6 +202,10 @@ export function parseSlot(raw) {
     effort: raw.reasoning_effort || '',
     trust: Boolean(raw.trust),
     app: raw.app || '',
+    // One random value per gateway process (Crew's chunk generation), so a
+    // changed value means the gateway restarted, even when a dashboard restart
+    // re-executed it under the same pid.
+    gen: typeof raw.turn_gen === 'string' ? raw.turn_gen : '',
   };
 }
 
@@ -351,8 +356,10 @@ async function main(argv) {
       return;
     case 'state': {
       if (typeof args.slot !== 'string') throw new CrewError('usage', 'state needs --slot');
-      const slot = await findSlot(cfg, args.slot);
-      console.log(`state=${slot ? slot.state : 'absent'}`);
+      const slots = await listSlots(cfg);
+      const slot = slots.find((s) => s.key === args.slot);
+      const gen = (slot || slots.find((s) => s.gen) || {}).gen || '';
+      console.log(`state=${slot ? slot.state : 'absent'} gen=${gen}`);
       return;
     }
     case 'ring': {

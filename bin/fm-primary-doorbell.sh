@@ -66,11 +66,13 @@
 # user unit (`unit`, installed by bin/fm-kirocrew-setup.sh --primary) runs
 # `serve` instead: one process per home (state/.primary-doorbell-service.lock)
 # that runs `run` whenever state/.primary-endpoint names a Crew chat that needs
-# supervision. After a gateway restart it resumes the chat once per dead
-# gateway pid and sends the restart line, so the chat's next prompt retakes the
-# lock (state/.primary-doorbell-recovery records each recovery). A ring that
-# finds the chat gone under a live gateway retires the record and stops the
-# owner, because the captain closed that chat.
+# supervision. Crew gives every gateway process a new generation, also when a
+# dashboard restart re-executes the gateway in place under the same pid, so
+# the owner exits when the generation changes, and the service then resumes
+# the chat if Crew dropped it and sends the restart line, once per restart
+# (state/.primary-doorbell-crew-gen and state/.primary-doorbell-recovery). A
+# ring that finds the chat gone under the same gateway process retires the
+# record and stops the owner, because the captain closed that chat.
 #
 # SUPERVISION HOST. When the home runs the host (fm_supervision_host_enabled:
 # config/supervision-host and no config/supervision-host-off, read at every
@@ -97,9 +99,10 @@
 # .primary-doorbell-failed (continuity-failure episode: epoch and reason),
 # .primary-doorbell-note (supervision-host lines for the next doorbell turn;
 # the hook that attaches it prints only its newest 8 KB),
-# .primary-doorbell-service.lock (the doorbell service's singleton) and
-# .primary-doorbell-recovery (the last restart recovery: dead gateway pid,
-# outcome, epoch).
+# .primary-doorbell-service.lock (the doorbell service's singleton),
+# .primary-doorbell-crew-gen (the Crew chat and the gateway generation it was
+# last served under), and .primary-doorbell-recovery (the last restart
+# recovery: its generation, outcome, and epoch).
 #
 # Tunables: FM_PRIMARY_DOORBELL_POLL (seconds between polls, default 1; a
 # fraction such as 0.2 is accepted),
@@ -108,7 +111,8 @@
 # FM_PRIMARY_DOORBELL_FAILURE_COOLDOWN (default 300), FM_GUARD_GRACE (300),
 # FM_PRIMARY_DOORBELL_SERVE_POLL (the service's poll, default 2, fractions
 # accepted), FM_PRIMARY_DOORBELL_RECOVER_TIMEOUT (seconds one restart recovery
-# may take, default 600).
+# may take, default 600), FM_PRIMARY_DOORBELL_CREW_CHECK (seconds between two
+# reads of the Crew gateway generation, default 15).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,6 +129,7 @@ OWNER_LOCK="$STATE/.primary-doorbell.lock"
 FAILURE_RECORD="$STATE/.primary-doorbell-failed"
 SERVICE_LOCK="$STATE/.primary-doorbell-service.lock"
 RECOVERY_RECORD="$STATE/.primary-doorbell-recovery"
+GEN_RECORD="$STATE/.primary-doorbell-crew-gen"
 WAKE_RE='^(signal:|stale:|check:|heartbeat($|:))'
 
 positive_int() {  # <value> <default>
@@ -140,6 +145,10 @@ POLL=$(poll_seconds "${FM_PRIMARY_DOORBELL_POLL:-}" 1)
 SERVE_POLL=$(poll_seconds "${FM_PRIMARY_DOORBELL_SERVE_POLL:-}" 2)
 READY_TIMEOUT=$(positive_int "${FM_PRIMARY_DOORBELL_READY_TIMEOUT:-}" 20)
 RECOVER_TIMEOUT=$(positive_int "${FM_PRIMARY_DOORBELL_RECOVER_TIMEOUT:-}" 600)
+case "${FM_PRIMARY_DOORBELL_CREW_CHECK:-}" in
+  ''|*[!0-9]*) CREW_CHECK=15 ;;
+  *) CREW_CHECK=$FM_PRIMARY_DOORBELL_CREW_CHECK ;;
+esac
 RETRY_LIMIT=$(positive_int "${FM_PRIMARY_DOORBELL_RETRY_LIMIT:-}" 5)
 FAILURE_COOLDOWN=$(positive_int "${FM_PRIMARY_DOORBELL_FAILURE_COOLDOWN:-}" 300)
 
@@ -343,15 +352,69 @@ ring_if_pending() {
   RUNG_SEQ=$seq
 }
 
-# Kiro Crew stopped listing the served chat. Under the same live gateway that
-# means the captain closed it, so this owner retires the record and exits; a
-# gateway that died meanwhile leaves the record to the doorbell service's
-# restart recovery.
+# ---- Kiro Crew gateway restarts ----------------------------------------------
+
+# The Kiro Crew gateway generation the home's chat was last served under
+# (state/.primary-doorbell-crew-gen: <chat> TAB <gen>). Crew gives every gateway
+# process a new generation, also when a dashboard restart re-executes the
+# gateway in place under the same pid, so a changed generation is the restart
+# signal.
+recorded_gen() {  # <chat>
+  local chat gen
+  IFS=$'\t' read -r chat gen < "$GEN_RECORD" 2>/dev/null || return 1
+  [ "$chat" = "$1" ] && [ -n "$gen" ] || return 1
+  printf '%s' "$gen"
+}
+
+record_gen() {  # <chat> <gen>
+  [ -n "$2" ] || return 0
+  if printf '%s\t%s\n' "$1" "$2" > "$GEN_RECORD.$$" 2>/dev/null; then
+    mv -f -- "$GEN_RECORD.$$" "$GEN_RECORD" 2>/dev/null || rm -f -- "$GEN_RECORD.$$"
+  fi
+}
+
+# True when the gateway restarted since the home last served Kiro Crew chat
+# <chat>: Crew reports another generation, or, when Crew lists no chat to read
+# a generation from, the recorded gateway pid died or changed identity. A first
+# sight records the generation. Reads the last fm_primary_endpoint_crew_observe.
+crew_restarted() {  # <chat> <gateway-pid> <gateway-identity>
+  local was
+  if [ -n "$FM_PRIMARY_ENDPOINT_CREW_GEN" ]; then
+    if was=$(recorded_gen "$1"); then
+      [ "$was" != "$FM_PRIMARY_ENDPOINT_CREW_GEN" ]
+      return
+    fi
+    record_gen "$1" "$FM_PRIMARY_ENDPOINT_CREW_GEN"
+    return 1
+  fi
+  [ "$(fm_pid_identity "$2" 2>/dev/null || true)" != "$3" ]
+}
+
+# False when the gateway restarted under the served Kiro Crew chat, checked at
+# most every CREW_CHECK seconds; the owner then exits and the doorbell service
+# recovers the chat. A gateway that does not answer gives no verdict.
+SERVED_CHAT=
+CREW_CHECKED_AT=0
+crew_still_same() {
+  local now
+  [ -n "$SERVED_CHAT" ] || return 0
+  now=$(date +%s)
+  [ $((now - CREW_CHECKED_AT)) -ge "$CREW_CHECK" ] || return 0
+  CREW_CHECKED_AT=$now
+  fm_primary_endpoint_crew_observe "$STATE" "$FM_HOME" "$SERVED_CHAT" || return 0
+  ! crew_restarted "$SERVED_CHAT" "$SERVED_PID" "$SERVED_IDENTITY"
+}
+
+# Kiro Crew stopped listing the served chat. Under the same gateway process
+# that means the captain closed it, so this owner retires the record and exits;
+# a restarted gateway leaves the record to the doorbell service's recovery.
 crew_chat_gone() {
   sleep 2
   still_serving || exit 0
-  [ "$(fm_primary_endpoint_crew_state "$STATE" "$FM_HOME" "$FM_PRIMARY_ENDPOINT_TARGET" 2>/dev/null)" = absent ] || return 0
-  fm_primary_endpoint_retire_crew "$STATE" "$FM_PRIMARY_ENDPOINT_TARGET" "$SERVED_PID"
+  fm_primary_endpoint_crew_observe "$STATE" "$FM_HOME" "$SERVED_CHAT" || return 0
+  [ "$FM_PRIMARY_ENDPOINT_CREW_STATE" = absent ] || return 0
+  ! crew_restarted "$SERVED_CHAT" "$SERVED_PID" "$SERVED_IDENTITY" || exit 0
+  fm_primary_endpoint_retire_crew "$STATE" "$SERVED_CHAT" "$SERVED_PID"
   exit 0
 }
 
@@ -483,9 +546,12 @@ cmd_run() {
   SERVED_PID=$FM_PRIMARY_ENDPOINT_PID
   SERVED_IDENTITY=$(fm_pid_identity "$SERVED_PID" 2>/dev/null || true)
   [ -n "$SERVED_IDENTITY" ] || exit 0
+  [ "$FM_PRIMARY_ENDPOINT_BACKEND" != kirocrew ] || SERVED_CHAT=$FM_PRIMARY_ENDPOINT_TARGET
+  crew_still_same || exit 0
 
   while :; do
     still_serving || exit 0
+    crew_still_same || exit 0
     if [ -z "$CHILD" ] && [ "$STOP_AFTER_RING" -eq 0 ]; then
       if fm_supervision_needed "$STATE" "$GRACE"; then
         start_arm "$PREDECESSOR" || { arm_failed "could not create the arm output file"; continue; }
@@ -528,62 +594,63 @@ cmd_run() {
 
 # ---- doorbell service (Kiro Crew) --------------------------------------------
 
-# The doorbell service's recovery after a Kiro Crew gateway restart. The
-# restart killed the gateway pid that the record and the fleet lock name, and
-# Crew dropped the live chat but kept its transcript. Once per dead gateway pid,
-# it waits for the new gateway, resumes the chat when Crew does not list it, and
-# sends the restart line, whose prompt makes the Kiro hook take the lock on the
-# new gateway and republish the record. Only a final outcome is recorded, so a
-# gateway that stays down past RECOVER_TIMEOUT is waited for again. Nothing is resumed for a gateway that
-# still runs: a chat missing under a live gateway was closed by the captain,
-# and the owner retires that record (crew_chat_gone). A lock that moved to
-# another pid belongs to another session, so its record is not recovered either.
-serve_recover() {
-  local pid chat deadline st line outcome rc
+# The doorbell service's recovery after a Kiro Crew gateway restart
+# (crew_restarted). Crew dropped the turn in flight, and maybe the chat itself
+# with its transcript kept. The service resumes a chat Crew does not list, and,
+# when the home needs supervision or main has something pending, sends the
+# restart line, whose turn makes the Kiro hook take the helm again. Then it
+# records the new generation, so each restart is recovered once. A gateway that
+# does not answer within RECOVER_TIMEOUT is waited for again on a later check.
+# A chat missing under the same gateway process was closed by the captain, and
+# the owner retires its record (crew_chat_gone); a lock that moved to another
+# pid belongs to another session, so its record is not recovered either.
+SERVE_CHECKED_AT=0
+serve_recover() {  # [<force>]
+  local pid identity chat episode deadline line outcome rc now
   [ ! -e "$STATE/.afk" ] || return 0
   fm_primary_endpoint_read "$STATE" "$FM_ROOT" "$FM_HOME" || return 0
   [ "$FM_PRIMARY_ENDPOINT_REC_BACKEND" = kirocrew ] || return 0
   pid=$FM_PRIMARY_ENDPOINT_REC_PID
+  identity=$FM_PRIMARY_ENDPOINT_REC_IDENTITY
   chat=$FM_PRIMARY_ENDPOINT_REC_TARGET
-  [ "$(fm_pid_identity "$pid" 2>/dev/null || true)" != "$FM_PRIMARY_ENDPOINT_REC_IDENTITY" ] || return 0
   [ "$(cat "$STATE/.lock" 2>/dev/null || true)" = "$pid" ] || return 0
-  [ "$(cut -f1 "$RECOVERY_RECORD" 2>/dev/null | head -n 1)" != "$pid" ] || return 0
+  now=$(date +%s)
+  [ "${1:-0}" = 1 ] || [ $((now - SERVE_CHECKED_AT)) -ge "$CREW_CHECK" ] || return 0
+  SERVE_CHECKED_AT=$now
+  fm_primary_endpoint_crew_observe "$STATE" "$FM_HOME" "$chat" || return 0
+  crew_restarted "$chat" "$pid" "$identity" || return 0
+  # With no generation to record, the dead pid's identity marks the restart.
+  episode=${FM_PRIMARY_ENDPOINT_CREW_GEN:-pid:$pid:$(printf '%s' "$identity" | cksum | cut -d' ' -f1)}
+  [ "$(cut -f1 "$RECOVERY_RECORD" 2>/dev/null | head -n 1)" != "$episode" ] || return 0
   line=$(fm_primary_endpoint_restart_line "$FM_ROOT") || return 0
-  deadline=$(( $(date +%s) + RECOVER_TIMEOUT ))
+  deadline=$(( now + RECOVER_TIMEOUT ))
   outcome=
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    # The chat may take the helm by itself first, for a prompt the captain sent.
-    if fm_primary_endpoint_read "$STATE" "$FM_ROOT" "$FM_HOME" && [ "$FM_PRIMARY_ENDPOINT_REC_PID" != "$pid" ]; then
-      outcome='the chat republished the record itself'
-      break
-    fi
-    if ! st=$(fm_primary_endpoint_crew_state "$STATE" "$FM_HOME" "$chat"); then
-      sleep 5
-      continue
-    fi
-    if [ "$st" = absent ]; then
+    if [ "$FM_PRIMARY_ENDPOINT_CREW_STATE" = absent ]; then
       rc=0
       fm_primary_endpoint_crew_resume "$STATE" "$FM_HOME" "$chat" || rc=$?
-      [ "$rc" != 0 ] || continue
       # Exit 5: Crew has no transcript for the chat, so nothing can bring it back.
       if [ "$rc" = 5 ]; then
         outcome="Kiro Crew has no transcript to resume the chat $chat from"
         break
       fi
-      sleep "$SERVE_POLL"
-      continue
-    fi
-    if fm_primary_endpoint_ring_crew "$STATE" "$FM_HOME" "$chat" "$line"; then
-      outcome='rung'
+    elif ! fm_supervision_needed "$STATE" "$GRACE" && ! main_pending; then
+      outcome='resumed; nothing to supervise, so no restart line'
+      break
+    elif fm_primary_endpoint_ring_crew "$STATE" "$FM_HOME" "$chat" "$line"; then
+      outcome=rung
       break
     fi
     sleep "$SERVE_POLL"
+    fm_primary_endpoint_crew_observe "$STATE" "$FM_HOME" "$chat" || sleep 5
   done
   [ -n "$outcome" ] || return 0
-  printf '%s\t%s\t%s\n' "$pid" "$outcome" "$(date +%s)" > "$RECOVERY_RECORD" 2>/dev/null || true
+  record_gen "$chat" "$FM_PRIMARY_ENDPOINT_CREW_GEN"
+  printf '%s\t%s\t%s\n' "$episode" "$outcome" "$(date +%s)" > "$RECOVERY_RECORD" 2>/dev/null || true
 }
 
 cmd_serve() {
+  local force=0
   reclaim_reused_lock "$SERVICE_LOCK"
   fm_lock_try_acquire "$SERVICE_LOCK" || { echo "doorbell-service: another doorbell service runs for this home"; exit 0; }
   trap 'trap - EXIT; fm_lock_release "$SERVICE_LOCK" 2>/dev/null || true' EXIT
@@ -592,12 +659,15 @@ cmd_serve() {
   trap 'exit 143' TERM
   fm_pid_identity "${BASHPID:-$$}" > "$SERVICE_LOCK/pid-identity" 2>/dev/null || exit 1
   while :; do
-    serve_recover
+    # An owner that just exited may have seen a restart, so check at once.
+    serve_recover "$force"
+    force=0
     if [ ! -e "$STATE/.afk" ] && ! failure_cooling_down \
       && fm_primary_endpoint_load "$STATE" "$FM_ROOT" "$FM_HOME" \
       && [ "$FM_PRIMARY_ENDPOINT_BACKEND" = kirocrew ] \
       && fm_supervision_needed "$STATE" "$GRACE"; then
       "$SCRIPT_DIR/fm-primary-doorbell.sh" run </dev/null >/dev/null 2>&1 || true
+      force=1
     fi
     sleep "$SERVE_POLL"
   done

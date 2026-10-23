@@ -28,7 +28,7 @@
 # Publication happens only for the session that holds the fleet lock: once at
 # SessionStart, then idempotently every turn through fm_primary_endpoint_ensure.
 # A ring revalidates the home, root, exact lock pid, process identity, outer
-# process name (`kiro-cli`, or `kirocrew` for a Crew chat), backend target, and
+# process (`kiro-cli`, or the Crew gateway for a Crew chat), backend target, and
 # empty Kiro composer or idle Crew chat; any stale, malformed, moved, busy,
 # pending, dead, or unsupported record is a quiet
 # refusal. bin/fm-primary-doorbell.sh is the only caller that rings: it owns
@@ -71,12 +71,15 @@ fm_primary_endpoint_abs_dir() {  # <directory>
   (CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)
 }
 
-# The process name the fleet-lock pid of a <backend> endpoint carries: the
-# outer `kiro-cli` frame of a pane primary, or the Kiro Crew gateway.
-fm_primary_endpoint_session_comm() {  # <backend>
+# True when <pid> is the kind of process the fleet lock of a <backend> endpoint
+# records: the outer `kiro-cli` frame of a pane primary, or the Kiro Crew
+# gateway in either of its two process forms.
+fm_primary_endpoint_session_frame() {  # <backend> <pid>
+  local comm
+  comm=$(ps -o comm= -p "$2" 2>/dev/null) || return 1
   case "$1" in
-    kirocrew) printf 'kirocrew' ;;
-    *) printf 'kiro-cli' ;;
+    kirocrew) fm_kirocrew_gateway_process_matches "$comm" "$(ps -o args= -p "$2" 2>/dev/null)" ;;
+    *) [ "${comm##*/}" = kiro-cli ] ;;
   esac
 }
 
@@ -88,11 +91,9 @@ fm_primary_endpoint_crew_chat_valid() {  # <chat>
 }
 
 fm_primary_endpoint_kiro_pid() {  # <backend>
-  local pid comm base
+  local pid
   pid=$(fm_session_lock_anchor_pid) || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  base=${comm##*/}
-  [ "$base" = "$(fm_primary_endpoint_session_comm "$1")" ] || return 1
+  fm_primary_endpoint_session_frame "$1" "$pid" || return 1
   printf '%s' "$pid"
 }
 
@@ -271,7 +272,7 @@ fm_primary_endpoint_read() {  # <state-dir> <expected-root> <expected-home>
 }
 
 fm_primary_endpoint_load() {  # <state-dir> <expected-root> <expected-home>
-  local state=$1 backend pid lock_pid='' current='' comm=''
+  local state=$1 backend pid lock_pid='' current=''
   FM_PRIMARY_ENDPOINT_BACKEND=
   FM_PRIMARY_ENDPOINT_TARGET=
   FM_PRIMARY_ENDPOINT_ROOT=
@@ -284,8 +285,7 @@ fm_primary_endpoint_load() {  # <state-dir> <expected-root> <expected-home>
   [ "$lock_pid" = "$pid" ] || return 1
   current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
   [ "$current" = "$FM_PRIMARY_ENDPOINT_REC_IDENTITY" ] || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  [ "${comm##*/}" = "$(fm_primary_endpoint_session_comm "$backend")" ] || return 1
+  fm_primary_endpoint_session_frame "$backend" "$pid" || return 1
   [ "$backend" = kirocrew ] || fm_backend_target_exists "$backend" "$FM_PRIMARY_ENDPOINT_REC_TARGET" || return 1
   FM_PRIMARY_ENDPOINT_BACKEND=$backend
   FM_PRIMARY_ENDPOINT_TARGET=$FM_PRIMARY_ENDPOINT_REC_TARGET
@@ -338,15 +338,30 @@ fm_primary_endpoint_crew_cli() {  # <state-dir> <home> <verb> [args...]
     --config-dir "${FM_CONFIG_OVERRIDE:-$home/config}" "$@"
 }
 
-# Print what Kiro Crew reports for chat <chat> (idle, working, approval,
-# queued, or absent), or fail when the gateway does not answer.
-fm_primary_endpoint_crew_state() {  # <state-dir> <home> <chat>
+# Read what Kiro Crew reports for chat <chat>: FM_PRIMARY_ENDPOINT_CREW_STATE
+# (idle, working, approval, queued, or absent) and FM_PRIMARY_ENDPOINT_CREW_GEN
+# (the gateway process generation, empty when Crew lists no chat). Fails when
+# the gateway does not answer.
+FM_PRIMARY_ENDPOINT_CREW_STATE=
+FM_PRIMARY_ENDPOINT_CREW_GEN=
+fm_primary_endpoint_crew_observe() {  # <state-dir> <home> <chat>
   local out
+  FM_PRIMARY_ENDPOINT_CREW_STATE=
+  FM_PRIMARY_ENDPOINT_CREW_GEN=
   out=$(fm_primary_endpoint_crew_cli "$1" "$2" state --slot "$3" 2>/dev/null) || return 1
   case "$out" in
-    state=?*) printf '%s' "${out#state=}" ;;
+    'state='?*' gen='*) ;;
     *) return 1 ;;
   esac
+  FM_PRIMARY_ENDPOINT_CREW_STATE=${out%% gen=*}
+  # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+  FM_PRIMARY_ENDPOINT_CREW_STATE=${FM_PRIMARY_ENDPOINT_CREW_STATE#state=}
+  FM_PRIMARY_ENDPOINT_CREW_GEN=${out##* gen=}
+  # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+  case "$FM_PRIMARY_ENDPOINT_CREW_GEN" in
+    *[!A-Za-z0-9._-]*) FM_PRIMARY_ENDPOINT_CREW_GEN= ;;
+  esac
+  return 0
 }
 
 # Restore Kiro Crew chat <chat> from its transcript after a gateway restart

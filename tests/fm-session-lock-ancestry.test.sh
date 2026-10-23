@@ -181,8 +181,10 @@ SH
 # Crew 0.11.0): its agent-file hooks run under Crew's sandbox launcher, a
 # python3.12 child of the gateway, with no kiro-cli frame at all, and its tool
 # shells run under the chat's `kiro-cli acp` runtime, also a gateway child. The
-# gateway frame is the one both share, so both must anchor on it, and a
-# `kirocrew` process that is not the gateway (a CLI call) is no harness.
+# gateway frame is the one both share, so both must anchor on it, in both of
+# the gateway's forms: its venv entry script, and the `python -m kiro_crew
+# gateway` it re-executes into on a dashboard restart. A `kirocrew` process that
+# is not the gateway (a CLI call) is no harness.
 test_kirocrew_gateway_anchors_hooks_and_tool_shells() {
   local dir fakebin got shape
   dir="$TMP_ROOT/kirocrew-run"
@@ -199,11 +201,14 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-gateway_args='/home/u/crew/venv/bin/python3.12 /home/u/crew/venv/bin/kirocrew gateway --no-open'
-[ "${FM_TEST_CREW_GATEWAY:-gateway}" = gateway ] || gateway_args='/home/u/crew/venv/bin/python3.12 /home/u/crew/venv/bin/kirocrew status'
+case "${FM_TEST_CREW_GATEWAY:-script}" in
+  script) gateway_comm=kirocrew; gateway_args='/home/u/crew/venv/bin/python3.12 /home/u/crew/venv/bin/kirocrew gateway --no-open' ;;
+  python) gateway_comm=python3.12; gateway_args='/home/u/crew/venv/bin/python3.12 -s -P -m kiro_crew gateway --no-open' ;;
+  *) gateway_comm=kirocrew; gateway_args='/home/u/crew/venv/bin/python3.12 /home/u/crew/venv/bin/kirocrew status' ;;
+esac
 case "$pid" in
-  600) c=kirocrew; a=$gateway_args; pp=1 ;;
-  601) c=python3.12; a='/usr/bin/python3.12 -I -c import kiro_crew.sandbox_launcher_program'; pp=600 ;;
+  600) c=$gateway_comm; a=$gateway_args; pp=1 ;;
+  601) c=python3.12; a='/home/u/crew/venv/bin/python3.12 -I -S /home/u/crew/run/kirocrew_sandbox_600_x1.py /bin/sh -c bin/fm-kiro-turnend-hook.sh'; pp=600 ;;
   611) c=kiro-cli-chat; a='/home/u/.local/bin/kiro-cli-chat acp --agent-engine v3 --auth-method cli'; pp=612 ;;
   612) c=kiro-cli; a='/home/u/.local/bin/kiro-cli acp --agent-engine v3 --auth-method cli'; pp=600 ;;
   1) c=systemd; a='/usr/lib/systemd/systemd --system'; pp=0 ;;
@@ -220,17 +225,21 @@ esac
 SH
   chmod +x "$fakebin/ps"
 
-  for shape in hook tool; do
-    got=$(FM_TEST_CREW_SHAPE=$shape lib_eval "$fakebin" 'fm_session_lock_anchor_pid') \
-      || fail "a Crew $shape process found no harness frame in its ancestry"
-    [ "$got" = 600 ] || fail "a Crew $shape process anchored on '$got', expected the gateway pid 600"
-    printf '600\n' > "$dir/state/.lock"
-    FM_TEST_CREW_SHAPE=$shape lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
-      || fail "a Crew $shape process did not own the lock recorded on its gateway"
-    got=$(FM_TEST_CREW_SHAPE=$shape PATH="$fakebin:$PATH" bash "$ROOT/bin/fm-harness.sh" ancestry) \
-      || fail "fm-harness.sh ancestry failed for a Crew $shape process"
-    [ "$got" = 'comm kiro-cli' ] || fail "a Crew $shape process detected harness '$got', expected 'comm kiro-cli'"
+  for form in script python; do
+    for shape in hook tool; do
+      export FM_TEST_CREW_GATEWAY=$form FM_TEST_CREW_SHAPE=$shape
+      got=$(lib_eval "$fakebin" 'fm_session_lock_anchor_pid') \
+        || fail "a Crew $shape process under the $form gateway found no harness frame in its ancestry"
+      [ "$got" = 600 ] || fail "a Crew $shape process under the $form gateway anchored on '$got', expected pid 600"
+      printf '600\n' > "$dir/state/.lock"
+      lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
+        || fail "a Crew $shape process did not own the lock recorded on its $form gateway"
+      got=$(PATH="$fakebin:$PATH" bash "$ROOT/bin/fm-harness.sh" ancestry) \
+        || fail "fm-harness.sh ancestry failed for a Crew $shape process"
+      [ "$got" = 'comm kiro-cli' ] || fail "a Crew $shape process under the $form gateway detected '$got', expected 'comm kiro-cli'"
+    done
   done
+  unset FM_TEST_CREW_GATEWAY FM_TEST_CREW_SHAPE
   FM_TEST_CREW_SHAPE=hook FM_TEST_CREW_GATEWAY=cli lib_eval "$fakebin" 'fm_harness_ancestry_pids' >/dev/null \
     && fail "a kirocrew process that is not the gateway was taken for a harness frame"
 

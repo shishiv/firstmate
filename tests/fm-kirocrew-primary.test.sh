@@ -167,17 +167,16 @@ pass "setup --primary writes the primary agent file and this home's doorbell ser
 # ---- the Kiro hook in Crew's process shape ----------------------------------------
 
 CHAT=fm-test-primary
-curl -s -X POST -H "Cookie: mc_token_${GW##*:}=$(cat "$wire_home/state/.kirocrew-token")" -H 'Content-Type: application/json' \
-  --data-binary "{\"name\":\"$CHAT\",\"agent\":\"firstmate-primary\",\"agent_kind\":\"template\",\"memory_mode\":\"temporary\"}" \
-  "$GW/api/chat/slots" >/dev/null
-[ "$(chat_state "$home" "$CHAT")" = state=idle ] || fail 'the test chat was not created'
+owner POST /api/chat/slots "{\"name\":\"$CHAT\",\"agent\":\"firstmate-primary\",\"agent_kind\":\"template\",\"memory_mode\":\"temporary\"}" >/dev/null
+[ "$(chat_state "$home" "$CHAT")" = "state=idle gen=gen-1" ] || fail "the test chat was not created, or Crew reports no generation: $(chat_state "$home" "$CHAT")"
 state="$home/state"
 : > "$state/task.meta"
 # One gateway process fires hooks the way Crew does: the sandbox launcher frame
 # runs the agent file's command with /bin/sh -c in the chat's project folder,
 # under Crew's environment allowlist, with the payload on stdin. The gateway
 # then stays alive until the test removes its keep file, because the lock and
-# the record name its pid.
+# the record name its pid. Its argv is the venv entry script's, or, as after a
+# dashboard restart, `python -m kiro_crew gateway`.
 cat > "$case_dir/gateway.sh" <<'SH'
 printf '%s\n' "$$" > "$FM_TEST_DIR/gateway.pid"
 for event in $FM_TEST_EVENTS; do
@@ -188,13 +187,18 @@ done
 : > "$FM_TEST_DIR/fired"
 while [ -e "$FM_TEST_DIR/keep" ]; do sleep 0.1; done
 SH
-start_gateway() {  # <events> [<session-key>]
+start_gateway() {  # <events> [<session-key>] [script|python]
+  local frame=$CREW_BIN/kirocrew argv0='/opt/crew/venv/bin/kirocrew gateway --no-open'
+  if [ "${3:-script}" = python ]; then
+    frame=$CREW_BIN/python3.12
+    argv0='/opt/crew/venv/bin/python3.12 -s -P -m kiro_crew gateway --no-open'
+  fi
   rm -f "$case_dir/fired" "$case_dir"/*.out
   : > "$case_dir/keep"
   # shellcheck disable=SC2016 # $0 and $@ belong to the bash that sets the gateway's argv.
   (cd "$case_dir" && env -i HOME="$case_dir" PATH="$BASE_PATH" FM_TEST_DIR="$case_dir" FM_TEST_ROOT="$home" \
     FM_TEST_EVENTS="$1" FM_TEST_KEY="${2:-dashboard:$CHAT}" FM_TEST_CREW_BIN="$CREW_BIN" FM_TEST_HOOK="$HOOK_CMD" \
-    bash -c 'exec -a "/opt/crew/venv/bin/kirocrew gateway --no-open" "$0" "$@"' "$CREW_BIN/kirocrew" "$case_dir/gateway.sh") &
+    FM_TEST_ARGV0="$argv0" bash -c 'exec -a "$FM_TEST_ARGV0" "$0" "$@"' "$frame" "$case_dir/gateway.sh") &
   PIDS+=("$!")
   wait_for 60 test -e "$case_dir/fired" || fail "the gateway's hooks did not finish: $(cat "$case_dir/calls.log")"
   GATEWAY_PID=$(cat "$case_dir/gateway.pid")
@@ -240,7 +244,10 @@ pass "kirocrew ring: an idle chat gets the doorbell line as a message, and a bus
 
 # ---- the doorbell service --------------------------------------------------------------
 
-doorbell() { FM_HOME="$home" FM_PRIMARY_DOORBELL_POLL=0.2 FM_PRIMARY_DOORBELL_SERVE_POLL=0.2 "$home/bin/fm-primary-doorbell.sh" "$@"; }
+doorbell() {
+  FM_HOME="$home" FM_PRIMARY_DOORBELL_POLL=0.2 FM_PRIMARY_DOORBELL_SERVE_POLL=0.2 FM_PRIMARY_DOORBELL_CREW_CHECK=0 \
+    "$home/bin/fm-primary-doorbell.sh" "$@"
+}
 rc=0
 out=$(doorbell ensure) || rc=$?
 [ "$rc" = 5 ] || fail "ensure for a Crew primary with no doorbell service must exit 5, got $rc: $out"
@@ -255,13 +262,13 @@ out=$(doorbell serve) || fail "a second serve failed: $out"
 assert_contains "$out" 'another doorbell service runs' 'a second service did not stand down'
 pass "doorbell service: ensure never forks a Crew owner, the service starts it, and one service runs per home"
 
-# A gateway restart: the gateway pid dies and Crew drops the live chat but keeps
+# A service restart: the gateway pid dies and Crew drops the live chat but keeps
 # its transcript. The service resumes the chat once and sends the restart line.
 dead=$GATEWAY_PID
 gw_post /__test/drop '{}'
 rm -f "$case_dir/keep"
 wait_for 10 sh -c "! kill -0 $dead 2>/dev/null" || fail 'the fake gateway did not stop'
-wait_for 20 grep -qs "^$dead	rung	" "$state/.primary-doorbell-recovery" \
+wait_for 20 grep -qs "	rung	" "$state/.primary-doorbell-recovery" \
   || fail "the service did not recover the chat after the gateway restart: $(cat "$state/.primary-doorbell-recovery" 2>/dev/null)"
 assert_contains "$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"")" "dashboard_$CHAT" 'the dropped chat was not resumed'
 assert_contains "$(sent_to "$CHAT")" 'the Kiro Crew gateway restarted' 'the resumed chat did not get the restart line'
@@ -269,12 +276,30 @@ sleep 1
 [ "$(sent_to "$CHAT" | grep -c 'gateway restarted')" = 1 ] || fail 'the restart line was sent more than once for one restart'
 pass "doorbell service: after a gateway restart it resumes the dropped chat once and sends the restart line"
 
-# The chat's next prompt takes the lock on the new gateway and republishes the
-# record. Then the captain closes the chat under that live gateway: the owner's
-# next ring finds it gone, retires the record, and nothing resumes it.
-start_gateway 'UserPromptSubmit'
+# The chat's next prompt takes the lock on the new gateway, here in the form a
+# dashboard restart leaves, and republishes the record.
+arms=$(grep -cx arm "$log")
+start_gateway 'UserPromptSubmit' "dashboard:$CHAT" python
 has_line "pid=$GATEWAY_PID" "$record" 'the prompt after the restart did not republish the record on the new gateway'
 [ "$(grep -c '^session-open --source startup$' "$log")" -eq 2 ] || fail "the prompt after the restart did not retake the dead gateway's lock: $(cat "$log")"
+wait_for 10 sh -c "[ \"\$(grep -cx arm '$log')\" -gt $arms ]" || fail 'the service did not serve the new gateway'
+pass "doorbell service: the chat retakes the lock on the new gateway in its re-executed form, and the service serves it"
+
+# A dashboard restart re-executes the gateway in place: the pid stays, Crew's
+# generation changes, the turn in flight is lost, and the captain's own chat is
+# restored. The owner sees the generation change, and the service sends the
+# restart line once, with nothing to resume.
+resumes=$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)
+gw_post /__test/drop '{"keep_owner":true}'
+wait_for 20 grep -qs "^gen-3	rung	" "$state/.primary-doorbell-recovery" \
+  || fail "the service did not recover from an in-place restart: $(cat "$state/.primary-doorbell-recovery" 2>/dev/null)"
+[ "$(sent_to "$CHAT" | grep -c 'gateway restarted')" = 2 ] || fail 'an in-place restart did not get exactly one restart line'
+[ "$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)" = "$resumes" ] || fail 'a chat Crew restored was resumed'
+has_line "pid=$GATEWAY_PID" "$record" 'an in-place restart moved the record off the gateway pid'
+pass "doorbell service: an in-place gateway restart under the same pid gets one restart line and no resume"
+
+# Then the captain closes the chat under that live gateway: the owner's next
+# ring finds it gone, retires the record, and nothing resumes it.
 owner DELETE "/api/chat/slots/$CHAT" >/dev/null
 resumes=$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)
 FM_STATE_OVERRIDE="$state" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" bash -c \
@@ -284,7 +309,7 @@ wait_for 30 test ! -e "$record" || fail 'the owner did not retire the record of 
 sleep 1
 [ "$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)" = "$resumes" ] || fail 'a chat the captain closed was resumed'
 kill -0 "$SERVE_PID" 2>/dev/null || fail 'the doorbell service exited with its owner'
-pass "doorbell service: the chat retakes the lock on the new gateway, and a chat the captain closes is retired, not resumed"
+pass "doorbell service: a chat the captain closes is retired, not resumed"
 kill "$SERVE_PID" 2>/dev/null
 wait "$SERVE_PID" 2>/dev/null
 rm -f "$case_dir/keep"

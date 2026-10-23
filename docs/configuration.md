@@ -1371,7 +1371,9 @@ The home must be its own checkout, because the primary agent's hooks run the fir
 Then `bin/fm-kirocrew-primary.sh [--model <model>] [--effort <effort>] [--title <title>] [--message <text>]` opens the primary's chat as the captain's own chat, with the home as its project and in Trust mode, and sends the first message.
 It leaves an open chat as it is, resumes a chat that a gateway restart dropped, and refuses while the doorbell service is down.
 The home's session lock records the gateway process, the one process the chat's hooks and tool shells share, and every chat of that gateway shares it too, so open one primary chat per home.
+The service tells a restart from Crew's gateway generation, which every chat row carries and which changes even when a dashboard restart keeps the gateway's pid.
 A chat the captain closes stays closed: the doorbell owner retires the home's endpoint record and resumes nothing.
+When Crew lists no chat at all after a restart, the generation cannot be read, and a missing chat counts as closed; `bin/fm-kirocrew-primary.sh` then resumes it.
 
 ## Project capacity (config/project-capacity)
 

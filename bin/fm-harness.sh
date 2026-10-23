@@ -298,8 +298,14 @@ harness_process_verdict() {  # <pid>
     # process name is exactly `fm-kirocrew` (bin/fm-kirocrew-run.mjs).
     fm-kirocrew) echo "comm kirocrew"; return ;;
     node*|python*)
-      # Bare interpreter: match the harness name in its script path.
+      # Bare interpreter: match the harness name in its script path. The Kiro
+      # Crew gateway re-executes itself as `python -m kiro_crew gateway` on a
+      # dashboard restart, and it is still the kiro-cli frame above a hook.
       args=$(ps -o args= -p "$pid" 2>/dev/null)
+      if fm_kiro_cli_process_matches "$comm" "$args"; then
+        echo "comm kiro-cli"
+        return
+      fi
       if fm_gemini_args_are_gemini "$args"; then
         echo "args gemini"
         return

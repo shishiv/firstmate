@@ -24,6 +24,9 @@ const SECRET = process.env.FAKE_SECRET || '';
 const AGENTS = (process.env.FAKE_AGENT || 'firstmate-worker').split(',');
 const AGENT = AGENTS[0];
 const TOKEN = 'fake-app-token';
+// Crew's per-process generation, which every chat row carries as turn_gen; a
+// drop (a gateway restart) mints a new one.
+let gen = 'gen-1';
 // The token the next exchange mints; an expired one is refused with 403.
 let liveToken = TOKEN;
 const expiredTokens = new Set();
@@ -33,6 +36,8 @@ let hang = false;
 let port = 0;
 const live = new Map();
 const transcripts = new Map();
+// Who created each chat, kept with its transcript so a resume restores it.
+const origins = new Map();
 const calls = [];
 // Owner-side app state: the operator's registry rows, which of them were read
 // since they last changed, the trust grant (bound to a repository), and the
@@ -57,6 +62,7 @@ const row = (slot) => ({
   trust: slot.trust,
   app: slot.origin === 'user' ? '' : 'firstmate',
   origin: slot.origin,
+  turn_gen: gen,
 });
 
 function newSlot(key, fields = {}) {
@@ -152,13 +158,20 @@ const server = createServer((req, res) => {
     const path = url.pathname;
     if (!path.startsWith('/__test/')) calls.push({ method: req.method, path: path + url.search, body });
     if (path === '/__test/calls') return send(res, 200, calls);
+    // A gateway restart: a new generation, every live chat's turn lost, and
+    // every chat dropped but its transcript, except the owner's own chats when
+    // keep_owner is set (Crew restores the owner's open chats).
     if (path === '/__test/drop') {
-      for (const slot of live.values()) {
+      gen = `gen-${Number(gen.slice(4)) + 1}`;
+      for (const slot of [...live.values()]) {
         if (slot.timer) clearTimeout(slot.timer);
+        slot.timer = null;
+        slot.running = false;
+        slot.queue = [];
         transcripts.set(slot.key, slot.rows);
+        if (!(body.keep_owner && slot.origin === 'user')) live.delete(slot.key);
       }
-      live.clear();
-      return send(res, 200, { ok: true });
+      return send(res, 200, { ok: true, gen });
     }
     if (path === '/__test/turn-ms') {
       turnMs = Number(body.ms);
@@ -191,6 +204,7 @@ const server = createServer((req, res) => {
     if (path === '/api/chat/slots' && req.method === 'POST') {
       if (!AGENTS.includes(body.agent)) return send(res, 409, { error: 'the selected agent choice is not available', code: 'agent_choice_unavailable' });
       const slot = newSlot(body.name, { title: body.title || '', agent: body.agent, origin: owner ? 'user' : 'app' });
+      origins.set(slot.key, slot.origin);
       live.set(slot.key, slot);
       return send(res, 200, row(slot));
     }
@@ -217,7 +231,7 @@ const server = createServer((req, res) => {
     const verb = m[2] || '';
     if (verb === 'resume') {
       if (live.has(name) || !transcripts.has(name) || body.key !== `dashboard_${name}`) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
-      const slot = newSlot(name, { rows: transcripts.get(name), project: '/fake/resumed', origin: owner ? 'user' : 'app' });
+      const slot = newSlot(name, { rows: transcripts.get(name), project: '/fake/resumed', origin: origins.get(name) || 'app' });
       live.set(name, slot);
       return send(res, 200, { ok: true, key: name, messages: slot.rows });
     }
