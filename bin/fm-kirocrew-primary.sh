@@ -9,7 +9,8 @@
 # (bin/fm-kirocrew-owner-lib.sh), so it sits in his chat list and he types in it
 # from the dashboard or a phone. It runs the agent firstmate-primary
 # (bin/fm-kirocrew-setup.sh --primary) with this checkout as its project, in
-# Trust mode, so the primary's shell and file tools wait for no approval. Its
+# Trust mode, so the primary's shell and file tools wait for no approval, and
+# pinned, because Crew restores a pinned chat after a gateway restart. Its
 # name, fm-<home tag>-primary-<hex epoch>, is recorded in
 # state/.kirocrew-primary-chat, one chat per home:
 #   - a chat Crew lists with a conversation is left as it is;
@@ -74,7 +75,8 @@ URL=$(node "$SCRIPT_DIR/fm-kirocrew.mjs" config --home "$FM_ROOT_DIR" | sed -n '
 # shellcheck source=bin/fm-backend-hometag-lib.sh
 TAG=$(. "$SCRIPT_DIR/fm-backend-hometag-lib.sh" && FM_HOME=$FM_ROOT_DIR FM_ROOT=$FM_ROOT_DIR fm_backend_hometag)
 CHAT_RECORD="$FM_ROOT_DIR/state/.kirocrew-primary-chat"
-CHAT=$(tr -d '[:space:]' < "$CHAT_RECORD" 2>/dev/null || true)
+CHAT=
+[ ! -f "$CHAT_RECORD" ] || CHAT=$(tr -d '[:space:]' < "$CHAT_RECORD")
 case "$CHAT" in
   "fm-$TAG-primary-"*) case "${CHAT#fm-"$TAG"-primary-}" in ''|*[!0-9a-f]*) CHAT= ;; esac ;;
   *) CHAT= ;;
@@ -148,8 +150,18 @@ if [ "$messages" != 0 ] && [ "$agent" != "$AGENT" ]; then
   exit 1
 fi
 printf '%s\n' "$CHAT" > "$CHAT_RECORD.$$" && mv -f -- "$CHAT_RECORD.$$" "$CHAT_RECORD"
+# Crew restores a pinned chat after a gateway restart, and drops an unpinned
+# chat that the dashboard never opened as a tab.
+if [ "$(printf '%s' "$row" | jq -r '.pinned // false')" != true ]; then
+  call 'pinning the chat' PATCH "$chat_path/pin" '{"pinned":true}'
+  [ "$HOW" != open ] || HOW=pinned
+fi
 if [ "$messages" != 0 ] && [ "$HOW" = open ]; then
   echo "chat $CHAT is open; nothing changed"
+  exit 0
+fi
+if [ "$messages" != 0 ] && [ "$HOW" = pinned ]; then
+  echo "chat $CHAT is open and now pinned, so Crew restores it after a gateway restart"
   exit 0
 fi
 # An empty chat becomes the primary and gets the first message.

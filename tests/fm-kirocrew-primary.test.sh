@@ -168,8 +168,10 @@ pass "setup --primary writes the primary agent file and this home's doorbell ser
 
 CHAT=fm-test-primary
 owner POST /api/chat/slots "{\"name\":\"$CHAT\",\"agent\":\"firstmate-primary\",\"agent_kind\":\"template\",\"memory_mode\":\"temporary\"}" >/dev/null
+owner PATCH "/api/chat/slots/$CHAT/pin" '{"pinned":true}' >/dev/null
 # Another chat of the captain's, as a real gateway has.
 owner POST /api/chat/slots '{"name":"captain-notes","agent":"firstmate-worker","agent_kind":"template","memory_mode":"temporary"}' >/dev/null
+owner PATCH /api/chat/slots/captain-notes/pin '{"pinned":true}' >/dev/null
 [ "$(chat_state "$home" "$CHAT")" = "state=idle gen=gen-1" ] || fail "the test chat was not created, or Crew reports no generation: $(chat_state "$home" "$CHAT")"
 state="$home/state"
 : > "$state/task.meta"
@@ -321,8 +323,13 @@ sleep 1
 [ "$(calls_for ".path == \"/api/chat/slots/$CHAT/resume\"" | jq length)" = "$resumes" ] || fail 'a chat the captain closed was resumed'
 kill -0 "$SERVE_PID" 2>/dev/null || fail 'the doorbell service exited with its owner'
 pass "doorbell service: a chat the captain closes is retired, not resumed"
+# A stopped unit takes its whole process group down; a bare kill of the service
+# would leave its owner child holding the owner lock.
+pkill -TERM -P "$SERVE_PID" 2>/dev/null
 kill "$SERVE_PID" 2>/dev/null
 wait "$SERVE_PID" 2>/dev/null
+wait_for 10 sh -c "p=\$(cat '$state/.primary-doorbell.lock/pid' 2>/dev/null); [ -z \"\$p\" ] || ! kill -0 \"\$p\" 2>/dev/null" \
+  || fail 'the doorbell owner outlived its service'
 rm -f "$case_dir/keep"
 
 # A Crew session key that is no dashboard chat publishes no doorbell, and its
@@ -350,11 +357,17 @@ PCHAT=$(cat "$home/state/.kirocrew-primary-chat")
 case "$PCHAT" in "fm-$TAG-primary-"*) ;; *) fail "the launcher recorded an unexpected chat name: $PCHAT" ;; esac
 assert_contains "$out" "chat $PCHAT is created" "the launcher did not create the chat: $out"
 row=$(owner GET /api/chat/slots | jq -c --arg k "$PCHAT" '.[] | select(.key == $k)')
-[ "$(jq -r '[.agent, .origin, .project, .model, .reasoning_effort, .trust, .title] | join("|")' <<<"$row")" \
-  = "firstmate-primary|user|$home|claude-opus-5.5|high|true|firstmate · principal" ] || fail "the primary chat is configured wrong: $row"
+[ "$(jq -r '[.agent, .origin, .project, .model, .reasoning_effort, .trust, .title, .pinned] | join("|")' <<<"$row")" \
+  = "firstmate-primary|user|$home|claude-opus-5.5|high|true|firstmate · principal|true" ] || fail "the primary chat is configured wrong: $row"
 [ "$(sent_to "$PCHAT")" = assuma ] || fail "the first message was not sent once: $(sent_to "$PCHAT")"
 out=$(launch) || fail "a second launch failed: $out"
 assert_contains "$out" 'nothing changed' 'a second launch changed an open chat'
+gw_post /__test/drop '{}'
+[ "$(chat_state "$home" "$PCHAT")" = "state=idle gen=$(curl -s "$GW/api/chat/slots" -H "Cookie: mc_token_${GW##*:}=owner-token" | jq -r '.[0].turn_gen')" ] \
+  || fail 'Crew did not restore the pinned primary chat after a restart'
+owner PATCH "/api/chat/slots/$PCHAT/pin" '{"pinned":false}' >/dev/null
+out=$(launch) || fail "a launch for an unpinned chat failed: $out"
+assert_contains "$out" 'now pinned' 'a launch did not pin an unpinned primary chat'
 gw_post /__test/drop "{\"only\":[\"$PCHAT\"]}"
 out=$(launch) || fail "a launch for a dropped chat failed: $out"
 assert_contains "$out" "chat $PCHAT is resumed" 'a launch for a dropped chat did not resume it'
@@ -376,7 +389,7 @@ got=$(FM_STATE_OVERRIDE="$state" bash -c '. "$0/bin/fm-primary-endpoint-lib.sh"
   printf "%s" "$FM_PRIMARY_ENDPOINT_RING_RESULT"' "$home" "$orphan")
 [ "$got" = forbidden ] || fail "a ring to a chat the app may not message gave '$got', not forbidden"
 [ -z "$(sent_to "$orphan")" ] || fail 'a ring reached a chat the app may not message'
-pass "launcher: refuses without the doorbell service, creates the captain's own primary chat in Trust under a recorded name, resumes it when Crew dropped it, and refuses a chat on another agent or one the app may not message"
+pass "launcher: refuses without the doorbell service, creates the captain's own primary chat in Trust and pinned under a recorded name, resumes it when Crew dropped it, and refuses a chat on another agent or one the app may not message"
 
 # A record that names a chat the app may not message: the owner's ring is
 # refused, so it records a continuity failure and stops instead of retrying.

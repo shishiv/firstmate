@@ -39,7 +39,7 @@ const transcripts = new Map();
 // Who created each chat, its agent and its title, kept with its transcript so
 // a resume restores them.
 const kept = new Map();
-const keep = (slot) => kept.set(slot.key, { origin: slot.origin, agent: slot.agent, title: slot.title });
+const keep = (slot) => kept.set(slot.key, { origin: slot.origin, agent: slot.agent, title: slot.title, pinned: Boolean(slot.pinned) });
 const calls = [];
 // Owner-side app state: the operator's registry rows, which of them were read
 // since they last changed, the trust grant (bound to a repository), and the
@@ -65,6 +65,7 @@ const row = (slot) => ({
   app: slot.origin === 'app' ? 'firstmate' : '',
   origin: slot.origin,
   turn_gen: gen,
+  pinned: Boolean(slot.pinned),
 });
 
 function newSlot(key, fields = {}) {
@@ -161,7 +162,7 @@ const server = createServer((req, res) => {
     if (!path.startsWith('/__test/')) calls.push({ method: req.method, path: path + url.search, body });
     if (path === '/__test/calls') return send(res, 200, calls);
     // A gateway restart: a new generation, every live chat's turn lost, and
-    // every chat dropped but its transcript, except the owner's own chats,
+    // every chat dropped but its transcript, except the owner's pinned chats,
     // which Crew restores; `only` names the chats Crew does not restore.
     if (path === '/__test/drop') {
       gen = `gen-${Number(gen.slice(4)) + 1}`;
@@ -171,7 +172,7 @@ const server = createServer((req, res) => {
         slot.running = false;
         slot.queue = [];
         transcripts.set(slot.key, slot.rows);
-        if (Array.isArray(body.only) ? body.only.includes(slot.key) : slot.origin !== 'user') live.delete(slot.key);
+        if (Array.isArray(body.only) ? body.only.includes(slot.key) : !(slot.origin === 'user' && slot.pinned)) live.delete(slot.key);
       }
       return send(res, 200, { ok: true, gen });
     }
@@ -280,6 +281,12 @@ const server = createServer((req, res) => {
       return send(res, 200, { ok: true, agent: body.agent });
     }
     if (verb === 'title') { slot.title = body.title; keep(slot); return send(res, 200, { ok: true, title: body.title }); }
+    if (verb === 'pin') {
+      if (!owner) return send(res, 404, { error: 'not found' });
+      slot.pinned = body.pinned === true;
+      keep(slot);
+      return send(res, 200, { ok: true, pinned: slot.pinned });
+    }
     if (verb === 'interrupt' && slot.queue.length === 0) return send(res, 400, { error: 'queue empty, use /stop instead' });
     if (verb === 'interrupt' || verb === 'stop') {
       if (slot.running) {
