@@ -13,11 +13,14 @@
 #      dashboard owner, and adds it to Crew's trusted apps; Crew writes the app
 #      secret that bin/fm-kirocrew.mjs trades for its app token;
 #   3. prints the two steps only the captain can take: restart the gateway when
-#      the agent file is new (Crew reads agent files when it starts), and enable
-#      the app on its page in the Crew dashboard. Enabling grants the app's
-#      `sessionApproval` permission, which lets firstmate put each worker chat
-#      in Trust mode; Crew accepts that consent from its dashboard only, never
-#      from a script.
+#      the agent file is new (Crew reads agent files when it starts), and give
+#      the app chat control in the Crew dashboard. That consent grants the
+#      app's `sessionApproval` permission, which lets firstmate put each worker
+#      chat in Trust mode, and it lets the app control every chat of that Crew
+#      instance. Only the dashboard owner may give it, so this script never
+#      sends it. Crew 0.11.0 shows no Enable button for a self-managed app, so
+#      the step is one request the captain runs in the browser console on the
+#      app's dashboard page, the request that button would send.
 #
 # --check runs nothing but bin/fm-kirocrew.mjs probe: it opens and closes one
 # empty chat and reports the agent and whether Trust is granted.
@@ -43,6 +46,8 @@ KIRO_HOME_DIR=${KIRO_HOME:-$HOME/.kiro}
 KIROCREW_BIN=${KIROCREW_BIN:-}
 CHECK=0
 APP_VERSION=0.2.0
+# The dashboard's own enable request with consent (website api.enableApp).
+ENABLE_REQUEST="fetch('/api/apps/firstmate/enable', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: JSON.stringify({ sessionApprovalConsent: true }) }).then((r) => r.json()).then(console.log)"
 
 usage() {
   sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -169,9 +174,14 @@ if [ "$AGENT_NEW" = 1 ]; then
 fi
 if [ "$enabled" != true ] || [ "$pending" = true ]; then
   n=$((n + 1))
-  echo "  $n. Open the Kiro Crew dashboard, go to Apps, open firstmate and enable it."
-  echo "     This lets firstmate put each worker chat in Trust mode. Until then, every"
-  echo "     shell or file tool of a worker waits for an approval in the dashboard."
+  echo "  $n. Give the app chat control. In the Crew dashboard, open the page"
+  echo "     /apps/detail/firstmate and read the permission there. Kiro Crew 0.11.0 shows"
+  echo "     no Enable button for a self-managed app, so run this line in the browser"
+  echo "     console on that page; it sends the request the missing button would send:"
+  echo "       $ENABLE_REQUEST"
+  echo "     The consent lets firstmate put each worker chat in Trust mode, and it lets"
+  echo "     the app control every chat of this Crew instance. Until then, every shell"
+  echo "     or file tool of a worker waits for an approval in the dashboard."
 fi
 [ "$n" -gt 0 ] || echo "  none"
 echo "Then run: $0 --home $HOME_DIR --check"
