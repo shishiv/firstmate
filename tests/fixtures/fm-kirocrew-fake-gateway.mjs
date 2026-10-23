@@ -36,8 +36,10 @@ let hang = false;
 let port = 0;
 const live = new Map();
 const transcripts = new Map();
-// Who created each chat, kept with its transcript so a resume restores it.
-const origins = new Map();
+// Who created each chat, its agent and its title, kept with its transcript so
+// a resume restores them.
+const kept = new Map();
+const keep = (slot) => kept.set(slot.key, { origin: slot.origin, agent: slot.agent, title: slot.title });
 const calls = [];
 // Owner-side app state: the operator's registry rows, which of them were read
 // since they last changed, the trust grant (bound to a repository), and the
@@ -204,7 +206,7 @@ const server = createServer((req, res) => {
     if (path === '/api/chat/slots' && req.method === 'POST') {
       if (!AGENTS.includes(body.agent)) return send(res, 409, { error: 'the selected agent choice is not available', code: 'agent_choice_unavailable' });
       const slot = newSlot(body.name, { title: body.title || '', agent: body.agent, origin: owner ? 'user' : 'app' });
-      origins.set(slot.key, slot.origin);
+      keep(slot);
       live.set(slot.key, slot);
       return send(res, 200, row(slot));
     }
@@ -229,9 +231,19 @@ const server = createServer((req, res) => {
     if (!m) return send(res, 404, { error: 'no route' });
     const name = decodeURIComponent(m[1]);
     const verb = m[2] || '';
+    // Crew restores a chat with its agent and title. For a name it keeps no
+    // transcript of, the owner's resume opens an empty chat on Crew's default
+    // agent, while an app gets the uniform 404.
     if (verb === 'resume') {
-      if (live.has(name) || !transcripts.has(name) || body.key !== `dashboard_${name}`) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
-      const slot = newSlot(name, { rows: transcripts.get(name), project: '/fake/resumed', origin: origins.get(name) || 'app' });
+      if (live.has(name) || body.key !== `dashboard_${name}`) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
+      if (!transcripts.has(name)) {
+        if (!owner) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
+        const fresh = newSlot(name, { agent: '', title: 'New Session…', origin: 'user' });
+        live.set(name, fresh);
+        keep(fresh);
+        return send(res, 200, { ok: true, key: name, messages: [] });
+      }
+      const slot = newSlot(name, { rows: transcripts.get(name), project: '/fake/resumed', ...(kept.get(name) || {}) });
       live.set(name, slot);
       return send(res, 200, { ok: true, key: name, messages: slot.rows });
     }
@@ -251,6 +263,13 @@ const server = createServer((req, res) => {
     if (verb === 'model') { slot.model = body.model; return send(res, 200, { ok: true, model: body.model }); }
     if (verb === 'reasoning-effort') { slot.effort = body.reasoning_effort; return send(res, 200, { ok: true, reasoning_effort: body.reasoning_effort }); }
     if (verb === 'turn-timeout') return send(res, 200, { ok: true, secs: body.secs });
+    if (verb === 'agent') {
+      if (!AGENTS.includes(body.agent)) return send(res, 409, { error: 'the selected agent choice is not available', code: 'agent_choice_unavailable' });
+      slot.agent = body.agent;
+      keep(slot);
+      return send(res, 200, { ok: true, agent: body.agent });
+    }
+    if (verb === 'title') { slot.title = body.title; keep(slot); return send(res, 200, { ok: true, title: body.title }); }
     if (verb === 'interrupt' && slot.queue.length === 0) return send(res, 400, { error: 'queue empty, use /stop instead' });
     if (verb === 'interrupt' || verb === 'stop') {
       if (slot.running) {

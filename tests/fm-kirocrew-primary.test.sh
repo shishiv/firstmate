@@ -347,4 +347,9 @@ gw_post /__test/drop '{}'
 out=$(launch) || fail "a launch after a restart failed: $out"
 assert_contains "$out" "chat $PCHAT is resumed" 'a launch after a restart did not resume the chat'
 [ "$(sent_to "$PCHAT")" = assuma ] || fail 'a resumed chat got the first message again'
-pass "launcher: refuses without the doorbell service, opens the captain's own chat in Trust, and resumes it after a restart"
+[ "$(owner GET /api/chat/slots | jq -r --arg k "$PCHAT" '.[] | select(.key == $k) | .agent')" = firstmate-primary ] \
+  || fail 'the resumed chat lost the primary agent'
+owner POST "/api/chat/slots/$PCHAT/agent" '{"agent":"firstmate-worker"}' >/dev/null
+out=$(launch) && fail "the launcher took over a conversation on another agent: $out"
+assert_contains "$out" "holds a conversation on the agent 'firstmate-worker'" 'the refusal must name the other agent'
+pass "launcher: refuses without the doorbell service, turns the empty chat Crew opens into the captain's own primary in Trust, resumes it after a restart, and refuses a chat on another agent"
