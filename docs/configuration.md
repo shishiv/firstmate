@@ -1359,6 +1359,25 @@ A `firstmate` app that an older setup registered as self-managed has no Enable b
 `fm-spawn.sh` refuses a `kirocrew` launch, before any endpoint or worktree exists, when the gateway or the app cannot be reached, and refuses a ship on a `forge=external` project, because a kirocrew worker's git runs inside the gateway, out of reach of that project's per-task pre-push guard.
 The file is home-local and not inherited.
 
+### A primary in a Kiro Crew chat
+
+The firstmate primary can run as a chat of the same gateway, so the captain supervises the home from Crew's dashboard or a phone, with no terminal.
+The home must be its own checkout, because the primary agent's hooks run the firstmate of the chat's project folder.
+`bin/fm-kirocrew-setup.sh --primary` adds two things to the setup above:
+
+- The agent file `firstmate-primary`. Its agent-file hooks run `bin/fm-kiro-turnend-hook.sh`, so Crew gives the primary the startup digest, the wake drain, and the turn-end handling of a Kiro CLI primary ([the Kiro supervision protocol](supervision-protocols/kiro-cli.md)). Crew reads agent files when its gateway starts, so a new file needs a gateway restart.
+- The home's doorbell service, a systemd user unit that `bin/fm-primary-doorbell.sh unit` names and that runs `bin/fm-primary-doorbell.sh serve`. Crew runs every hook inside its sandbox, away from the user's service manager, so this service keeps the doorbell owner running. The owner rings the chat with a Crew message while the chat is idle. After a gateway restart, Crew restores the pinned primary chat, and the service tells the primary once to take the helm again.
+
+Then `bin/fm-kirocrew-primary.sh [--model <model>] [--effort <effort>] [--title <title>] [--message <text>]` opens the primary's chat as the captain's own chat, with the home as its project and in Trust mode, and sends the first message.
+Crew lets the firstmate app message only its own chats and the captain's own chats, so the launcher creates the chat as the dashboard owner, under a new name that it records in `state/.kirocrew-primary-chat`.
+It pins the chat, because after a gateway restart Crew restores pinned chats and drops an unpinned chat that the dashboard never opened as a tab.
+It leaves an open chat as it is, resumes the recorded chat when Crew dropped it, and refuses while the doorbell service is down.
+The home's session lock records the gateway process, the one process the chat's hooks and tool shells share, and every chat of that gateway shares it too, so open one primary chat per home.
+The service tells a restart from Crew's gateway generation, which every chat row carries and which changes even when a dashboard restart keeps the gateway's pid.
+A chat the captain closes stays closed: the doorbell owner retires the home's endpoint record and resumes nothing.
+A chat that Crew does not restore after a restart stays down, because the app may resume only its own chats: `bin/fm-kirocrew-primary.sh` resumes it.
+When Crew lists no chat at all after a restart, the generation cannot be read, and a missing chat counts as closed.
+
 ## Project capacity (config/project-capacity)
 
 The optional local, gitignored `config/project-capacity` tells Firstmate how many workers a project can run at once on this machine, for a project whose machine-local resource - a heavy test suite, a local editor stack, a device - only serves a few workers at a time.

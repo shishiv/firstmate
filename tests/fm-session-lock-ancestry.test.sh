@@ -177,6 +177,75 @@ SH
   pass "session-lock: a kiro-cli run is contiguous across the interposed bun frame and anchors on its outermost frame"
 }
 
+# A Kiro primary in a Kiro Crew chat has two process shapes (verified live, Kiro
+# Crew 0.11.0): its agent-file hooks run under Crew's sandbox launcher, a
+# python3.12 child of the gateway, with no kiro-cli frame at all, and its tool
+# shells run under the chat's `kiro-cli acp` runtime, also a gateway child. The
+# gateway frame is the one both share, so both must anchor on it, in both of
+# the gateway's forms: its venv entry script, and the `python -m kiro_crew
+# gateway` it re-executes into on a dashboard restart. A `kirocrew` process that
+# is not the gateway (a CLI call) is no harness.
+test_kirocrew_gateway_anchors_hooks_and_tool_shells() {
+  local dir fakebin got shape
+  dir="$TMP_ROOT/kirocrew-run"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "${FM_TEST_CREW_GATEWAY:-script}" in
+  script) gateway_comm=kirocrew; gateway_args='/home/u/crew/venv/bin/python3.12 /home/u/crew/venv/bin/kirocrew gateway --no-open' ;;
+  python) gateway_comm=python3.12; gateway_args='/home/u/crew/venv/bin/python3.12 -s -P -m kiro_crew gateway --no-open' ;;
+  *) gateway_comm=kirocrew; gateway_args='/home/u/crew/venv/bin/python3.12 /home/u/crew/venv/bin/kirocrew status' ;;
+esac
+case "$pid" in
+  600) c=$gateway_comm; a=$gateway_args; pp=1 ;;
+  601) c=python3.12; a='/home/u/crew/venv/bin/python3.12 -I -S /home/u/crew/run/kirocrew_sandbox_600_x1.py /bin/sh -c bin/fm-kiro-turnend-hook.sh'; pp=600 ;;
+  611) c=kiro-cli-chat; a='/home/u/.local/bin/kiro-cli-chat acp --agent-engine v3 --auth-method cli'; pp=612 ;;
+  612) c=kiro-cli; a='/home/u/.local/bin/kiro-cli acp --agent-engine v3 --auth-method cli'; pp=600 ;;
+  1) c=systemd; a='/usr/lib/systemd/systemd --system'; pp=0 ;;
+  *)
+    c=bash; a='bash /repo/bin/fm-kiro-turnend-hook.sh'
+    case "${FM_TEST_CREW_SHAPE:-hook}" in hook) pp=601 ;; *) pp=611 ;; esac
+    ;;
+esac
+case "$field" in
+  comm=) printf '%s\n' "$c" ;;
+  args=) printf '%s\n' "$a" ;;
+  ppid=) printf '%s\n' "$pp" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  for form in script python; do
+    for shape in hook tool; do
+      export FM_TEST_CREW_GATEWAY=$form FM_TEST_CREW_SHAPE=$shape
+      got=$(lib_eval "$fakebin" 'fm_session_lock_anchor_pid') \
+        || fail "a Crew $shape process under the $form gateway found no harness frame in its ancestry"
+      [ "$got" = 600 ] || fail "a Crew $shape process under the $form gateway anchored on '$got', expected pid 600"
+      printf '600\n' > "$dir/state/.lock"
+      lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
+        || fail "a Crew $shape process did not own the lock recorded on its $form gateway"
+      got=$(PATH="$fakebin:$PATH" bash "$ROOT/bin/fm-harness.sh" ancestry) \
+        || fail "fm-harness.sh ancestry failed for a Crew $shape process"
+      [ "$got" = 'comm kiro-cli' ] || fail "a Crew $shape process under the $form gateway detected '$got', expected 'comm kiro-cli'"
+    done
+  done
+  unset FM_TEST_CREW_GATEWAY FM_TEST_CREW_SHAPE
+  FM_TEST_CREW_SHAPE=hook FM_TEST_CREW_GATEWAY=cli lib_eval "$fakebin" 'fm_harness_ancestry_pids' >/dev/null \
+    && fail "a kirocrew process that is not the gateway was taken for a harness frame"
+
+  pass "session-lock: a Kiro Crew chat's hooks and tool shells both anchor on the gateway frame"
+}
+
 # A harness that is pid 1 of its own PID namespace - a container, or the
 # `codex sandbox` this shape was verified in - used to be invisible: the walk
 # stopped as soon as the NEXT pid was 1, so the one process that identifies the
@@ -1300,6 +1369,7 @@ test_reanchor_keeps_autoarm_midturn_healthy() {
 
 test_version_named_session_is_identified_on_both_platforms
 test_kiro_cli_run_is_contiguous_across_the_bun_frame
+test_kirocrew_gateway_anchors_hooks_and_tool_shells
 test_harness_at_namespace_pid1_is_examined
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock

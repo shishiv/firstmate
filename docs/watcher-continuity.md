@@ -29,7 +29,7 @@ Codex and Grok keep their own protocols; see [Manual recovery and other harnesse
 | OpenCode | `.opencode/plugins/fm-primary-watch-arm.js` |
 | Cursor | `.cursor/hooks.json` `stop` hook (`bin/fm-turnend-guard-cursor.sh`) |
 | Claude | `.claude/settings.json` Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) |
-| Kiro | The doorbell owner `bin/fm-primary-doorbell.sh`, kept running by the `.kiro/hooks/fm-firstmate.json` `Stop` hook |
+| Kiro | The doorbell owner `bin/fm-primary-doorbell.sh`, kept running by the `.kiro/hooks/fm-firstmate.json` `Stop` hook, or by the home's doorbell service for a primary in a Kiro Crew chat |
 
 On a non-Pi primary, a home that runs the supervision host also changes what the owner runs; see [Supervision host](#supervision-host).
 
@@ -89,6 +89,11 @@ It follows the successor-first ordering below with the doorbell ring as its deli
 The model never arms a watcher on this path: the `PreToolUse` hook blocks a model-run arm or checkpoint while the owner can run, and the only model-run repair is one `bin/fm-primary-doorbell.sh ensure`.
 The script's header owns the loop, the ring's retry and drop, the failure handling, the exit conditions, and the records.
 Without a loadable endpoint no owner can run, and the `Stop` hook falls back to one plain arm that only keeps the durable queue fed ([`turnend-guard.md`](turnend-guard.md#harness-integrations)).
+
+A Kiro primary in a Kiro Crew chat ([configuration](configuration.md#a-primary-in-a-kiro-crew-chat)) runs its hooks inside Crew's sandbox, which keeps them away from the user's service manager, and a gateway restart kills the gateway pid that the owner serves.
+So its hooks never start the owner and never fall back to a plain arm.
+The home's doorbell service (`bin/fm-primary-doorbell.sh serve`, a systemd user unit) runs the owner whenever the endpoint names a Crew chat that needs supervision, and the ring is a Crew message.
+After a gateway restart, which it tells by Crew's gateway generation, the service waits for Crew to restore the chat and sends a restart line once, so the chat's next turn takes the helm again and republishes the endpoint.
 
 ### Claude Stop hook
 
@@ -509,6 +514,8 @@ It checks that a newly appended keyed decision is classified without rereading e
 - Repeated arm failure rings one continuity-failure line and then cools down.
 
 `tests/fm-primary-endpoint.test.sh` pins that the watcher's own `wake` no longer types into the endpoint and that the `Stop` hook ensures the owner, falling back to one plain arm only when no owner can run.
+
+`tests/fm-kirocrew-primary.test.sh` runs the Kiro hook in Kiro Crew's process shape against a fake gateway, and checks that the hooks never start an owner or an arm, that the doorbell service starts the owner, that a gateway restart, also one in place under the same pid, gets one restart line, and that a chat the captain closed is retired and never resumed.
 
 ### Claude auto-arm and turn-end guard
 

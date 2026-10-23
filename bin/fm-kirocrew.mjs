@@ -20,7 +20,7 @@
 // gateway that accepts the connection and never answers fails as unreachable.
 //
 // CLI verbs (plain key=value output, exit 0 ok, 2 usage, 3 unreachable,
-// 4 auth, 5 not found, 6 refused, 7 invalid):
+// 4 auth, 5 not found, 6 refused, 7 invalid, 8 a chat the app may not control):
 //   (every verb also takes --config-dir <dir> and --state-dir <dir>)
 //   fm-kirocrew.mjs config  --home <fm-home>
 //   fm-kirocrew.mjs ping    --home <fm-home>
@@ -29,6 +29,19 @@
 //   fm-kirocrew.mjs probe   --home <fm-home> --slot <name>
 //       create an empty chat on the configured agent, report whether Crew
 //       granted Trust to the app, then close it (bin/fm-kirocrew-setup.sh --check)
+//   fm-kirocrew.mjs state   --home <fm-home> --slot <name>
+//       state=idle|working|approval|queued, or state=absent when Crew does not
+//       list the chat, then gen=<the gateway process generation>, read from any
+//       listed chat, or empty when Crew lists none
+//   fm-kirocrew.mjs ring    --home <fm-home> --slot <name> --message <text>
+//       send one message only while the chat is idle: exit 5 when Crew does not
+//       list the chat, 6 when it is not idle, 8 when the app may not control it
+//       (bin/fm-primary-endpoint-lib.sh)
+// The app's consent ("Enable and allow chat control") lets it list every chat
+// of the instance, and message the app's own chats and the captain's own
+// chats, the ones whose origin is `user`. Crew refuses it every other chat,
+// such as one a resume opened with no recorded origin, and it may resume only
+// a transcript the app owns.
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -39,7 +52,7 @@ export const DEFAULT_AGENT = 'firstmate-worker';
 // The git repository whose apps/firstmate/app.json Crew installs the app from.
 export const DEFAULT_APP_REGISTRY = 'https://github.com/shishiv/firstmate';
 
-const EXIT = { usage: 2, unreachable: 3, auth: 4, not_found: 5, refused: 6, invalid: 7 };
+const EXIT = { usage: 2, unreachable: 3, auth: 4, not_found: 5, refused: 6, invalid: 7, uncontrolled: 8 };
 const TIMEOUT_MS = Number(process.env.FM_KIROCREW_TIMEOUT_MS) || 15000;
 
 export class CrewError extends Error {
@@ -141,22 +154,26 @@ async function appToken(cfg, { refresh = false } = {}) {
 
 // The token travels as Crew's auth cookie, as kirocrew-client sends it, so it
 // never lands in a URL or a log line. A loopback request without an Origin
-// header passes Crew's CSRF barrier.
+// header passes Crew's CSRF barrier. Crew refuses an app token one hour after
+// it was minted (its session lifetime) with a plain 403 `forbidden`, the
+// answer its auth gate gives, and a missing or forged one with 401, so either
+// answer to a cached token gets one fresh token before it counts.
 export async function request(cfg, method, path, body) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const token = await appToken(cfg, { refresh: attempt > 0 });
     const headers = { Cookie: `mc_token_${cfg.port}=${token}` };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const res = await exchange(cfg, method, path, headers, body === undefined ? undefined : JSON.stringify(body));
-    if (res.status === 401 && attempt === 0) continue;
     let data;
     try {
       data = res.text ? JSON.parse(res.text) : {};
     } catch {
+      if (attempt === 0 && (res.status === 401 || res.status === 403)) continue;
       throw new CrewError('invalid', `Kiro Crew answered ${method} ${path} with non-JSON (HTTP ${res.status})`);
     }
-    if (res.ok) return data;
     const code = typeof data?.code === 'string' ? data.code : '';
+    if (attempt === 0 && (res.status === 401 || (res.status === 403 && code === 'forbidden'))) continue;
+    if (res.ok) return data;
     const message = `${method} ${path}: HTTP ${res.status}${code ? ` ${code}` : ''}${data?.error ? `: ${data.error}` : ''}`;
     if (res.status === 401) throw new CrewError('auth', message, { status: res.status, crewCode: code });
     if (res.status === 404) throw new CrewError('not_found', message, { status: res.status, crewCode: code });
@@ -186,6 +203,11 @@ export function parseSlot(raw) {
     effort: raw.reasoning_effort || '',
     trust: Boolean(raw.trust),
     app: raw.app || '',
+    origin: raw.origin || '',
+    // One random value per gateway process (Crew's chunk generation), so a
+    // changed value means the gateway restarted, even when a dashboard restart
+    // re-executed it under the same pid.
+    gen: typeof raw.turn_gen === 'string' ? raw.turn_gen : '',
   };
 }
 
@@ -334,6 +356,31 @@ async function main(argv) {
       await closeSlot(cfg, args.slot);
       console.log(`closed=${args.slot}`);
       return;
+    case 'state': {
+      if (typeof args.slot !== 'string') throw new CrewError('usage', 'state needs --slot');
+      const slots = await listSlots(cfg);
+      const slot = slots.find((s) => s.key === args.slot);
+      const gen = (slot || slots.find((s) => s.gen) || {}).gen || '';
+      console.log(`state=${slot ? slot.state : 'absent'} gen=${gen}`);
+      return;
+    }
+    case 'ring': {
+      if (typeof args.slot !== 'string' || typeof args.message !== 'string' || !args.message) throw new CrewError('usage', 'ring needs --slot and --message');
+      const slot = await findSlot(cfg, args.slot);
+      if (!slot) throw new CrewError('not_found', `Kiro Crew does not list the chat ${args.slot}`);
+      if (slot.app !== APP_NAME && slot.origin !== 'user') {
+        throw new CrewError('uncontrolled', `the firstmate app may not message the chat ${args.slot}, whose origin is ${slot.origin || 'unrecorded'}`);
+      }
+      if (slot.state !== 'idle') throw new CrewError('refused', `the chat ${args.slot} is ${slot.state}`);
+      try {
+        console.log(`rung=${slot.key} delivery=${await sendMessage(cfg, slot.key, args.message)}`);
+      } catch (err) {
+        // Crew answers a send it refuses on a listed chat with its uniform 404.
+        if (err instanceof CrewError && err.code === 'not_found') throw new CrewError('uncontrolled', `Kiro Crew refused the firstmate app's message to the chat ${args.slot}`, err.detail);
+        throw err;
+      }
+      return;
+    }
     case 'probe': {
       if (typeof args.slot !== 'string') throw new CrewError('usage', 'probe needs --slot');
       const slot = await createSlot(cfg, args.slot);
@@ -345,7 +392,7 @@ async function main(argv) {
       return;
     }
     default:
-      throw new CrewError('usage', 'usage: fm-kirocrew.mjs config|ping|slots|close|probe --home <fm-home> [...]');
+      throw new CrewError('usage', 'usage: fm-kirocrew.mjs config|ping|slots|close|probe|state|ring --home <fm-home> [...]');
   }
 }
 

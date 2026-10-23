@@ -4,11 +4,14 @@
 // shapes recorded in docs/verification/kirocrew.md, the owner routes
 // bin/fm-kirocrew-setup.sh calls to install the app from a registry, and a few
 // /__test routes that let the suite drop live chats (a gateway restart), hold
-// every request unanswered (a hung gateway), seed the installed app record, and
-// read the calls.
+// every request unanswered (a hung gateway), seed the installed app record,
+// expire the app token (Crew then answers it 403 `forbidden`), and read the
+// calls. The dashboard owner reaches every chat route too, and a chat the owner
+// creates is the owner's own (origin user, no app).
 //
 // Usage: fm-kirocrew-fake-gateway.mjs <port-file>
-// Env:   FAKE_SECRET (required), FAKE_AGENT (default firstmate-worker),
+// Env:   FAKE_SECRET (required), FAKE_AGENT (comma-separated agents the gateway
+//        offers, default firstmate-worker),
 //        FAKE_TRUST=1 to grant Trust, FAKE_TURN_MS (default 300),
 //        FAKE_CREW_HOME where an install writes the app files,
 //        FAKE_OWNER_TOKEN the dashboard owner's token (default owner-token)
@@ -18,14 +21,25 @@ import { join } from 'node:path';
 
 const MANIFEST = JSON.parse(readFileSync(new URL('../../apps/firstmate/app.json', import.meta.url), 'utf8'));
 const SECRET = process.env.FAKE_SECRET || '';
-const AGENT = process.env.FAKE_AGENT || 'firstmate-worker';
+const AGENTS = (process.env.FAKE_AGENT || 'firstmate-worker').split(',');
+const AGENT = AGENTS[0];
 const TOKEN = 'fake-app-token';
+// Crew's per-process generation, which every chat row carries as turn_gen; a
+// drop (a gateway restart) mints a new one.
+let gen = 'gen-1';
+// The token the next exchange mints; an expired one is refused with 403.
+let liveToken = TOKEN;
+const expiredTokens = new Set();
 const OWNER_TOKEN = process.env.FAKE_OWNER_TOKEN || 'owner-token';
 let turnMs = Number(process.env.FAKE_TURN_MS || 300);
 let hang = false;
 let port = 0;
 const live = new Map();
 const transcripts = new Map();
+// Who created each chat, its agent and its title, kept with its transcript so
+// a resume restores them.
+const kept = new Map();
+const keep = (slot) => kept.set(slot.key, { origin: slot.origin, agent: slot.agent, title: slot.title, pinned: Boolean(slot.pinned) });
 const calls = [];
 // Owner-side app state: the operator's registry rows, which of them were read
 // since they last changed, the trust grant (bound to a repository), and the
@@ -48,12 +62,14 @@ const row = (slot) => ({
   pending_approval: false,
   messages: slot.rows.length * 2,
   trust: slot.trust,
-  app: 'firstmate',
-  origin: 'app',
+  app: slot.origin === 'app' ? 'firstmate' : '',
+  origin: slot.origin,
+  turn_gen: gen,
+  pinned: Boolean(slot.pinned),
 });
 
 function newSlot(key, fields = {}) {
-  return { key, title: '', agent: AGENT, project: '/fake/workspace', model: '', effort: '', running: false, queue: [], rows: [], trust: false, timer: null, ...fields };
+  return { key, title: '', agent: AGENT, project: '/fake/workspace', model: '', effort: '', running: false, queue: [], rows: [], trust: false, timer: null, origin: 'app', ...fields };
 }
 
 function startTurn(slot, message) {
@@ -145,13 +161,20 @@ const server = createServer((req, res) => {
     const path = url.pathname;
     if (!path.startsWith('/__test/')) calls.push({ method: req.method, path: path + url.search, body });
     if (path === '/__test/calls') return send(res, 200, calls);
+    // A gateway restart: a new generation, every live chat's turn lost, and
+    // every chat dropped but its transcript, except the owner's pinned chats,
+    // which Crew restores; `only` names the chats Crew does not restore.
     if (path === '/__test/drop') {
-      for (const slot of live.values()) {
+      gen = `gen-${Number(gen.slice(4)) + 1}`;
+      for (const slot of [...live.values()]) {
         if (slot.timer) clearTimeout(slot.timer);
+        slot.timer = null;
+        slot.running = false;
+        slot.queue = [];
         transcripts.set(slot.key, slot.rows);
+        if (Array.isArray(body.only) ? body.only.includes(slot.key) : !(slot.origin === 'user' && slot.pinned)) live.delete(slot.key);
       }
-      live.clear();
-      return send(res, 200, { ok: true });
+      return send(res, 200, { ok: true, gen });
     }
     if (path === '/__test/turn-ms') {
       turnMs = Number(body.ms);
@@ -165,22 +188,39 @@ const server = createServer((req, res) => {
       installedApp = body.record || null;
       return send(res, 200, { ok: true });
     }
+    if (path === '/__test/expire-token') {
+      expiredTokens.add(liveToken);
+      liveToken = `${TOKEN}-${expiredTokens.size + 1}`;
+      return send(res, 200, { ok: true });
+    }
     // A hung gateway: the connection stays open and nothing answers.
     if (hang) return undefined;
     if (path === '/api/apps/firstmate/token' && req.method === 'POST') {
-      return req.headers['x-app-secret'] === SECRET ? send(res, 200, { token: TOKEN }) : send(res, 403, { error: 'bad secret' });
+      return req.headers['x-app-secret'] === SECRET ? send(res, 200, { token: liveToken }) : send(res, 403, { error: 'bad secret' });
     }
     if (path.startsWith('/api/apps/') || path.startsWith('/api/security/')) return ownerRoute(req, res, path, body);
-    if ((req.headers.cookie || '') !== `mc_token_${port}=${TOKEN}`) return send(res, 401, { error: 'Token required' });
+    const cookie = req.headers.cookie || '';
+    const owner = cookie === `mc_token_${port}=${OWNER_TOKEN}`;
+    if (expiredTokens.has(cookie.replace(`mc_token_${port}=`, ''))) return send(res, 403, { error: 'Forbidden', code: 'forbidden' });
+    if (!owner && cookie !== `mc_token_${port}=${liveToken}`) return send(res, 401, { error: 'Token required' });
     if (path === '/api/chat/slots' && req.method === 'GET') return send(res, 200, [...live.values()].map(row));
+    if (path === '/api/sessions' && req.method === 'GET') {
+      if (!owner) return send(res, 403, { error: 'Forbidden', code: 'forbidden' });
+      const name = url.searchParams.get('name');
+      const sessions = [...new Set([...transcripts.keys(), ...live.keys()])]
+        .filter((key) => name === null || key === name)
+        .map((key) => ({ key: `dashboard_${key}` }));
+      return send(res, 200, { sessions, total: sessions.length, has_more: false });
+    }
     if (path === '/api/chat/slots' && req.method === 'POST') {
-      if (body.agent !== AGENT) return send(res, 409, { error: 'the selected agent choice is not available', code: 'agent_choice_unavailable' });
-      const slot = newSlot(body.name, { title: body.title || '' });
+      if (!AGENTS.includes(body.agent)) return send(res, 409, { error: 'the selected agent choice is not available', code: 'agent_choice_unavailable' });
+      const slot = newSlot(body.name, { title: body.title || '', agent: body.agent, origin: owner ? 'user' : 'app' });
+      keep(slot);
       live.set(slot.key, slot);
       return send(res, 200, row(slot));
     }
     if (path === '/api/chat/mode') {
-      if (process.env.FAKE_TRUST === '1' && live.has(body.slot)) {
+      if ((owner || process.env.FAKE_TRUST === '1') && live.has(body.slot)) {
         live.get(body.slot).trust = true;
         return send(res, 200, { ok: true, mode: body.mode });
       }
@@ -188,7 +228,8 @@ const server = createServer((req, res) => {
     }
     if (path === '/api/chat' && req.method === 'POST') {
       const slot = live.get(body.slot);
-      if (!slot) return send(res, 404, { error: 'slot not found', code: 'slot_not_found' });
+      // An app may message its own chats and the captain's own (origin user).
+      if (!slot || (!owner && slot.origin !== 'app' && slot.origin !== 'user')) return send(res, 404, { error: 'slot not found', code: 'slot_not_found' });
       if (slot.running) {
         slot.queue.push(body.message);
         return send(res, 200, { ok: true, queued: true, queue_id: `q${calls.length}` });
@@ -200,9 +241,20 @@ const server = createServer((req, res) => {
     if (!m) return send(res, 404, { error: 'no route' });
     const name = decodeURIComponent(m[1]);
     const verb = m[2] || '';
+    // Crew restores a chat with its agent and title. For a name it keeps no
+    // transcript of, the owner's resume opens an empty chat on Crew's default
+    // agent, while an app gets the uniform 404.
     if (verb === 'resume') {
-      if (live.has(name) || !transcripts.has(name) || body.key !== `dashboard_${name}`) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
-      const slot = newSlot(name, { rows: transcripts.get(name), project: '/fake/resumed' });
+      if (live.has(name) || body.key !== `dashboard_${name}`) return send(res, 404, { error: 'not found', code: 'slot_not_found' });
+      // An app may resume only a transcript it owns.
+      if (!owner && (kept.get(name) || {}).origin !== 'app') return send(res, 404, { error: 'not found', code: 'slot_not_found' });
+      if (!transcripts.has(name)) {
+        const fresh = newSlot(name, { agent: '', title: 'New Session…', origin: '' });
+        live.set(name, fresh);
+        keep(fresh);
+        return send(res, 200, { ok: true, key: name, messages: [] });
+      }
+      const slot = newSlot(name, { rows: transcripts.get(name), project: '/fake/resumed', ...(kept.get(name) || {}) });
       live.set(name, slot);
       return send(res, 200, { ok: true, key: name, messages: slot.rows });
     }
@@ -222,6 +274,19 @@ const server = createServer((req, res) => {
     if (verb === 'model') { slot.model = body.model; return send(res, 200, { ok: true, model: body.model }); }
     if (verb === 'reasoning-effort') { slot.effort = body.reasoning_effort; return send(res, 200, { ok: true, reasoning_effort: body.reasoning_effort }); }
     if (verb === 'turn-timeout') return send(res, 200, { ok: true, secs: body.secs });
+    if (verb === 'agent') {
+      if (!AGENTS.includes(body.agent)) return send(res, 409, { error: 'the selected agent choice is not available', code: 'agent_choice_unavailable' });
+      slot.agent = body.agent;
+      keep(slot);
+      return send(res, 200, { ok: true, agent: body.agent });
+    }
+    if (verb === 'title') { slot.title = body.title; keep(slot); return send(res, 200, { ok: true, title: body.title }); }
+    if (verb === 'pin') {
+      if (!owner) return send(res, 404, { error: 'not found' });
+      slot.pinned = body.pinned === true;
+      keep(slot);
+      return send(res, 200, { ok: true, pinned: slot.pinned });
+    }
     if (verb === 'interrupt' && slot.queue.length === 0) return send(res, 400, { error: 'queue empty, use /stop instead' });
     if (verb === 'interrupt' || verb === 'stop') {
       if (slot.running) {

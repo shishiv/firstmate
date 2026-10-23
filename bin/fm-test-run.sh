@@ -786,6 +786,7 @@ tests/fm-inbox.test.sh 6062
 tests/fm-jev-mem-guard.test.sh 336
 tests/fm-kimi-harness.test.sh 58917
 tests/fm-kirocrew-harness.test.sh 15000
+tests/fm-kirocrew-primary.test.sh 13000
 tests/fm-launch-prompt-signals-live-e2e.test.sh 50
 tests/fm-provider-limit-signals-live-e2e.test.sh 50
 tests/fm-lint-workflows.test.sh 872

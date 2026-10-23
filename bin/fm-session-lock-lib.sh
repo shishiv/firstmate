@@ -77,11 +77,35 @@ fm_ancestry_parent_pid() {  # <pid>
 #     a bare `bun` (verified live on Linux, kiro-cli 2.22.1) and whose argv
 #     alone carries a kiro-cli install-tree component. A bare `bun` is also
 #     omp's and Pi's interpreter, so nothing but that component matches.
+#   - the Kiro Crew gateway (fm_kirocrew_gateway_process_matches below). It is
+#     the parent of every chat's `kiro-cli acp` runtime and of every
+#     agent-file hook Crew runs for a chat, the one frame a Crew chat's hooks and
+#     its tool shells share (verified live, Kiro Crew 0.11.0 on kiro-cli 2.33.1:
+#     hook -> sandbox python3.12 -> gateway; tool -> kiro-cli-chat -> kiro-cli
+#     -> gateway). Every chat of that gateway shares the frame, so a Crew
+#     primary's lock is also owned by the other chats of the same gateway.
 fm_kiro_cli_process_matches() {  # <comm> <args>
   case "${1##*/}" in
     kiro-cli|kiro-cli-chat) return 0 ;;
     bun|bun-*)
       case " $2 " in *"/kiro-cli/"*) return 0 ;; esac ;;
+  esac
+  fm_kirocrew_gateway_process_matches "$1" "$2"
+}
+
+# True when the process described by command name $1 and full argument string
+# $2 is a Kiro Crew gateway. It has two forms: `kirocrew gateway` started through
+# the venv's entry script (comm `kirocrew`), and `python -m kiro_crew gateway`,
+# the form a dashboard restart re-executes the gateway into while it keeps its
+# pid (verified live, Kiro Crew 0.11.0). Crew's sandbox launcher is another
+# python3.12 child of the gateway and runs a kirocrew_sandbox_*.py script, so
+# neither form matches it.
+fm_kirocrew_gateway_process_matches() {  # <comm> <args>
+  case "${1##*/}" in
+    kirocrew)
+      case " $2 " in *"/kirocrew gateway "*|*" kirocrew gateway "*) return 0 ;; esac ;;
+    python|python3|python3.*)
+      case " $2 " in *" -m kiro_crew gateway "*) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -127,6 +151,9 @@ fm_harness_path_name() {  # <path>
 #     lets ownership match against any frame in the run, exactly as it does for
 #     Claude. The bun frame in the middle is matched by
 #     fm_kiro_cli_process_matches (step 0), so the run stays contiguous across it.
+#     Under Kiro Crew the run ends at the gateway frame instead, so a Crew chat's
+#     tool shells and its hooks, which share no kiro-cli frame, anchor on the same
+#     gateway pid.
 #
 # Evidence, in order:
 #   0. kiro-cli's own frames, owned by fm_kiro_cli_process_matches above.

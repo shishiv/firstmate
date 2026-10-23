@@ -12,6 +12,11 @@
 #     it, so the shared file carries no machine path and a linked task worktree
 #     that inherits it runs its own copy, which fails primary scope.
 #   - The explicit V2 primary agent names the launcher's absolute path.
+#   - The Kiro Crew primary agent firstmate-primary (bin/fm-kirocrew-setup.sh
+#     --primary) runs this script from the chat's project folder, which Crew
+#     makes the hook's working directory. Crew runs it inside its own sandbox
+#     for AgentSpawn (handled as SessionStart), UserPromptSubmit, PreToolUse,
+#     and Stop, and names the chat in the payload's session_key.
 # Kiro waits for each command hook (verified on kiro-cli 2.22.1).
 #
 # Worker/scout lifecycle, generation-bound to the current task incarnation:
@@ -103,7 +108,9 @@
 # run because no endpoint loads (ensure exit 3), the block falls back to forking
 # one bin/fm-watch-arm.sh cycle into its own session, which only keeps the
 # durable queue fed: the arm waits out a whole watcher cycle while Kiro holds
-# the turn end until every Stop hook exits.
+# the turn end until every Stop hook exits. A Kiro Crew primary gets no such
+# fallback, because its hooks run inside Crew's sandbox; its doorbell owner
+# runs in the home's doorbell service (`bin/fm-primary-doorbell.sh serve`).
 #
 # Usage: fm-kiro-turnend-hook.sh [--kiro-home <dir>]   (hook payload on stdin)
 #
@@ -157,7 +164,7 @@ payload_field() {  # <key>
 }
 EVENT=$(payload_field hook_event_name)
 case "$EVENT" in
-  agentSpawn|SessionStart) EVENT_KIND='session-start' ;;
+  agentSpawn|AgentSpawn|SessionStart) EVENT_KIND='session-start' ;;
   userPromptSubmit|UserPromptSubmit) EVENT_KIND=user-prompt-submit ;;
   preToolUse|PreToolUse) EVENT_KIND=pre-tool-use ;;
   postToolUse|PostToolUse) EVENT_KIND=post-tool-use ;;
@@ -171,9 +178,17 @@ KIRO_DOORBELL_PUBLISHED='KIRO_PRIMARY_ENDPOINT: structural wake doorbell publish
 
 # Keep the one doorbell owner running for this primary. Quiet by design: the
 # owner's own records say why it could not start, and the caller decides on any
-# fallback from the exit status (bin/fm-primary-doorbell.sh header).
-kiro_primary_doorbell_owner_ensure() {
-  "$SCRIPT_DIR/fm-primary-doorbell.sh" ensure </dev/null >/dev/null 2>&1
+# fallback from the exit status (bin/fm-primary-doorbell.sh header). The one
+# exception is a Kiro Crew primary whose home runs no doorbell service (exit
+# 5): its published doorbell has no owner, and only the model can fall back to
+# the foreground checkpoint, so <announce>=1 prints one context line for it.
+kiro_primary_doorbell_owner_ensure() {  # [<announce>]
+  local line rc=0
+  line=$("$SCRIPT_DIR/fm-primary-doorbell.sh" ensure </dev/null 2>/dev/null) || rc=$?
+  if [ "$rc" = 5 ] && [ "${1:-0}" = 1 ]; then
+    printf 'KIRO_PRIMARY_ENDPOINT: the structural wake doorbell is published but nothing rings it (%s); use the foreground checkpoint fallback until the doorbell service runs.\n' "${line#doorbell-owner: unavailable - }"
+  fi
+  return "$rc"
 }
 
 # Block a model-run watcher arm or checkpoint while the doorbell owner can run
@@ -217,13 +232,13 @@ kiro_primary_doorbell_note() {
 }
 
 kiro_primary_session_open() {
-  local digest
+  local digest owner_note
   digest=$("$SCRIPT_DIR/fm-sessionstart-run.sh" --source startup 2>&1 || true)
   # shellcheck source=bin/fm-primary-endpoint-lib.sh
   . "$SCRIPT_DIR/fm-primary-endpoint-lib.sh"
   if fm_primary_endpoint_publish "$STATE" "$FM_ROOT" "$FM_HOME"; then
-    digest="${digest}${digest:+$'\n'}$KIRO_DOORBELL_PUBLISHED"
-    kiro_primary_doorbell_owner_ensure || true
+    owner_note=$(kiro_primary_doorbell_owner_ensure 1)
+    digest="${digest}${digest:+$'\n'}${owner_note:-$KIRO_DOORBELL_PUBLISHED}"
   else
     digest="${digest}${digest:+$'\n'}KIRO_PRIMARY_ENDPOINT: structural wake doorbell unavailable ($FM_PRIMARY_ENDPOINT_ERROR); use the foreground checkpoint fallback."
   fi
@@ -260,6 +275,12 @@ if [ "${FM_KIRO_PRIMARY_HOOK:-0}" = 1 ]; then
   # shellcheck source=bin/fm-primary-scope-lib.sh
   . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
   fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
+  # A Kiro Crew agent-file hook names its chat as session_key
+  # (dashboard:<chat>); a Kiro CLI payload has no such field. The endpoint
+  # library publishes that chat as the doorbell target
+  # (bin/fm-primary-endpoint-lib.sh).
+  FM_KIROCREW_SESSION_KEY=$(payload_field session_key)
+  export FM_KIROCREW_SESSION_KEY
   case "$EVENT_KIND" in
     session-start)
       kiro_primary_session_open
@@ -277,7 +298,7 @@ if [ "${FM_KIRO_PRIMARY_HOOK:-0}" = 1 ]; then
       fi
       kiro_primary_endpoint_ensure 1
       kiro_primary_mirror
-      kiro_primary_doorbell_owner_ensure || true
+      kiro_primary_doorbell_owner_ensure 1 || true
       kiro_primary_doorbell_note
       # The queue remains durable until the model runs the exact
       # WAKE_ACK_REQUIRED command this drain prints after handling its context.
@@ -576,6 +597,10 @@ if [ "${FM_KIRO_PRIMARY_HOOK:-0}" = 1 ]; then
   # Only a primary with no loadable endpoint (exit 3) falls back to the plain
   # arm below; a cooling-down or failed owner already rang its own notice.
   [ "$?" -eq 3 ] || exit 0
+  # A Kiro Crew hook runs inside Crew's sandbox, where a watcher would stay
+  # confined after the hook exits; the primary's foreground checkpoint, which
+  # the startup digest names when no doorbell is published, runs outside it.
+  [ -z "${FM_KIROCREW_SESSION_KEY:-}" ] || exit 0
 fi
 [ -e "$STATE/.afk" ] && exit 0
 fm_supervision_needed "$STATE" "$GRACE" || exit 0
