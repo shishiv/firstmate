@@ -1344,12 +1344,17 @@ The local, gitignored `config/kirocrew` is optional and holds `key=value` lines:
 | `url` | The gateway's dashboard address | `http://127.0.0.1:5476` |
 | `crew-home` | The gateway's data home, where Crew writes the `firstmate` app secret | `~/.kiro/crew` |
 | `agent` | The Kiro agent file every worker chat runs | `firstmate-worker` |
+| `app-registry` | The git repository Crew installs the `firstmate` app from (its `apps/firstmate/app.json`) | `https://github.com/shishiv/firstmate` |
+| `app-registry-branch` | The branch of that repository | `main` |
 
 Run `bin/fm-kirocrew-setup.sh` once from the captain's own shell before the first `kirocrew` spawn.
-It writes the agent file into the Kiro agents folder of the gateway (`--kiro-home`, which must be the gateway's `KIRO_HOME`; default `$KIRO_HOME`, then `~/.kiro`, the same default Crew uses), registers the self-managed app `firstmate` as the dashboard owner, adds it to Crew's trusted apps, and prints the steps only the captain can take: restarting the gateway when the agent file is new, and giving the app chat control in the Crew dashboard.
+It writes the agent file into the Kiro agents folder of the gateway (`--kiro-home`, which must be the gateway's `KIRO_HOME`; default `$KIRO_HOME`, then `~/.kiro`, the same default Crew uses).
+Then, as the dashboard owner and with the requests the dashboard's Discover page sends, it keeps a Crew app registry named `firstmate` on `app-registry` and `app-registry-branch`, grants the app execution trust for that repository, and installs the `firstmate` app when it is absent; the captain's other registries stay as they are.
+An installed app is left as it is, and a newer `apps/firstmate/app.json` on that branch reaches it through Crew's own Update.
+The script prints the steps only the captain can take: restarting the gateway when the agent file is new, and clicking "Enable and allow chat control" on `/apps/detail/firstmate` in the Crew dashboard.
 That consent grants the app's `sessionApproval` permission, which lets firstmate put each worker chat in Trust mode; without it every shell and file tool of a worker waits for an approval in the dashboard.
 The consent also lets the app control every chat of that Crew instance, so a Crew instance used only by firstmate is the right home for it.
-Kiro Crew 0.11.0 shows no Enable button for a self-managed app, so the script prints the one request the captain runs in the browser console on the app's dashboard page, the request that button would send.
+A `firstmate` app that an older setup registered as self-managed has no Enable button in Kiro Crew 0.11.0, so the script refuses it and asks the captain to uninstall it first.
 `bin/fm-kirocrew-setup.sh --check` opens and closes one empty chat and reports the agent and whether Trust is granted.
 `fm-spawn.sh` refuses a `kirocrew` launch, before any endpoint or worktree exists, when the gateway or the app cannot be reached, and refuses a ship on a `forge=external` project, because a kirocrew worker's git runs inside the gateway, out of reach of that project's per-task pre-push guard.
 The file is home-local and not inherited.

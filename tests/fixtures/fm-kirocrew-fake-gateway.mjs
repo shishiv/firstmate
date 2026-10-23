@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 // A stand-in Kiro Crew gateway for tests/fm-kirocrew-harness.test.sh. It
 // implements the app-token routes bin/fm-kirocrew.mjs uses, with the response
-// shapes recorded in docs/verification/kirocrew.md, the two owner routes
-// bin/fm-kirocrew-setup.sh calls, and a few /__test routes that let the suite
-// drop live chats (a gateway restart), hold every request unanswered (a hung
-// gateway), and read the calls.
+// shapes recorded in docs/verification/kirocrew.md, the owner routes
+// bin/fm-kirocrew-setup.sh calls to install the app from a registry, and a few
+// /__test routes that let the suite drop live chats (a gateway restart), hold
+// every request unanswered (a hung gateway), seed the installed app record, and
+// read the calls.
 //
 // Usage: fm-kirocrew-fake-gateway.mjs <port-file>
 // Env:   FAKE_SECRET (required), FAKE_AGENT (default firstmate-worker),
 //        FAKE_TRUST=1 to grant Trust, FAKE_TURN_MS (default 300),
-//        FAKE_CREW_HOME where a registration writes the app files,
+//        FAKE_CREW_HOME where an install writes the app files,
 //        FAKE_OWNER_TOKEN the dashboard owner's token (default owner-token)
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 
+const MANIFEST = JSON.parse(readFileSync(new URL('../../apps/firstmate/app.json', import.meta.url), 'utf8'));
 const SECRET = process.env.FAKE_SECRET || '';
 const AGENT = process.env.FAKE_AGENT || 'firstmate-worker';
 const TOKEN = 'fake-app-token';
@@ -25,6 +27,13 @@ let port = 0;
 const live = new Map();
 const transcripts = new Map();
 const calls = [];
+// Owner-side app state: the operator's registry rows, which of them were read
+// since they last changed, the trust grant (bound to a repository), and the
+// installed app record.
+let registries = [];
+const refreshed = new Set();
+let trustedRepository = null;
+let installedApp = null;
 
 const row = (slot) => ({
   key: slot.key,
@@ -69,6 +78,64 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// The registry that lists the app: a configured row read since it last changed.
+// Every such fake registry lists `firstmate`, from the manifest in this repo.
+const listingRegistry = () => registries.find((r) => refreshed.has(r.repo)) || null;
+
+// The dashboard-owner routes bin/fm-kirocrew-setup.sh calls, with the
+// preconditions Crew enforces: trust names the app's repository, and an install
+// needs both a registry listing the app and that trust.
+function ownerRoute(req, res, path, body) {
+  if ((req.headers.cookie || '') !== `mc_token_${port}=${OWNER_TOKEN}`) return send(res, 401, { error: 'Token required' });
+  const method = req.method;
+  if (path === '/api/apps/firstmate' && method === 'GET') {
+    return installedApp ? send(res, 200, installedApp) : send(res, 404, { error: "app 'firstmate' not installed" });
+  }
+  if (path === '/api/apps/registries' && method === 'GET') {
+    return send(res, 200, { registries: registries.map((r) => ({ ...r, trust: 'index' })), pinned: [] });
+  }
+  if (path === '/api/apps/registries' && method === 'PUT') {
+    if (!Array.isArray(body.registries) || body.registries.some((r) => !r || !r.repo || !r.name)) return send(res, 400, { error: 'registries must be an array' });
+    registries = body.registries.map(({ name, repo, branch }) => ({ name, repo, branch: branch || 'main' }));
+    refreshed.clear();
+    return send(res, 200, { ok: true, registries, newlyTrustedHosts: [] });
+  }
+  if (path === '/api/apps/registries/refresh' && method === 'POST') {
+    const reg = registries.find((r) => r.repo === body.repo);
+    if (!reg) return send(res, 404, { error: 'unknown registry' });
+    refreshed.add(reg.repo);
+    return send(res, 200, { ok: true, refreshed: [reg.name], failed: [] });
+  }
+  if (path === '/api/security/trusted-apps/firstmate' && method === 'POST') {
+    const reg = listingRegistry();
+    if (!installedApp && !reg) return send(res, 404, { error: 'app is neither installed nor in a known registry', code: 'app_not_installed' });
+    const repository = installedApp ? installedApp.sourceUrl || '' : reg.repo;
+    if ((body.repository || '') !== repository) return send(res, 409, { error: 'repository consent proof is required', code: 'app_trust_repository_mismatch' });
+    trustedRepository = repository;
+    return send(res, 200, { ok: true });
+  }
+  if (path === '/api/apps/registry/install' && method === 'POST') {
+    const reg = listingRegistry();
+    if (body.name !== MANIFEST.name || !reg) return send(res, 404, { ok: false, error: `app ${body.name} is not in any registry` });
+    if (installedApp) return send(res, 400, { ok: false, error: 'already installed' });
+    if (trustedRepository !== reg.repo) return send(res, 400, { ok: false, error: 'blocked by execution policy: third-party app execution is disabled' });
+    const dir = join(process.env.FAKE_CREW_HOME || '', 'apps', MANIFEST.name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.app_secret'), `${SECRET}\n`, { mode: 0o600 });
+    installedApp = {
+      name: MANIFEST.name,
+      version: MANIFEST.version,
+      enabled: false,
+      sessionApprovalConsentPending: Boolean(MANIFEST.permissions?.sessionApproval),
+      resources: 'gateway',
+      origin: 'registry',
+      sourceUrl: reg.repo,
+    };
+    return send(res, 201, { ok: true, name: MANIFEST.name, message: `installed ${MANIFEST.name}` });
+  }
+  return send(res, 404, { error: 'no route' });
+}
+
 const server = createServer((req, res) => {
   let raw = '';
   req.on('data', (c) => { raw += c; });
@@ -94,21 +161,16 @@ const server = createServer((req, res) => {
       hang = Boolean(body.on);
       return send(res, 200, { ok: true });
     }
+    if (path === '/__test/app') {
+      installedApp = body.record || null;
+      return send(res, 200, { ok: true });
+    }
     // A hung gateway: the connection stays open and nothing answers.
     if (hang) return undefined;
     if (path === '/api/apps/firstmate/token' && req.method === 'POST') {
       return req.headers['x-app-secret'] === SECRET ? send(res, 200, { token: TOKEN }) : send(res, 403, { error: 'bad secret' });
     }
-    if (path === '/api/apps/register' || path.startsWith('/api/security/')) {
-      if ((req.headers.cookie || '') !== `mc_token_${port}=${OWNER_TOKEN}`) return send(res, 401, { error: 'Token required' });
-      if (path === '/api/security/trusted-apps/firstmate' && req.method === 'POST') return send(res, 200, { ok: true });
-      if (path !== '/api/apps/register' || req.method !== 'POST' || body.name !== 'firstmate') return send(res, 404, { error: 'no route' });
-      const dir = join(process.env.FAKE_CREW_HOME || '', 'apps', 'firstmate');
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, '.app_secret'), `${SECRET}\n`, { mode: 0o600 });
-      writeFileSync(join(dir, 'installed.json'), JSON.stringify({ name: 'firstmate', version: body.version, enabled: false, sessionApprovalConsentPending: true }));
-      return send(res, 201, { ok: true, message: 'app registered', secret: SECRET });
-    }
+    if (path.startsWith('/api/apps/') || path.startsWith('/api/security/')) return ownerRoute(req, res, path, body);
     if ((req.headers.cookie || '') !== `mc_token_${port}=${TOKEN}`) return send(res, 401, { error: 'Token required' });
     if (path === '/api/chat/slots' && req.method === 'GET') return send(res, 200, [...live.values()].map(row));
     if (path === '/api/chat/slots' && req.method === 'POST') {

@@ -370,8 +370,9 @@ pass "scout launch carries the client, worktree, busy wiring, model, effort and 
 
 setup_home="$TMP_ROOT/setup-home"
 kiro_home="$TMP_ROOT/setup-kiro"
+app_repo=https://example.invalid/firstmate
 mkdir -p "$setup_home/config" "$setup_home/state"
-printf 'url=%s\ncrew-home=%s\n' "$GW" "$TMP_ROOT/setup-crew" > "$setup_home/config/kirocrew"
+printf 'url=%s\ncrew-home=%s\napp-registry=%s\n' "$GW" "$TMP_ROOT/setup-crew" "$app_repo" > "$setup_home/config/kirocrew"
 fakecrew="$TMP_ROOT/fake-kirocrew"
 # shellcheck disable=SC2016 # $1 belongs to the generated script.
 printf '#!/bin/sh\n[ "$1" = token ] && printf "Dashboard: %s/?token=owner-token\\n"\n' "$GW" > "$fakecrew"
@@ -382,23 +383,53 @@ run_setup() {
   env -u KIROCREW_SPAWNED PATH="$shim:$PATH" "$ROOT/bin/fm-kirocrew-setup.sh" --home "$setup_home" \
     --kiro-home "$kiro_home" --kirocrew-bin "$fakecrew" "$@" 2>&1
 }
+owner() {  # <method> <path> [json]
+  curl -s -X "$1" -H "Cookie: mc_token_${GW##*:}=owner-token" -H 'Content-Type: application/json' ${3:+--data-binary "$3"} "$GW$2"
+}
+registry_rows() { owner GET /api/apps/registries | jq -c '[.registries[] | {name, repo, branch}]'; }
+captain_row='{"name":"captain-apps","repo":"https://example.invalid/captain-apps","branch":"dev"}'
+owner PUT /api/apps/registries "{\"registries\":[$captain_row]}" >/dev/null
+
 out=$(run_setup) || fail "setup failed: $out"
 jq -e '.name == "firstmate-worker" and .tools == ["*"] and .allowedTools == [] and .includeMcpJson == false' \
   "$kiro_home/agents/firstmate-worker.json" >/dev/null || fail 'setup did not write the worker agent file'
-assert_contains "$out" 'registered app firstmate' 'setup did not register the app'
-assert_contains "$out" "app firstmate is on Crew's trusted apps list" 'setup did not trust the app'
+[ "$(registry_rows)" = "[$captain_row,{\"name\":\"firstmate\",\"repo\":\"$app_repo\",\"branch\":\"main\"}]" ] \
+  || fail "the registry rows are wrong, or the captain's own row changed: $(registry_rows)"
+assert_contains "$(calls_for '.path == "/api/security/trusted-apps/firstmate"')" "\"repository\":\"$app_repo\"" 'trust must name the app repository'
+assert_contains "$out" "installed the Crew app firstmate from $app_repo (main)" "setup did not install the app: $out"
+installed=$(owner GET /api/apps/firstmate)
+[ "$(jq -r .version <<<"$installed")" = "$(jq -r .version "$ROOT/apps/firstmate/app.json")" ] || fail "the installed app is not this repo's manifest: $installed"
+[ "$(jq -r .resources <<<"$installed")" = gateway ] || fail 'the app must install as a gateway app, which gets the dashboard Enable button'
+jq -e '.permissions.sessionApproval == true and .permissions.api == ["/api/chat"] and .permissions.events == ["slots:own"]' \
+  "$ROOT/apps/firstmate/app.json" >/dev/null || fail 'the manifest must ask for chat control and nothing wider'
+assert_present "$TMP_ROOT/setup-crew/apps/firstmate/.app_secret" 'the install wrote no app secret'
 assert_contains "$out" 'Restart the Kiro Crew gateway' 'a new agent file needs the restart step'
-assert_contains "$out" 'Give the app chat control' 'an app without consent needs the dashboard step'
-assert_contains "$out" "fetch('/api/apps/firstmate/enable'" 'the dashboard step must print the console request'
-assert_contains "$(calls_for '.path == "/api/apps/register"')" '"sessionApproval":true' 'the manifest must ask for sessionApproval'
-assert_contains "$(calls_for '.path == "/api/security/trusted-apps/firstmate"')" POST 'the trusted-apps call is missing'
+assert_contains "$out" 'Enable and allow chat control' 'an app without consent needs the dashboard step'
+case "$out" in *fetch\(*) fail 'the dashboard step must not need the browser console' ;; esac
 [ -s "$TMP_ROOT/curl-argv.log" ] || fail 'the curl shim saw no call'
 assert_no_grep 'owner-token' "$TMP_ROOT/curl-argv.log" 'the owner token reached a curl argument'
+
+puts_before=$(calls_for '.method == "PUT" and .path == "/api/apps/registries"' | jq length)
 out=$(run_setup) || fail "a second setup run failed: $out"
 assert_contains "$out" 'agent file is current' 'a second run rewrote the agent file'
-assert_contains "$out" 'is already registered' 'a second run registered the app again'
+assert_contains "$out" 'is installed' 'a second run did not report the installed app'
+[ "$(calls_for '.path == "/api/apps/registry/install"' | jq length)" = 1 ] || fail 'a second run installed the app again'
+[ "$(calls_for '.method == "PUT" and .path == "/api/apps/registries"' | jq length)" = "$puts_before" ] || fail 'a second run rewrote the registries'
 case "$out" in *'Restart the Kiro Crew gateway'*) fail 'an unchanged agent file asked for a restart' ;; esac
+
+printf 'app-registry-branch=release\n' >> "$setup_home/config/kirocrew"
+out=$(run_setup) || fail "a setup run with a new registry branch failed: $out"
+[ "$(registry_rows)" = "[$captain_row,{\"name\":\"firstmate\",\"repo\":\"$app_repo\",\"branch\":\"release\"}]" ] \
+  || fail "a new registry branch did not move the firstmate row only: $(registry_rows)"
+[ "$(calls_for '.path == "/api/apps/registry/install"' | jq length)" = 1 ] || fail 'a branch change reinstalled the app'
+
 out=$(run_setup --check) || fail "setup --check failed: $out"
 assert_contains "$out" 'agent=firstmate-worker' 'check did not report the agent'
 assert_contains "$out" 'trust=not-granted' 'check did not report the missing Trust'
-pass "setup writes the agent file, registers and trusts the app without the owner token in argv, is idempotent, and checks"
+
+curl -s -X POST -H 'Content-Type: application/json' --data-binary \
+  '{"record":{"name":"firstmate","version":"0.2.0","resources":"app","enabled":false,"sessionApprovalConsentPending":true}}' \
+  "$GW/__test/app" >/dev/null
+if out=$(run_setup); then fail 'setup accepted a self-managed firstmate app'; fi
+assert_contains "$out" 'uninstall it on /apps/detail/firstmate' "wrong self-managed refusal: $out"
+pass "setup writes the agent file, installs and trusts the app from its registry without the owner token in argv, keeps other registries, is idempotent, and checks"
