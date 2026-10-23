@@ -602,6 +602,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "tests/fixtures/kiro-2.33.1-workspace-trust.txt",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": ".agents/skills/agent-skill-trigger-index/SKILL.md",
       "audience": "agent-runtime"
     },
