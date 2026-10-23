@@ -309,4 +309,4 @@ if [ "$enabled" != true ] || [ "$pending" = true ]; then
 fi
 [ "$n" -gt 0 ] || echo "  none"
 echo "Then run: $0 --home $HOME_DIR --check"
-[ "$PRIMARY" = 0 ] || echo "Then open the primary's chat: $SCRIPT_DIR/fm-kirocrew-primary.sh --home $HOME_DIR"
+[ "$PRIMARY" = 0 ] || echo "Then open the primary's chat: $SCRIPT_DIR/fm-kirocrew-primary.sh"
