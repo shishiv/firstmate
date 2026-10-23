@@ -174,6 +174,24 @@ fm_kiro_primary_hook_command() {
   printf 'FM_KIRO_PRIMARY_HOOK=1 %s' "$(fm_kiro_shell_quote "$FM_KIRO_TURNEND_HOOK")"
 }
 
+# kiro-cli reads user skills from <KIRO_HOME>/skills, and the isolated KIRO_HOME
+# would otherwise hide the captain's ~/.kiro/skills. Link (never copy) it so a
+# new user skill shows up without a respawn; the real directory is only read
+# through the link, so ~/.kiro is never written. An absent user directory
+# leaves no entry (and drops a stale link from an earlier build).
+fm_kiro_link_user_skills() {  # <kiro-home>
+  local home=$1 src
+  [ -n "$home" ] || return 1
+  if [ -L "$home/skills" ]; then
+    rm -f -- "$home/skills" || return 1
+  elif [ -e "$home/skills" ]; then
+    return 0
+  fi
+  [ -n "${HOME:-}" ] && [ -d "$HOME/.kiro/skills" ] || return 0
+  src=$(cd -- "$HOME/.kiro/skills" 2>/dev/null && pwd -P) || return 0
+  ln -s -- "$src" "$home/skills"
+}
+
 fm_kiro_write_settings() {  # <kiro-home>
   local home=$1
   fm_kiro_prepare_home "$home" || return 1
@@ -184,6 +202,7 @@ fm_kiro_write_settings() {  # <kiro-home>
   "chat.enableKnowledge": false
 }
 EOF
+  fm_kiro_link_user_skills "$home"
 }
 
 # kiro-cli 2.33.1 opens a "Trust this workspace?" dialog for a folder it has
