@@ -1724,6 +1724,184 @@ test_kiro_refuses_outside_an_isolated_worktree() {
   pass "fm-spawn: kiro-cli refuses to launch outside an isolated worktree"
 }
 
+# --- worker account pin (config/kiro-account) --------------------------------
+
+# make_kiro_account_fake <fakebin> <case-dir>
+# A kiro-cli that answers `whoami` the way the real one does - logged in only
+# when $XDG_DATA_HOME/kiro-cli/data.sqlite3 exists - and records the
+# XDG_DATA_HOME every check and the launched chat receive. The sign-in check
+# runs with a cleared environment, so the log paths are written into it here.
+make_kiro_account_fake() {
+  local fakebin=$1 dir=$2
+  cat > "$fakebin/kiro-cli" <<SH
+#!/usr/bin/env bash
+share=\${XDG_DATA_HOME:-\$HOME/.local/share}
+case "\${1:-}" in
+  whoami)
+    printf '%s\n' "\${XDG_DATA_HOME-unset}" >> '$dir/kiro-checks'
+    if [ -f "\$share/kiro-cli/data.sqlite3" ]; then echo 'Logged in'; exit 0; fi
+    echo 'Not logged in'
+    exit 1
+    ;;
+  --version) echo 'kiro-cli 2.35.1' ;;
+  chat) printf 'XDG_DATA_HOME=%s\n' "\${XDG_DATA_HOME-unset}" > '$dir/kiro-worker' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/kiro-cli"
+}
+
+# kiro_logged_in_root <dir>: a data root holding a Kiro login.
+kiro_logged_in_root() {
+  mkdir -p "$1/kiro-cli"
+  : > "$1/kiro-cli/data.sqlite3"
+}
+
+# run_kiro_account_pane: execute the recorded launch in a pane whose ambient
+# XDG_DATA_HOME names another, logged-in, account.
+run_kiro_account_pane() {
+  env -i HOME="$HOME_DIR" PATH="$FAKEBIN_DIR:$BASE_PATH" TERM=xterm \
+    XDG_DATA_HOME="$CASE_DIR/ambient-share" \
+    bash -c "$(cat "$CASE_DIR/launch.log")" || fail "the recorded Kiro launch failed in the synthetic pane"
+}
+
+new_kiro_account_case() {
+  rec=$(make_kiro_spawn_case "$1" "$2")
+  read_kiro_spawn_record "$rec"
+  make_kiro_account_fake "$FAKEBIN_DIR" "$CASE_DIR"
+  kiro_logged_in_root "$CASE_DIR/ambient-share"
+}
+
+test_kiro_account_pin_selects_the_data_root() {
+  local id rec out rc launch
+  id="kiro-acct-root-$$"
+  new_kiro_account_case acct-root "$id"
+  kiro_logged_in_root "$CASE_DIR/dev10"
+  printf '%s\n' "$CASE_DIR/dev10" > "$HOME_DIR/config/kiro-account"
+  out=$(XDG_DATA_HOME="$CASE_DIR/ambient-share" run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id"); rc=$?
+  expect_code 0 "$rc" "a Kiro spawn pinned to a logged-in root should succeed: $out"
+  assert_contains "$out" "account=$CASE_DIR/dev10" "the spawn should report the pinned account"
+  assert_grep "account=$CASE_DIR/dev10" "$HOME_DIR/state/$id.meta" "the task record should carry the pinned account"
+  [ "$(cat "$CASE_DIR/kiro-checks")" = "$CASE_DIR/dev10" ] \
+    || fail "the login check should ask about the pinned root only: $(cat "$CASE_DIR/kiro-checks")"
+  launch=$(cat "$CASE_DIR/launch.log")
+  assert_contains "$launch" "XDG_DATA_HOME='$CASE_DIR/dev10' " "the launch should carry the pinned root"
+  run_kiro_account_pane
+  assert_grep "XDG_DATA_HOME=$CASE_DIR/dev10" "$CASE_DIR/kiro-worker" \
+    "the worker should run under the pinned root, not the pane's ambient one"
+  pass "fm-spawn: config/kiro-account launches Kiro with the pinned XDG_DATA_HOME"
+}
+
+test_kiro_account_pin_absent_or_ordinary_keeps_xdg_data_home() {
+  local id rec out rc body
+  for body in absent ordinary; do
+    id="kiro-acct-$body-$$"
+    new_kiro_account_case "acct-$body" "$id"
+    [ "$body" = absent ] || printf 'ordinary\n' > "$HOME_DIR/config/kiro-account"
+    out=$(XDG_DATA_HOME="$CASE_DIR/ambient-share" run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id"); rc=$?
+    expect_code 0 "$rc" "a Kiro spawn with the pin $body should succeed: $out"
+    assert_not_contains "$(cat "$CASE_DIR/launch.log")" "XDG_DATA_HOME=" \
+      "a launch with the pin $body must not set XDG_DATA_HOME"
+    run_kiro_account_pane
+    assert_grep "XDG_DATA_HOME=$CASE_DIR/ambient-share" "$CASE_DIR/kiro-worker" \
+      "a launch with the pin $body must keep the pane's XDG_DATA_HOME"
+    if [ "$body" = absent ]; then
+      assert_not_contains "$out" "account=" "an unpinned spawn must not report an account"
+      assert_absent "$CASE_DIR/kiro-checks" "an unpinned spawn must not run a login check"
+    else
+      assert_contains "$out" "account=ordinary" "the spawn should report the ordinary account"
+      [ "$(cat "$CASE_DIR/kiro-checks")" = "$CASE_DIR/ambient-share" ] \
+        || fail "the ordinary check should ask about the XDG_DATA_HOME the launch keeps: $(cat "$CASE_DIR/kiro-checks")"
+    fi
+  done
+  pass "fm-spawn: an absent or ordinary Kiro pin leaves XDG_DATA_HOME as it is"
+}
+
+test_kiro_account_pin_refuses_a_logged_out_root() {
+  local id rec out rc
+  id="kiro-acct-out-$$"
+  new_kiro_account_case acct-out "$id"
+  mkdir -p "$CASE_DIR/dev10"
+  printf '%s\n' "$CASE_DIR/dev10" > "$HOME_DIR/config/kiro-account"
+  out=$(XDG_DATA_HOME="$CASE_DIR/ambient-share" run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id"); rc=$?
+  expect_code 1 "$rc" "a Kiro pin to a logged-out root must refuse even with an ambient login"
+  assert_contains "$out" "config/kiro-account pins Kiro workers to $CASE_DIR/dev10, which is not logged in" \
+    "the refusal should name the file and the root"
+  assert_contains "$out" "XDG_DATA_HOME=$CASE_DIR/dev10 kiro-cli login" "the refusal should give the login command"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused spawn must not publish a task record"
+  [ ! -s "$CASE_DIR/launch.log" ] || fail "a refused spawn must not launch a worker"
+  assert_no_grep "new-window" "$CASE_DIR/tmux-calls.log" "a refused spawn must not create an endpoint"
+  printf 'relative/root\n' > "$HOME_DIR/config/kiro-account"
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id-bad"); rc=$?
+  expect_code 1 "$rc" "a malformed Kiro pin must refuse"
+  assert_contains "$out" "config/kiro-account must hold 'ordinary' or one absolute path" "the refusal should name the format"
+  printf '%s\n' "$CASE_DIR/dev10" > "$HOME_DIR/config/kiro-account"
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id-raw" \
+    --harness "XDG_DATA_HOME=$CASE_DIR/other kiro-cli chat --v3 -a raw"); rc=$?
+  expect_code 1 "$rc" "a raw Kiro command overriding XDG_DATA_HOME must refuse under a pin"
+  assert_contains "$out" "the raw launch command sets XDG_DATA_HOME" "the refusal should name the overriding variable"
+  pass "fm-spawn: a logged-out, malformed, or overridden Kiro pin refuses before any endpoint or record"
+}
+
+test_kiro_secondmate_account_override() {
+  local id rec out rc mate
+  id="kiro-acct-sm-$$"
+  new_kiro_account_case acct-sm "$id"
+  kiro_logged_in_root "$CASE_DIR/primary"
+  kiro_logged_in_root "$CASE_DIR/mate"
+  printf '%s\n' "$CASE_DIR/primary" > "$HOME_DIR/config/kiro-account"
+  mkdir -p "$HOME_DIR/config/secondmate-accounts/$id"
+  printf '%s\n' "$CASE_DIR/mate" > "$HOME_DIR/config/secondmate-accounts/$id/kiro-account"
+  mate="$CASE_DIR/mate-home"
+  mkdir -p "$mate/bin" "$mate/data" "$mate/config"
+  git init -q -b main "$mate"
+  printf '# Firstmate\n' > "$mate/AGENTS.md"
+  printf '%s\n' "$id" > "$mate/.fm-secondmate-home"
+  printf 'charter for %s\n' "$id" > "$mate/data/charter.md"
+  out=$(HOME="$HOME_DIR" FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_SKIP_SECONDMATE_INHERIT=1 FM_SKIP_SECONDMATE_SYNC=1 FM_SPAWN_NO_GUARD=1 \
+    FM_FAKE_PANE_PATH="$mate" TMUX="fake,1,0" \
+    FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" FM_FAKE_POINTER_LOG="$CASE_DIR/pointer.log" \
+    FM_FAKE_KIRO_STATE="$CASE_DIR/kiro.state" FM_FAKE_KIRO_TRUST_ENTER_LOG="$CASE_DIR/trust-enter.log" \
+    FM_FAKE_KIRO_TRUST=suppressed FM_FAKE_KIRO_READY=yes \
+    FM_FAKE_TMUX_VISIBLE_FAILS=no FM_FAKE_TMUX_CALL_LOG="$CASE_DIR/tmux-calls.log" \
+    FM_FAKE_TMUX_KILLED="$CASE_DIR/tmux-killed" FM_KIRO_READY_POLLS=3 FM_KIRO_POLL_INTERVAL=0 \
+    PATH="$FAKEBIN_DIR:$BASE_PATH" \
+    "$SPAWN" "$id" "$mate" --harness kiro-cli --secondmate 2>&1); rc=$?
+  expect_code 0 "$rc" "a Kiro secondmate with its own account should launch: $out"
+  assert_contains "$out" "account=$CASE_DIR/mate" "the per-mate pin must override the home-wide pin"
+  assert_contains "$(cat "$CASE_DIR/launch.log")" "XDG_DATA_HOME='$CASE_DIR/mate' " \
+    "the secondmate launch should carry its own root"
+  assert_absent "$mate/config/kiro-account" "the pin must not be copied into the secondmate home"
+  pass "fm-spawn: config/secondmate-accounts/<id>/kiro-account pins one local Kiro secondmate"
+}
+
+test_kiro_primary_launcher_uses_the_account_pin() {
+  local dir fakebin log out rc
+  dir="$TMP_ROOT/primary-account"; fakebin=$(fm_fakebin "$dir/fake")
+  mkdir -p "$dir/home/state" "$dir/home/config"; log="$dir/launch.log"
+  make_kiro_account_fake "$fakebin" "$dir"
+  kiro_logged_in_root "$dir/dev10"
+  printf '%s\n' "$dir/dev10" > "$dir/home/config/kiro-account"
+  XDG_DATA_HOME="$dir/ambient" PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" \
+    "$ROOT/bin/fm-kiro-primary.sh" >/dev/null 2>&1 || fail "the primary launcher should start under a logged-in pin"
+  assert_grep "XDG_DATA_HOME=$dir/dev10" "$dir/kiro-worker" "the primary should run under the pinned root"
+  rm -rf "$dir/dev10/kiro-cli" "$dir/kiro-worker"
+  out=$(XDG_DATA_HOME="$dir/ambient" PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" \
+    "$ROOT/bin/fm-kiro-primary.sh" 2>&1); rc=$?
+  expect_code 1 "$rc" "the primary launcher must refuse a logged-out pin"
+  assert_contains "$out" "config/kiro-account pins Kiro workers to $dir/dev10, which is not logged in" \
+    "the primary refusal should name the file"
+  assert_absent "$dir/kiro-worker" "a refused primary must not start Kiro"
+  rm "$dir/home/config/kiro-account"
+  XDG_DATA_HOME="$dir/ambient" PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" \
+    "$ROOT/bin/fm-kiro-primary.sh" >/dev/null 2>&1 || fail "the primary launcher should start without a pin"
+  assert_grep "XDG_DATA_HOME=$dir/ambient" "$dir/kiro-worker" "an unpinned primary must keep its XDG_DATA_HOME"
+  pass "fm-kiro-primary: config/kiro-account pins the primary's Kiro login"
+}
+
 # --- teardown ---------------------------------------------------------------
 
 test_kiro_teardown_removes_every_artifact() {
@@ -1814,5 +1992,10 @@ test_kiro_secondmate_uses_v3_project_scope_and_isolated_home
 test_kiro_missing_binary_refuses_before_pane_creation
 test_kiro_secondmate_is_supported
 test_kiro_refuses_outside_an_isolated_worktree
+test_kiro_account_pin_selects_the_data_root
+test_kiro_account_pin_absent_or_ordinary_keeps_xdg_data_home
+test_kiro_account_pin_refuses_a_logged_out_root
+test_kiro_secondmate_account_override
+test_kiro_primary_launcher_uses_the_account_pin
 test_kiro_teardown_removes_every_artifact
 test_kiro_teardown_does_not_treat_the_pointer_as_unlanded_work

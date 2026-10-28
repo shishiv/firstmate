@@ -3,8 +3,8 @@
 # (bin/fm-worker-account-lib.sh) against every installed runner it supports.
 #
 # The check's verdict comes from vendor output - the exit status of
-# `claude auth status`, the JSON of `pi auth check`, and the table of
-# `pi --list-models` - so a fake can only restate the assumption written into
+# `claude auth status` and `kiro-cli whoami`, the JSON of `pi auth check`, and
+# the table of `pi --list-models` - so a fake can only restate the assumption written into
 # it. This guard asks the REAL installed runners about synthetic account roots
 # that need no login and no network: a Claude root whose settings name an
 # apiKeyHelper, a Pi root holding a stored API key, and Pi roots whose only
@@ -12,15 +12,18 @@
 # it depends on: the same runner, with a credential variable left in its
 # environment, answers signed in, so the refusal is the check's own cleared
 # environment at work rather than a root the runner could never accept.
+# Kiro has no login that can be synthesized offline, so its case proves only
+# the refusal: the real kiro-cli says "Not logged in" for an empty data root,
+# and the real fm-spawn refuses a home pinned to it before any task record.
 #
 # It submits no prompt and spends no tokens, so the shared live gate runs it by
 # default wherever a runner is installed. Run it after every Claude or Pi
-# upgrade and before trusting the "Worker account pin sign-in check" entry in
+# upgrade (or Kiro upgrade) and before trusting the "Worker account pin sign-in check" entry in
 # docs/verification/runtime-backends.md.
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 fm_live_gate default-on FM_WORKER_ACCOUNT_LIVE_E2E jq perl
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$ROOT/bin/fm-worker-account-lib.sh"
@@ -111,22 +114,49 @@ pi_live_cases() {
   CHECKED="$CHECKED $exe"
 }
 
-for runner in claude pi pi-signed; do
+kiro_live_cases() {
+  local version empty out rc home proj wt fakebin id=kiro-acct-live
+  version=$(kiro-cli --version 2>/dev/null | head -1)
+  empty="$TMP_ROOT/kiro-empty"
+  mkdir -p "$empty"
+  out=$(env -i HOME="$HOME" PATH="$PATH" XDG_DATA_HOME="$empty" kiro-cli whoami 2>&1 </dev/null); rc=$?
+  [ "$rc" -ne 0 ] && [[ "$out" == *"Not logged in"* ]] ||
+    fail "$version: kiro-cli whoami for an empty data root answered rc=$rc '$out'; revisit bin/fm-worker-account-lib.sh"
+  if fm_worker_account_check kiro-cli "$empty" "$empty" kiro-cli 2>/dev/null; then
+    fail "$version: the pin check accepted an empty Kiro data root"
+  fi
+  home="$TMP_ROOT/kiro-spawn/home"; proj="$TMP_ROOT/kiro-spawn/project"; wt="$TMP_ROOT/kiro-spawn/wt"
+  fm_test_spawn_home "$home" kiro-cli
+  fm_test_spawn_brief "$home" "$id"
+  fm_git_worktree "$proj" "$wt" "wt-kiro-acct-live"
+  fakebin=$(fm_test_make_spawn_fakebin "$TMP_ROOT/kiro-spawn/fake")
+  printf '%s\n' "$empty" > "$home/config/kiro-account"
+  out=$(fm_test_run_spawn "$home" "$wt" "$fakebin" "$id" "$proj" --mode direct-PR --yolo off 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "$version: fm-spawn launched a Kiro worker pinned to an empty data root"
+  [[ "$out" == *"config/kiro-account pins Kiro workers to $empty, which is not logged in"* ]] ||
+    fail "$version: fm-spawn's refusal did not name the pin: $out"
+  [ ! -e "$home/state/$id.meta" ] || fail "$version: a refused Kiro spawn published a task record"
+  pass "$version: kiro-cli whoami reports an empty data root not logged in, and fm-spawn refuses a home pinned to it"
+  CHECKED="$CHECKED kiro-cli"
+}
+
+for runner in claude pi pi-signed kiro-cli; do
   if ! command -v "$runner" >/dev/null 2>&1; then
     printf 'skip-runner: %s is not installed, so its pin check was not exercised\n' "$runner"
     continue
   fi
   case "$runner" in
     claude) claude_live_cases ;;
+    kiro-cli) kiro_live_cases ;;
     *) pi_live_cases "$runner" ;;
   esac
 done
 
 if [ -z "$CHECKED" ]; then
   if [ "${FM_WORKER_ACCOUNT_LIVE_E2E:-${FM_LIVE:-}}" = 1 ]; then
-    fail "the worker account live guard was requested but no supported runner (claude, pi, pi-signed) is installed"
+    fail "the worker account live guard was requested but no supported runner (claude, pi, pi-signed, kiro-cli) is installed"
   fi
-  echo "skip: live: no supported runner (claude, pi, pi-signed) installed"
+  echo "skip: live: no supported runner (claude, pi, pi-signed, kiro-cli) installed"
   exit 0
 fi
 echo "# worker account live guard checked:$CHECKED"

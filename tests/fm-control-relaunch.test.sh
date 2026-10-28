@@ -948,6 +948,33 @@ test_signed_out_worker_account_pin_refuses_before_stop() {
   pass "fm-control relaunch: a signed-out worker account pin refuses before the old agent stops"
 }
 
+test_logged_out_kiro_account_pin_refuses_before_stop() {
+  local dir out rc id=rl-kiro-acct-out
+  dir=$(new_case kiro-acct-out "$id")
+  add_ship_task "$dir" "$id" kiro-cli
+  printf 'kiro-cli' > "$dir/fake/command"
+  cat > "$dir/fakebin/kiro-cli" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = whoami ] || exit 0
+[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli/data.sqlite3" ] && exit 0
+echo 'Not logged in'
+exit 1
+SH
+  chmod +x "$dir/fakebin/kiro-cli"
+  mkdir -p "$dir/home/config" "$dir/dev10" "$dir/user-home/.local/share/kiro-cli"
+  : > "$dir/user-home/.local/share/kiro-cli/data.sqlite3"
+  printf '%s\n' "$dir/dev10" > "$dir/home/config/kiro-account"
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_control "$dir" "$id" relaunch --note "kiro account logged out"); rc=$?
+  expect_code 1 "$rc" "a relaunch under a logged-out Kiro pin must refuse"
+  assert_contains "$out" "config/kiro-account pins Kiro workers to $dir/dev10, which is not logged in" \
+    "the refusal should name the pin and the logged-out root"
+  [ "$(cat "$dir/fake/command")" = kiro-cli ] || fail "a logged-out Kiro pin must refuse before the running agent stops"
+  [ ! -s "$dir/fake/literal" ] || fail "a logged-out Kiro pin must refuse before any lifecycle input is sent"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the task record untouched"
+  pass "fm-control relaunch: a logged-out Kiro account pin refuses before the old agent stops, despite the ordinary login"
+}
+
 test_worker_account_pin_follows_the_relaunch() {
   local dir out rc id=rl-acct
   dir=$(new_case acct "$id")
@@ -3029,6 +3056,7 @@ test_prefixed_recorded_harness_requires_explicit_replacement
 test_same_harness_relaunch_keeps_the_profile_axes
 test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop
 test_signed_out_worker_account_pin_refuses_before_stop
+test_logged_out_kiro_account_pin_refuses_before_stop
 test_worker_account_pin_follows_the_relaunch
 test_secondmate_account_pin_follows_relaunch_and_refuses_before_stop
 test_pi_exclude_tools_follow_the_relaunch

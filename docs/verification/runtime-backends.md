@@ -840,11 +840,22 @@ Not verified live: the Kiro usage-limit messages in the signature table are take
 
 ## Worker account pin sign-in check
 
-`bin/fm-worker-account-lib.sh` decides whether a pinned account is signed in from vendor output: the exit status of `claude auth status`, the JSON of `pi auth check`, and the provider column of `pi --list-models`.
+`bin/fm-worker-account-lib.sh` decides whether a pinned account is signed in from vendor output: the exit status of `claude auth status` and `kiro-cli whoami`, the JSON of `pi auth check`, and the provider column of `pi --list-models`.
 `tests/fm-worker-account-live-e2e.test.sh` asks the real installed runners about synthetic roots that need no login and no network, under a throwaway `HOME`.
 A Claude root whose `settings.json` names an `apiKeyHelper` reports `loggedIn: true`, a Pi root holding a stored API key reports `ready`, and a provider registered by an extension in the Pi root's `extensions/` answers `pi auth check` with `not_ready`/`provider_not_found` while `pi --list-models` lists it.
 Each refusal is paired with the divergence it depends on: the same runner, given `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the extension's key variable, answers signed in for the empty root, so the refusal proves the check's cleared environment.
 Replacing `env -i` with `env` in the check makes the guard fail on the Claude refusal.
+A Kiro login cannot be made offline, so the Kiro case checks only the refusal: real `kiro-cli whoami` with `XDG_DATA_HOME` on an empty root prints `Not logged in` and exits 1, and the real `fm-spawn.sh` refuses a home whose `config/kiro-account` names that root before any task record exists.
+
+Verified 2026-10-28 on kiro-cli 2.35.1 and pi 1.4.0 on Linux, with Claude Code taken off `PATH` because on this host the installed `claude` launcher (Claude Code 2.1.312) finds no native version under the guard's throwaway `HOME` and exits 1 for every command, so the Claude case fails before it checks anything.
+
+```
+skip-runner: claude is not installed, so its pin check was not exercised
+ok - pi 1.4.0: the pin check reads auth check and the model listing, and refuses what only an ambient credential signs in
+skip-runner: pi-signed is not installed, so its pin check was not exercised
+ok - kiro-cli 2.35.1: kiro-cli whoami reports an empty data root not logged in, and fm-spawn refuses a home pinned to it
+# worker account live guard checked: pi kiro-cli
+```
 
 Verified 2026-09-22 on Claude Code 2.1.278 and pi 0.86.1 on Linux; pi-signed was not installed.
 
@@ -859,7 +870,7 @@ skip-runner: pi-signed is not installed, so its pin check was not exercised
 # worker account live guard checked: claude pi
 ```
 
-The guard submits no prompt and spends no tokens, so it runs by default wherever a runner is installed; rerun it after every Claude or Pi upgrade.
+The guard submits no prompt and spends no tokens, so it runs by default wherever a runner is installed; rerun it after every Claude, Pi, or Kiro upgrade.
 
 ## Worker shell pipefail
 

@@ -42,6 +42,16 @@ propagate_inheritable_config "$P" "$S" 2>/dev/null
 [ "$(cat "$S/crew-dispatch.json")" = '{"primary":true}' ] || fail "unpinned home did not inherit crew-dispatch.json"
 pass "unpinned home still inherits crew-harness and crew-dispatch.json"
 
+setup_pair kiro-account
+printf '/home/me/.local/share-kiro-work\n' > "$P/kiro-account"
+mkdir -p "$P/secondmate-accounts/mate"
+printf 'ordinary\n' > "$P/secondmate-accounts/mate/kiro-account"
+propagate_inheritable_config "$P" "$S" 2>/dev/null
+[ "$(cat "$S/crew-harness")" = kiro-cli ] || fail "the kiro-account case should still inherit crew-harness"
+[ ! -e "$S/kiro-account" ] || fail "a Kiro account pin must not be inherited into a secondmate home"
+[ ! -e "$S/secondmate-accounts" ] || fail "per-secondmate account pins must not be inherited into a secondmate home"
+pass "a Kiro account pin stays in the home that declares it"
+
 setup_pair remote
 mkdir -p "$TMP_ROOT/remote/second/data"
 printf 'pi\n' > "$S/crew-harness"
