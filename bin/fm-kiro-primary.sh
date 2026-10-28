@@ -23,6 +23,12 @@
 # is never copied into Kiro's global knowledge store or hardlinked from it, and
 # the default agent then offers no knowledge tool (docs/verification/runtime-backends.md).
 #
+# A home's config/kiro-account pins the Kiro login this primary runs on, the
+# same pin its Kiro workers use (docs/configuration.md "Worker account pin";
+# bin/fm-worker-account-lib.sh owns it): a root is exported as XDG_DATA_HOME,
+# `ordinary` or no file leaves XDG_DATA_HOME as it is, and a signed-out root
+# refuses before anything is prepared.
+#
 # This launcher owns the engine, agent, home, and trust flags.
 # Model, effort, resume, and positional prompt options pass through unchanged.
 set -eu
@@ -31,9 +37,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 # shellcheck source=bin/fm-kiro-lib.sh
 . "$SCRIPT_DIR/fm-kiro-lib.sh"
+# shellcheck source=bin/fm-worker-account-lib.sh
+. "$SCRIPT_DIR/fm-worker-account-lib.sh"
 
 usage() {
   sed -n '2,/^set -eu$/p' "$0" | sed 's/^# \{0,1\}//; $d'
@@ -75,6 +84,10 @@ case "$("$KIRO_BIN" --version 2>/dev/null || true)" in
     ;;
 esac
 
+KIRO_ACCOUNT=$(fm_worker_account_select kiro-cli "$CONFIG" "" "$KIRO_BIN") || exit 1
+KIRO_ACCOUNT_ROOT=${KIRO_ACCOUNT#*$'\t'}
+KIRO_ACCOUNT_ROOT=${KIRO_ACCOUNT_ROOT%%$'\t'*}
+
 mkdir -p "$STATE"
 KIRO_HOME_DIR=$(fm_kiro_primary_home "$STATE")
 fm_kiro_write_settings "$KIRO_HOME_DIR" || {
@@ -108,6 +121,7 @@ export FM_HOME
 export KIRO_HOME="$KIRO_HOME_DIR"
 export KIRO_DATA_DIR="$KIRO_HOME_DIR/data"
 export KIRO_CHAT_LOG_FILE="$KIRO_HOME_DIR/chat.log"
+[ -z "$KIRO_ACCOUNT" ] || [ -z "$KIRO_ACCOUNT_ROOT" ] || export XDG_DATA_HOME="$KIRO_ACCOUNT_ROOT"
 unset KIRO_ACP_NATIVE KIRO_ACP_PERMISSION_MODE KIRO_CLI_ACP_CLIENT_NAME KIRO_SESSION_ID \
   KIRO_TUI_READY_FILE KIRO_TUI_READY_TOKEN 2>/dev/null || true
 

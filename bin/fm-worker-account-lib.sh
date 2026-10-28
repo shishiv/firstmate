@@ -5,12 +5,18 @@
 # environment credentials a pinned Claude launch sheds.
 #
 # docs/configuration.md "Worker account pin" owns the operator-facing contract.
-# Sourced by bin/fm-spawn.sh and bin/fm-control.sh.
+# Sourced by bin/fm-spawn.sh, bin/fm-control.sh, and bin/fm-kiro-primary.sh.
 #
 # Pinnable runners, each a credential store inside a root its vendor lets a
 # process select:
 #   claude          CLAUDE_CONFIG_DIR     config/claude-account
 #   pi, pi-signed   PI_CODING_AGENT_DIR   config/pi-account
+#   kiro-cli        XDG_DATA_HOME         config/kiro-account
+#
+# Kiro keeps its login in $XDG_DATA_HOME/kiro-cli/data.sqlite3, not under
+# KIRO_HOME or KIRO_DATA_DIR, so the per-task KIRO_DATA_DIR does not separate
+# accounts. Its root is a directory that stands in for ~/.local/share, which
+# every process the worker runs also receives.
 #
 # The pin is opt-in: an absent file is no pin, and the launch keeps today's
 # ambient behavior byte for byte. A present file must resolve, or the launch
@@ -18,7 +24,8 @@
 # home has declared one. `ordinary` selects the vendor default: for Claude
 # that is CLAUDE_CONFIG_DIR unset, because Claude reads $CLAUDE_CONFIG_DIR/
 # .claude.json and keys its macOS Keychain entry to any CLAUDE_CONFIG_DIR that
-# is set, even $HOME/.claude; for Pi it is $HOME/.pi/agent. Any other value is
+# is set, even $HOME/.claude; for Pi it is $HOME/.pi/agent; for Kiro it leaves
+# XDG_DATA_HOME as the launch already has it. Any other value is
 # one absolute path to an existing readable, searchable directory. Firstmate
 # never copies credentials or changes a global login.
 #
@@ -30,15 +37,19 @@
 # passes --provider <that provider>, because without it Pi may resolve a
 # provider-prefixed model under another authenticated provider. A raw Pi
 # launch command is launched verbatim and cannot receive that flag, so a home
-# with config/pi-account refuses raw Pi launches. A raw Claude launch command
-# runs after the pinned root and shed credentials are applied, so its own
-# leading CLAUDE_CONFIG_DIR or shed-credential assignment would override the
-# pin; a home with config/claude-account refuses such a command.
+# with config/pi-account refuses raw Pi launches.
+# A raw Claude or Kiro launch command runs after the pinned root (and Claude's
+# shed credentials) are applied, so its own leading CLAUDE_CONFIG_DIR,
+# shed-credential, or XDG_DATA_HOME assignment would override the pin; a
+# pinned home refuses such a command.
 #
 # The sign-in check asks the runner itself, with only HOME, PATH, TMPDIR,
 # USER, LOGNAME, and the selected root in its environment, so a credential
 # variable left in the caller cannot answer for a root that has no login:
 #   Claude: `claude auth status`, which exits 0 only when signed in.
+#   Kiro:   `kiro-cli whoami`, which exits 0 only when signed in and prints
+#           "Not logged in" otherwise. An ordinary Kiro pin checks the
+#           XDG_DATA_HOME this process has, the one the launch keeps.
 #   Pi:     `pi auth check --provider <p> --json --no-refresh`; status "ready"
 #           passes. `pi auth check` loads no extensions, so it answers
 #           not_ready/provider_not_found for an extension-registered provider,
@@ -70,13 +81,14 @@ fm_worker_account_file() {
   case "$1" in
   claude) printf '%s\n' claude-account ;;
   pi | pi-signed) printf '%s\n' pi-account ;;
+  kiro-cli) printf '%s\n' kiro-account ;;
   *) return 1 ;;
   esac
 }
 
 # fm_worker_account_read <harness> <file>
 # Prints "declared<TAB>providers" for a valid pin, where declared is
-# `ordinary` or the absolute path and providers is empty for Claude. The final
+# `ordinary` or the absolute path and providers is empty for Claude and Kiro. The final
 # newline is optional; any other control byte, including a CR, is malformed.
 # Parses bytes before the shell can drop NULs or trailing newlines; paths are
 # literal, never shell expressions. Returns 0 on success, 3 when the file does
@@ -93,7 +105,7 @@ fm_worker_account_read() {
     (-f $f && -r _) or exit 5;
     open(my $fh, "<", $f) or exit 5;
     my $body = do { local $/; <$fh> } // "";
-    if ($harness eq "claude") {
+    if ($harness eq "claude" || $harness eq "kiro-cli") {
       $body =~ /\A(ordinary|\/[^\x00-\x1f\x7f]*)\n?\z/ or exit 6;
       print $1, "\t";
     } else {
@@ -127,7 +139,8 @@ fm_worker_account_config() {
 # fm_worker_account_resolve <harness> <config-dir> <setting>
 # Prints "declared<TAB>root<TAB>providers" for a valid pin, where root is the
 # directory the launch selects (empty for ordinary Claude, meaning
-# CLAUDE_CONFIG_DIR unset). Prints nothing and returns 0 when the runner is
+# CLAUDE_CONFIG_DIR unset, and for ordinary Kiro, meaning XDG_DATA_HOME left
+# as is). Prints nothing and returns 0 when the runner is
 # not pinnable or the home has no pin. On refusal prints one error naming the
 # file and returns 1.
 fm_worker_account_resolve() {
@@ -158,11 +171,12 @@ fm_worker_account_resolve() {
   # shellcheck disable=SC2088  # The fallbacks are literal text for the refusal.
   case "$harness" in
   claude) fallback='~/.claude with CLAUDE_CONFIG_DIR unset' ;;
+  kiro-cli) fallback='XDG_DATA_HOME left as the launch has it' ;;
   *) fallback='~/.pi/agent' ;;
   esac
   if [ "$declared" = ordinary ]; then
     case "$harness" in
-    claude) root= ;;
+    claude | kiro-cli) root= ;;
     *) root="${HOME:?HOME is required to resolve an ordinary Pi account}/.pi/agent" ;;
     esac
   fi
@@ -211,6 +225,23 @@ fm_worker_account_check() {
     fi
     return 1
     ;;
+  kiro-cli)
+    if [ -n "$root" ]; then
+      clean+=("XDG_DATA_HOME=$root")
+    elif [ -n "${XDG_DATA_HOME:-}" ]; then
+      clean+=("XDG_DATA_HOME=$XDG_DATA_HOME")
+    fi
+    if fm_run_timed "$FM_WORKER_ACCOUNT_CHECK_SECONDS" "${clean[@]}" \
+      "$executable" whoami >/dev/null 2>&1 </dev/null; then
+      return 0
+    fi
+    if [ -n "$root" ]; then
+      echo "error: $setting pins Kiro workers to $root, which is not logged in (kiro-cli whoami); log in with XDG_DATA_HOME=$root kiro-cli login, or change the pin" >&2
+    else
+      echo "error: $setting pins Kiro workers to the ordinary account, which is not logged in (kiro-cli whoami); log in with kiro-cli login, or change the pin" >&2
+    fi
+    return 1
+    ;;
   pi | pi-signed)
     clean+=("PI_CODING_AGENT_DIR=$root")
     out=$(fm_run_timed "$FM_WORKER_ACCOUNT_CHECK_SECONDS" "${clean[@]}" \
@@ -243,7 +274,7 @@ fm_worker_account_check() {
 # The whole launch-time decision. Prints nothing for an unpinned runner, so
 # the caller keeps today's launch unchanged. For a pinned one prints
 # "declared<TAB>root<TAB>provider", where provider is the Pi launch model's
-# own (empty for Claude), after the model guard and the sign-in check pass. On
+# own (empty for Claude and Kiro), after the model guard and the sign-in check pass. On
 # refusal prints one error and returns 1. bin/fm-spawn.sh runs it before any
 # endpoint exists, and bin/fm-control.sh before a relaunch stops the live
 # agent.
@@ -263,13 +294,15 @@ fm_worker_account_select() {
   root=${selection#*$'\t'}
   providers=${root#*$'\t'}
   root=${root%%$'\t'*}
-  if [ "$harness" = claude ]; then
+  if [ "$harness" = claude ] || [ "$harness" = kiro-cli ]; then
+    local runner=Claude guarded=" CLAUDE_CONFIG_DIR $FM_WORKER_ACCOUNT_CLAUDE_SHED "
+    [ "$harness" = claude ] || { runner=Kiro; guarded=" XDG_DATA_HOME "; }
     for word in $raw; do
       case "$word" in
       [A-Za-z_]*=*)
-        case " CLAUDE_CONFIG_DIR $FM_WORKER_ACCOUNT_CLAUDE_SHED " in
+        case "$guarded" in
         *" ${word%%=*} "*)
-          echo "error: $setting pins Claude workers, but the raw launch command sets ${word%%=*}, which would override the pinned account; remove ${word%%=*} from the raw command, or change or remove $setting" >&2
+          echo "error: $setting pins $runner workers, but the raw launch command sets ${word%%=*}, which would override the pinned account; remove ${word%%=*} from the raw command, or change or remove $setting" >&2
           return 1
           ;;
         esac

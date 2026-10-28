@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
+| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1107,21 +1107,23 @@ Each relaunch installs a fresh worker extension with the home's current list, so
 
 [`bin/fm-exclude-tools-lib.sh`](../bin/fm-exclude-tools-lib.sh) implements parsing and pre-launch validation for this contract; [`bin/fm-spawn.sh`](../bin/fm-spawn.sh)'s header owns the launch-flag mechanics.
 
-## Worker account pin (config/claude-account, config/pi-account)
+## Worker account pin (config/claude-account, config/pi-account, config/kiro-account)
 
-A home that mixes accounts for one runner, such as a work login and a personal one, can pin the account its own Claude and Pi workers launch on.
+A home that mixes accounts for one runner, such as a work login and a personal one, can pin the account its own Claude, Pi, and Kiro workers launch on.
 The pin is opt-in: without a home-wide or per-secondmate pin, every launch is unchanged, and Claude workers keep receiving firstmate's own `CLAUDE_CONFIG_DIR` when it is set.
 
-Both files are local and gitignored.
+The files are local and gitignored.
 
 | Runner | File | Variable the launch receives | `ordinary` means |
 | --- | --- | --- | --- |
 | `claude` | `config/claude-account` | `CLAUDE_CONFIG_DIR` | the variable unset, so Claude uses its default login |
 | `pi`, `pi-signed` | `config/pi-account` | `PI_CODING_AGENT_DIR` | `~/.pi/agent` |
+| `kiro-cli` | `config/kiro-account` | `XDG_DATA_HOME` | the variable as the launch already has it, so Kiro uses the login under `~/.local/share` |
 
 ### File format and provider selection
 
 `config/claude-account` holds one line: `ordinary`, or the absolute path of an existing Claude config directory.
+`config/kiro-account` holds one line: `ordinary`, or the absolute path of an existing data root for one Kiro login.
 `config/pi-account` holds that same root on line 1 and, on line 2, the providers this home may spend, separated by spaces, for example `openai-codex anthropic`.
 
 A final newline is optional; any other line, a relative path, or a control character such as a CR refuses.
@@ -1132,16 +1134,43 @@ A pinned Pi launch therefore needs `--model <provider>/<id>` naming a declared p
 
 An unqualified model, an undeclared provider, or a raw Pi launch command, which cannot receive that flag, refuses; Firstmate never guesses a provider.
 
+### Kiro data roots
+
+Kiro keeps its login in `$XDG_DATA_HOME/kiro-cli/data.sqlite3`, so a Kiro account is a whole data root.
+`KIRO_HOME` and `KIRO_DATA_DIR` do not hold the login: the per-task `KIRO_DATA_DIR` every Kiro launch gets still shares the one login under `~/.local/share`.
+The launch passes `XDG_DATA_HOME` to every process the worker runs, such as `mise`, so the root must stand in for all of `~/.local/share`, not only for Kiro.
+
+Create one root per account, mirror every entry of `~/.local/share` into it except `kiro-cli`, then log in once inside it:
+
+```sh
+root=~/.local/share-kiro-<account>
+mkdir -p "$root"
+for entry in ~/.local/share/* ~/.local/share/.[!.]*; do
+  [ -e "$entry" ] || continue
+  [ "$(basename "$entry")" = kiro-cli ] || ln -s "$entry" "$root/"
+done
+XDG_DATA_HOME="$root" kiro-cli login
+XDG_DATA_HOME="$root" kiro-cli whoami
+```
+
+Each home that should spend that account then names the root in its own `config/kiro-account`, for example `/home/me/.local/share-kiro-<account>`.
+Several homes can each hold a different account this way, and a home without the file keeps the ordinary login.
+A new entry later added to `~/.local/share` needs its link added to each root.
+
 ### Launch scope and sign-in checks
 
-When a file is present, launches of that runner from this home use it: ships, scouts, local secondmate agents, raw Claude launch commands, and relaunches.
+When a file is present, launches of that runner from this home use it: ships, scouts, local secondmate agents, raw Claude and Kiro launch commands, and relaunches, plus a Kiro primary started with `bin/fm-kiro-primary.sh`.
+A Kiro Crew worker (`kirocrew`) runs inside the Crew gateway, which starts no `kiro-cli` from this home, so the pin does not apply to it.
 A local secondmate can override this default with its own [per-secondmate account pin](#per-secondmate-account-pins).
 A raw Claude launch command refuses if its leading assignments set `CLAUDE_CONFIG_DIR` or a credential that a pinned launch unsets, such as `ANTHROPIC_API_KEY`.
 The assignment would override the pin.
-The refusal names the variable; remove that assignment from the raw command, or change or remove `config/claude-account`.
+A raw Kiro launch command refuses the same way if its leading assignments set `XDG_DATA_HOME`.
+The refusal names the variable; remove that assignment from the raw command, or change or remove the pin file.
 
-Before any worker endpoint, local copy, or task record exists, and before a relaunch stops the running worker, Firstmate asks the runner itself whether the pinned account is signed in: `claude auth status` for Claude, and `pi auth check --provider <provider> --json --no-refresh` for Pi, falling back to `pi --list-models <provider>` for a provider an extension registers.
+Before any worker endpoint, local copy, or task record exists, and before a relaunch stops the running worker, Firstmate asks the runner itself whether the pinned account is signed in: `claude auth status` for Claude, `kiro-cli whoami` for Kiro, and `pi auth check --provider <provider> --json --no-refresh` for Pi, falling back to `pi --list-models <provider>` for a provider an extension registers.
 The check runs with only `HOME`, `PATH`, `TMPDIR`, `USER`, `LOGNAME`, and the pinned root in its environment, so a credential variable in firstmate's own environment cannot answer for an empty root.
+An ordinary Kiro pin checks the `XDG_DATA_HOME` firstmate itself has, if any.
+A Kiro refusal names the file and the login command, `XDG_DATA_HOME=<root> kiro-cli login`.
 
 A pinned Claude launch also unsets the environment credentials Claude ranks above a stored login, such as `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and the Bedrock and Vertex switches ([authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence)).
 Pi ranks a root's stored logins above environment variables, so a pinned Pi launch unsets nothing.
@@ -1153,14 +1182,14 @@ A home that authenticates Claude through environment credentials on purpose shou
 A malformed file, a root that is not a readable directory, or a signed-out account refuses the launch and names the file to fix; Firstmate never falls back to the ambient account and never changes a global login or copies a credential.
 The spawn prints the pin as `account=` (plus `account_provider=` for Pi) and records the same fields in the task record, so the session-start digest shows which account each worker launched on.
 
-Pins are not inherited into secondmate homes: the secondmate's own workers read that home's `config/claude-account` and `config/pi-account` files independently.
+Pins are not inherited into secondmate homes: the secondmate's own workers read that home's `config/claude-account`, `config/pi-account`, and `config/kiro-account` files independently.
 A remote secondmate is launched on its host from its own home's configuration, so create the file in that remote home.
 
 [`bin/fm-worker-account-lib.sh`](../bin/fm-worker-account-lib.sh) owns parsing, the sign-in check, and the full list of credentials a Claude launch unsets; [runtime backend verification](verification/runtime-backends.md#worker-account-pin-sign-in-check) records the check against the real runners.
 
 ### Per-secondmate account pins
 
-To choose an account for one local secondmate's own agent, create `config/secondmate-accounts/<id>/claude-account` or `config/secondmate-accounts/<id>/pi-account` in the primary home.
+To choose an account for one local secondmate's own agent, create `config/secondmate-accounts/<id>/claude-account`, `config/secondmate-accounts/<id>/pi-account`, or `config/secondmate-accounts/<id>/kiro-account` in the primary home.
 Use the secondmate's registered identifier for `<id>`.
 These private files use the same [file format and provider selection](#file-format-and-provider-selection), sign-in checks, and refusal rules as the home-wide worker pins.
 
