@@ -45,6 +45,25 @@ case "$cmd" in
 esac
 SH
   chmod +x "$fb/hc"
+  # The Herdr.app stub logs every call to <dir>/app.log. `ls` fails when
+  # <dir>/app-down exists, answers no spaces for the first <dir>/app-late
+  # calls, and otherwise answers <dir>/app-ls.json.
+  cat > "$fb/herdr-app" <<'SH'
+#!/usr/bin/env bash
+set -u
+D="${FAKE_HC_DIR:?}"
+{ for a in "$@"; do printf '%s\x1f' "$a"; done; printf '\n'; } >> "$D/app.log"
+case "${1:-}" in
+  ls)
+    [ ! -e "$D/app-down" ] || exit 1
+    late=$(cat "$D/app-late" 2>/dev/null || echo 0)
+    if [ "$late" -gt 0 ]; then echo $((late - 1)) > "$D/app-late"; printf '{"spaces":[]}\n'; exit 0; fi
+    cat "$D/app-ls.json" 2>/dev/null || printf '{"spaces":[]}\n'
+    ;;
+  *) printf '{}\n' ;;
+esac
+SH
+  chmod +x "$fb/herdr-app"
   printf '%s\n' "$fb"
 }
 
@@ -111,14 +130,84 @@ test_create_task_is_independent_labeled_and_refuses_duplicates() {
   tag=$(hometag_of)
   out=$(grep $'\x1frun\x1f' "$D/log")
   for want in HC_SESSION=fmtest --keep --no-parent --outlive-parent --no-notify $'--cwd\x1f/proj' \
-    "firstmate.task=fm-a1" "firstmate.home=$tag" "herdr.space=fm-$tag" "herdr.tab=$tag-fm-a1"; do
+    "firstmate.task=fm-a1" "firstmate.home=$tag" "firstmate.home-path=$(cd "$HOMEDIR" && pwd -P)" "herdr.space=fm-$tag" "herdr.tab=$tag-fm-a1"; do
     assert_contains "$out" "$want" "hc run must carry $want"
   done
+  [ ! -e "$D/app.log" ] || fail "a task on a session Herdr.app does not show must not call the app"
   printf '{"terminals":[{"address":"t9"}]}\n' > "$D/ls.json"
   : > "$D/log"
   expect_refused hc_shell 'fm_backend_hc_create_task fmtest fm-a1 /proj'
   assert_not_contains "$(cat "$D/log")" $'\x1frun\x1f' "a live duplicate must not start a second terminal"
   pass "hc: create_task starts an independent labeled terminal and refuses a duplicate"
+}
+
+# app_ls_with <space> <tab>...: the app shows <space> holding these tabs.
+app_ls_with() {
+  local space=$1
+  shift
+  jq -n --arg s "$space" '{spaces: [{id: $s, name: "folder", tabs: ($ARGS.positional | map({id: ., name: "1"}))}]}' \
+    --args "$@" > "$D/app-ls.json"
+}
+
+# primary_endpoint <target>: this home's published primary terminal.
+primary_endpoint() {
+  mkdir -p "$HOMEDIR/state"
+  printf 'schema=fm-primary-endpoint.v1\nharness=kiro-cli\nbackend=hc\ntarget=%s\n' "$1" > "$HOMEDIR/state/.primary-endpoint"
+}
+
+app_calls() { cut -d $'\x1f' -f1-3 "$D/app.log" 2>/dev/null | grep -v '^ls' || true; }
+
+test_task_opens_as_a_named_tab_in_the_primarys_space() {
+  local tag out
+  setup_case primary-space
+  tag=$(hometag_of)
+  primary_endpoint default:t1
+  jq -n '{address: "t1", state: "live", labels: {"herdr.space": "sp9ba4", "herdr.tab": "tbprimary"}}' > "$D/t1.json"
+  printf '{"address":"t9"}\n' > "$D/run.json"
+  app_ls_with sp9ba4 tbprimary "$tag-fm-a1"
+  echo 2 > "$D/app-late"
+  out=$(hc_shell 'fm_backend_hc_create_task default fm-a1 /proj' 2>&1)
+  assert_equals "$out" t9 "create_task prints only the new address"
+  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=sp9ba4" "the task must join the primary's own space"
+  assert_equals "$(app_calls)" \
+    "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-a1","name":"a1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"sp9ba4","name":"home"}' \
+    "once the app shows the tab, only the new tab and its space are renamed, after the task and the home"
+  assert_not_contains "$(cat "$D/app.log")" tbprimary "the primary's own tab must never be touched"
+  pass "hc: a task opens as a tab named after it in the primary's space, named after the home"
+}
+
+test_without_a_primary_space_the_home_space_is_named_again_on_every_spawn() {
+  local tag
+  setup_case home-space
+  tag=$(hometag_of)
+  primary_endpoint default:t1
+  jq -n '{address: "t1", state: "live", labels: {}}' > "$D/t1.json"
+  printf '{"address":"t9"}\n' > "$D/run.json"
+  app_ls_with "fm-$tag" "$tag-fm-a1"
+  hc_shell 'fm_backend_hc_create_task default fm-a1 /proj' >/dev/null 2>&1 || fail "create_task must succeed"
+  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=fm-$tag" "an unlabeled primary falls back to the home's own space"
+  # The last task ended and its space closed; the next one names it again.
+  : > "$D/app.log"
+  app_ls_with "fm-$tag" "$tag-fm-a2"
+  hc_shell 'fm_backend_hc_create_task default fm-a2 /proj' >/dev/null 2>&1 || fail "create_task must succeed"
+  assert_contains "$(app_calls)" "space.rename"$'\x1f''{"id":"fm-'"$tag"'","name":"home"}' "a reopened home space gets the home's name back"
+  assert_contains "$(app_calls)" '{"id":"'"$tag"'-fm-a2","name":"a2"}' "the new task's tab is named after it"
+  pass "hc: without a primary space the home's own space is named after the home on every spawn"
+}
+
+test_naming_is_best_effort_and_never_blocks_the_task() {
+  local out
+  setup_case app-down
+  printf '{"address":"t9"}\n' > "$D/run.json"
+  touch "$D/app-down"
+  out=$(hc_shell 'fm_backend_hc_create_task default fm-a1 /proj' 2>/dev/null) || fail "a closed app must not fail the task"
+  assert_equals "$out" t9 "the task starts without the app"
+  assert_equals "$(app_calls)" "" "no rename is sent to an app that does not answer"
+  rm -f "$D/app-down"
+  out=$(FM_HC_APP_WAIT_TRIES=3 hc_shell 'fm_backend_hc_create_task default fm-a2 /proj' 2>&1 >/dev/null)
+  assert_contains "$out" "did not show tab" "a tab the app never shows is reported"
+  assert_equals "$(app_calls)" "" "nothing is renamed before the app shows the tab"
+  pass "hc: naming is best effort: no app, or no tab in time, still starts the task"
 }
 
 test_control_interrupt_delivers_the_harness_keys() {
@@ -375,6 +464,9 @@ test_control_can_prove_an_hc_agent_stopped() {
 
 test_hc_is_spawn_capable_and_its_marker_alone_never_selects_it
 test_create_task_is_independent_labeled_and_refuses_duplicates
+test_task_opens_as_a_named_tab_in_the_primarys_space
+test_without_a_primary_space_the_home_space_is_named_again_on_every_spawn
+test_naming_is_best_effort_and_never_blocks_the_task
 test_control_interrupt_delivers_the_harness_keys
 test_foreign_or_unlabeled_terminal_gets_no_input_and_no_close
 test_invalid_session_never_reaches_hc
