@@ -51,6 +51,7 @@ The first lines of the output name the worktree sha, the hc version, the private
    The step prints the runner's summary line and every failed script.
    When the runner refuses with `no changed-test mapping for source path: <path>`, the map in `bin/fm-test-run.sh` has no owner for that path.
    Name the selection yourself after `--` and report the missing mapping; the refusal is never a pass.
+   A whole family can run for more than 30 minutes (`pure-contract-unit` did on 2026-11-01), so give the command a timeout that long or select scripts by path.
 
 Mapped features (what each one proves and what this run leaves unproved) are in [`features/README.md`](features/README.md).
 
