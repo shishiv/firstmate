@@ -14,3 +14,6 @@ config/
 .claude/settings.local.json
 
 .tools/
+# herdr-app check writes these type files into a mod folder.
+share/herdr-app/mods/*/gpui-kit.d.ts
+share/herdr-app/mods/*/jsconfig.json
