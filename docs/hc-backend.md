@@ -35,7 +35,7 @@ Inside a proven hc terminal those variables are ignored: detection checks hc fir
 
 ## Task shape and metadata
 
-Each task is one hc terminal running the user's login shell in the project directory, started with `--no-parent --outlive-parent --no-notify` so it is independent of whichever hc terminal Firstmate itself runs in.
+Each task is one hc terminal running the user's login shell in the project directory, started with `--keep --no-parent --outlive-parent --no-notify`: it is independent of whichever hc terminal Firstmate itself runs in, and a terminal lost with its core comes back as a shell at the same address.
 The terminal carries these labels:
 
 | Label | Value | Purpose |
@@ -68,7 +68,7 @@ The away-mode daemon still supports only tmux and Herdr 1 supervisor panes and r
 | Operation | hc command |
 | --- | --- |
 | Container ensure | `hc server status` |
-| Create task | `hc run --bg --no-parent --outlive-parent --no-notify --cwd <project> --label ...` |
+| Create task | `hc run --bg --keep --no-parent --outlive-parent --no-notify --cwd <project> --label ...` |
 | Capture | `hc read --lines <n>` |
 | Visible capture | `hc read --lines 0` |
 | Send a line and submit | `hc send` |

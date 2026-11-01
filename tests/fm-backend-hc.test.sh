@@ -110,7 +110,7 @@ test_create_task_is_independent_labeled_and_refuses_duplicates() {
   assert_equals "$out" t9 "create_task prints the new address"
   tag=$(hometag_of)
   out=$(grep $'\x1frun\x1f' "$D/log")
-  for want in HC_SESSION=fmtest --no-parent --outlive-parent --no-notify $'--cwd\x1f/proj' \
+  for want in HC_SESSION=fmtest --keep --no-parent --outlive-parent --no-notify $'--cwd\x1f/proj' \
     "firstmate.task=fm-a1" "firstmate.home=$tag" "herdr.space=fm-$tag" "herdr.tab=$tag-fm-a1"; do
     assert_contains "$out" "$want" "hc run must carry $want"
   done

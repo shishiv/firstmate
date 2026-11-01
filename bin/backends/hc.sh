@@ -166,7 +166,8 @@ fm_backend_hc_container_ensure() {
 # <window-label>, refusing a live duplicate in this home. Prints the address.
 # --no-parent and --outlive-parent keep the terminal independent of whichever
 # hc terminal firstmate itself runs in; --no-notify keeps hc from typing notes
-# into any parent.
+# into any parent. --keep gives a terminal lost with its core a shell at the
+# same address, which agent_state reads as dead, so relaunch can adopt it.
 fm_backend_hc_create_task() {  # <session> <window-label> <cwd>
   local session=$1 label=$2 cwd=$3 home scoped dup out address
   home=$(fm_backend_hometag)
@@ -177,7 +178,7 @@ fm_backend_hc_create_task() {  # <session> <window-label> <cwd>
     echo "error: hc terminal for $label already exists in session '$session'" >&2
     return 1
   fi
-  out=$(fm_backend_hc_cli "$session" run --bg --json --no-parent --outlive-parent --no-notify \
+  out=$(fm_backend_hc_cli "$session" run --bg --json --keep --no-parent --outlive-parent --no-notify \
     --cwd "$cwd" \
     --label "firstmate.task=$label" --label "firstmate.home=$home" \
     --label "herdr.space=${FM_HC_SPACE:-fm-$home}" --label "herdr.tab=$scoped" 2>&1) \
