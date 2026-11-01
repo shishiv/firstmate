@@ -335,7 +335,7 @@ fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
-    tmux|herdr|zellij|cmux|paseo)
+    tmux|herdr|zellij|cmux|paseo|hc)
       case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
       ;;
     orca)
@@ -358,14 +358,15 @@ fm_control_refuse_foreign_endpoint() {  # <backend> <target> <meta-file> <id> <v
   printf "refusing '%s': %s" "$5" "$(fm_backend_foreign_endpoint_reason "$2" "$4")"
 }
 
-# Whether <backend> has a recovery-grade agent-state classifier. Only tmux and
-# herdr implement fm_backend_agent_state; zellij, orca, cmux, and paseo report
-# `unverified`, so no reading of theirs can prove an agent stopped. The control
-# plane refuses a stop-proving verb there instead of reporting an unprovable
-# transition as success.
+# Whether <backend> has a recovery-grade agent-state classifier. tmux, herdr,
+# and hc implement fm_backend_agent_state from process-level evidence (hc from
+# the foreground process `hc get` names plus its process group); zellij, orca,
+# cmux, and paseo report `unverified`, so no reading of theirs can prove an
+# agent stopped. The control plane refuses a stop-proving verb there instead of
+# reporting an unprovable transition as success.
 fm_control_backend_state_verified() {  # <backend>
   case "${1-}" in
-    tmux|herdr) return 0 ;;
+    tmux|herdr|hc) return 0 ;;
   esac
   return 1
 }
@@ -428,6 +429,9 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target>
         missing) printf 'gone\t' ;;
         *) printf 'unproven\tthe recorded herdr session'"'"'s server could not be started, or its pane could not be classified once it was running' ;;
       esac
+      ;;
+    hc)
+      printf 'unproven\tan hc terminal that reads missing has ended or was removed, and this plane does not recreate one in its place; tear the task down and spawn it again'
       ;;
     *)
       printf 'unproven\tbackend %s has no recovery-grade classifier, so absence cannot be proven on it at all' "'$backend'"

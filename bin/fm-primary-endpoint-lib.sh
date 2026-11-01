@@ -10,7 +10,7 @@
 # Record: state/.primary-endpoint, exactly eight lines:
 #   schema=fm-primary-endpoint.v1
 #   harness=kiro-cli
-#   backend=tmux|herdr
+#   backend=tmux|herdr|hc
 #   target=<backend target>
 #   pid=<outer Kiro session pid, also the fleet-lock pid>
 #   pid_identity=<fm_pid_identity output>
@@ -90,7 +90,7 @@ fm_primary_endpoint_observe() {  # <state-dir> <root> <home>
   backend=$(discover_supervisor_backend) || { fm_primary_endpoint_fail "supervisor backend was not structurally discoverable"; return 1; }
   target=$(discover_supervisor_target) || { fm_primary_endpoint_fail "supervisor target was not structurally discoverable"; return 1; }
   case "$backend" in
-    tmux|herdr) ;;
+    tmux|herdr|hc) ;;
     *) fm_primary_endpoint_fail "supervisor backend '$backend' is not supported by the Kiro doorbell"; return 1 ;;
   esac
   case "$target" in
@@ -208,7 +208,7 @@ fm_primary_endpoint_load() {  # <state-dir> <expected-root> <expected-home>
   done < "$path"
   [ "$schema" = "$FM_PRIMARY_ENDPOINT_SCHEMA" ] || return 1
   [ "$harness" = kiro-cli ] || return 1
-  case "$backend" in tmux|herdr) ;; *) return 1 ;; esac
+  case "$backend" in tmux|herdr|hc) ;; *) return 1 ;; esac
   case "$target" in ''|*$'\n'*|*$'\r'*|*[![:print:]]*) return 1 ;; esac
   case "$pid" in ''|*[!0-9]*|0) return 1 ;; esac
   [ -n "$identity" ] || return 1

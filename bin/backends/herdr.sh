@@ -1882,7 +1882,8 @@ fm_backend_herdr_workspace_find() {  # <session>
 #
 # Returns:
 #   0 - one exact, self-consistent launcher pane/tab/workspace in <session>.
-#   2 - this process is NOT running in a herdr pane (no HERDR_PANE_ID at all),
+#   2 - this process is NOT running in a herdr pane (no HERDR_PANE_ID at all,
+#       or the pane id was inherited by the live hc terminal it runs in),
 #       so there is no launcher workspace to inherit and the caller falls back
 #       to its per-home container. HERDR_ENV=1 on its own is only a backend
 #       SELECTION marker (bin/fm-backend.sh's fm_backend_detect), never a
@@ -1899,6 +1900,16 @@ fm_backend_herdr_launcher_identity() {  # <session>
   FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID=""
   [ -n "$pane" ] || return 2
 
+  # A herdr-core (hc) terminal started from a Herdr 1 pane carries that pane's
+  # HERDR_* variables into every program it runs, and they outlive the pane.
+  # Herdr 1's server detaches from whatever started it (it reparents to the
+  # user's service manager), so a real Herdr 1 pane never has an hc terminal's
+  # shell as an ancestor. When this process provably runs in a live hc
+  # terminal (fm_backend_hc_launcher_probe in bin/fm-backend.sh), the pane id
+  # is inherited, not this process's own, so there is no Herdr 1 launcher.
+  if declare -F fm_backend_hc_launcher_probe >/dev/null 2>&1 && fm_backend_hc_launcher_probe; then
+    return 2
+  fi
   # Same-session proof, before the pane id is trusted at all: herdr pane ids
   # ("w2:p1") restart at the same low numbers in every session, so a pane id
   # borrowed from another session can silently resolve to a real but unrelated
