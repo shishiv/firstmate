@@ -88,8 +88,8 @@ The away-mode daemon still supports only tmux and Herdr 1 supervisor panes and r
 - Right after a terminal starts, `hc get` can report no foreground process yet, and agent state reads `unreadable` until the shell is up.
 - `--secondmate` spawns are refused.
 - `bin/fm-control.sh` accepts the hc agent state as proof for `exit` and `relaunch`; a relaunch adopts a terminal whose agent ended, and refuses one that reads missing, because this plane does not recreate an hc terminal.
-- A worker inherits `HC_SESSION`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, and `HC_SCOPE` from its terminal, and the `config/launch-env-allowlist` floor keeps them; whether a real harness then reports native status under Firstmate's launch is not verified.
-- Naming a Herdr.app space needs the app window and is not done; whether the labels above display as intended in Herdr.app is not verified.
+- A worker inherits `HC_SESSION`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, and `HC_SCOPE` from its terminal, and the `config/launch-env-allowlist` floor keeps them; a Kiro scout launched by `bin/fm-spawn.sh` reported its native status to herdr-core, and other harnesses are not verified.
+- Naming a Herdr.app space needs the app window and is not done; the app names an unnamed space after its first terminal's repo or folder, and shows each task as its own numbered tab ([verification](verification/runtime-backends.md#hc)).
 - hc has no event stream this adapter consumes; supervision polls like tmux.
 
 ## Tests

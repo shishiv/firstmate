@@ -3146,5 +3146,55 @@ ok - hc liveness: codex codex-cli 0.163.0 classifies alive in hc 0.1.13
 
 - A ship spawn, and a spawn with a real harness rather than the stand-in.
 - Submit confirmation against a real harness composer, since no prompt was submitted.
-- Native `status.state` reported by a real harness launched through `bin/fm-spawn.sh`.
-- How the `herdr.space` and `herdr.tab` labels display in Herdr.app.
+- Native `status.state` reported by a real harness launched through `bin/fm-spawn.sh` (measured later for Kiro, below).
+- How the `herdr.space` and `herdr.tab` labels display in Herdr.app (measured later, below).
+
+### Runtime detection, Herdr.app placement, and a real Kiro scout
+
+Measured on 2026-11-01 with `hc 0.1.16` on Linux (7.2.8, GNU bash 5.3.20), `kiro-cli 2.37.0`, and the Herdr.app window attached to the `default` core.
+That core had been started from a Herdr 1 pane that no longer existed, so every terminal it runs inherits `HERDR_ENV=1`, `HERDR_PANE_ID=w28G:p6E`, `HERDR_SOCKET_PATH`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`.
+
+| Probe | Result |
+| --- | --- |
+| `HC_SESSION=<s> hc get <t>` or `hc ls` for a session with no running core | Started an empty core for `<s>`: reads are not side-effect free, so `fm_backend_hc_launcher_probe` asks only an existing socket. |
+| `hc get` inside an hc terminal with `HC_SESSION` unset | Answered from the `default` core even when `HC_TERMINAL_SOCKET` named another one; `HC_SESSION` and `HC_SOCKET` select the core, `HC_TERMINAL_SOCKET` does not. |
+| Process tree of the primary in terminal `t1` | `kiro-cli` -> `bash` (the pid `hc get t1` reports) -> `herdr-core` holder -> `systemd --user`. |
+| Process tree of the Herdr 1 server | `/usr/bin/herdr server` with parent `systemd --user`, so no Herdr 1 pane has an hc terminal's shell as an ancestor. |
+| `hc send` into a status-reporting program from inside another hc terminal, with `--no-parent` children | Text arrived as typed, with no `<hc from=...>` wrapper. |
+| `hc keys <t> '"'` (also `$`, `(`, `|`, `#`, `&`, `~`) | Refused as unknown keys, so a launch line can only be pasted with `hc send`. |
+
+From a hidden launcher terminal in the `default` core (no Herdr labels, created and removed by the run), with no `FM_BACKEND` and no `config/backend` in a lab home:
+
+```text
+--- resolved backend (no FM_BACKEND, no config/backend)
+hc signal=HC_TERMINAL_ID
+name=hc
+launcher=default:t3
+--- supervisor discovery
+backend=hc target=default:t3
+--- herdr launcher identity from here
+rc=2
+--- spawn
+spawned hcproof1 harness=kiro-cli kind=scout window=default:t4 worktree=/home/shiv/.treehouse/demo-85d56a/1/demo
+spawn-rc=0
+```
+
+`herdr-app ls` then listed the scout in its own space and tab, named by Herdr after the project folder:
+
+```text
+{"id":"sp9ba4b4a5660a08a471a1fb077e0f5e9c","name":"firstmate","tabs":[{"id":"tbcd9f1d0c246c9f9d5128148d06c0ec81","name":"1","terminals":[{"terminal":"t1","status":"idle","app":"kiro-cli"}]}]}
+{"id":"fm-firstmate-a0f3d4c6","name":"demo","tabs":[{"id":"firstmate-a0f3d4c6-fm-hcproof1","name":"1","terminals":[{"terminal":"t4","status":"done","app":"kiro-cli"}]}]}
+```
+
+| Step | Result |
+| --- | --- |
+| `hc get t4` | `parent: null`, `keep: true` once Herdr.app adopted it, the four labels, and native `status: {"app":"kiro-cli","state":"done"}` after the scout's turn. |
+| `fm_backend_composer_state hc default:t4 fm-hcproof1 kiro-cli`, agent state, busy state | `empty`, `alive`, `idle`. |
+| `bin/fm-send.sh hcproof1 '<steer>'` | Exit 0; the doorbell reached the Kiro composer, the scout read `001.msg`, moved it to `handled/`, and added the requested line to its report. |
+| `bin/fm-control.sh hcproof1 exit` | `stopped hcproof1 harness=kiro-cli backend=hc endpoint=default:t4`; agent state then `dead` with `bash` in the foreground. |
+| `bin/fm-teardown.sh hcproof1` | `teardown hcproof1 complete (window default:t4, ...)`; `hc ls --all` no longer listed `t4` and `herdr-app ls` no longer listed the space. |
+| Read-only gate on the real Kiro primary `default:t1` | `fm_backend_composer_state ... kiro-cli` read `empty` and agent state `alive`; nothing was sent to it. |
+
+`tests/fm-backend-hc-smoke.test.sh` and `tests/fm-backend-hc-liveness-live-e2e.test.sh` passed on the same host; the live guard classified claude 2.1.316, opencode 2.1.2, pi 1.4.0, and grok 1.0.67 `alive` and reported codex and kimi as not installed.
+
+Not verified here: a ship spawn, a relaunch, and a doorbell rung into a Kiro primary that runs in an hc terminal (the gate above is read-only; `tests/fm-primary-endpoint.test.sh` pins publication and the ring against a fake `hc`).
