@@ -33,7 +33,7 @@ For recovery and control, use the exact `harness=` in `state/<id>.meta`; never i
 Deliver lifecycle actions only through `../../../bin/fm-control.sh <task-id> interrupt|exit|relaunch`.
 Never type an interrupt key or exit command through `fm-send`, where routing-marked lifecycle text becomes chat.
 Trust handling is complete only when inspection proves the target started processing its instructions; delivery success alone is not proof.
-Muse, Gemini, AGY, Devin, Command Code, and Polytoken are verified only for crewmate and scout work, never a secondmate or primary.
+Muse, Gemini, Devin, Command Code, Polytoken, Cortex, and Kiro Crew are verified only for crewmate and scout work, never a secondmate or primary.
 kiro-cli is verified for all four kinds, following the primary wake protocol in `../../../../docs/supervision-protocols/kiro-cli.md`, which is model-driven (a foreground watcher checkpoint each cycle) because kiro-cli's `stop` hook cannot block the turn end or deliver a follow-up.
 
 ## Detection
@@ -98,6 +98,7 @@ A new tool remains undispatchable until the `verify` plan, its harness entry, ev
     "devin": "references/harness/devin.md",
     "commandcode": "references/harness/commandcode.md",
     "polytoken": "references/harness/polytoken.md",
+    "cortex": "references/harness/cortex.md",
     "kiro-cli": "references/harness/kiro.md",
     "kirocrew": "references/harness/kirocrew.md"
   }

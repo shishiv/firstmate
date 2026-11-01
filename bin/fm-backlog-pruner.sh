@@ -185,7 +185,7 @@ pr_merged() {  # <url> -> 0 merged, 1 not merged or unknown
     cached=unknown
     if fm_pr_url_parse "$url"; then
       case "$FM_PR_PROVIDER" in
-        github) fm_pr_github_read_record "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" \
+        github) fm_pr_github_read_record "$FM_PR_HOST" "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" \
           && cached=$FM_PR_RECORD_MERGED ;;
         gitlab) fm_pr_gitlab_read_record "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" \
           && cached=$FM_PR_RECORD_MERGED ;;

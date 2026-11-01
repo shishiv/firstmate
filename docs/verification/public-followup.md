@@ -127,7 +127,7 @@ It delivers a `report-ready` promised-final, asserts the registration is retaine
 `retire --reason` records its private receipt before removal and is the only close; replayed registration cannot reopen that retired loop.
 The concurrency and interrupted-bind cases verify that one delivered source cannot fork and that retry converges on the same destination obligation.
 A pre-change on-disk record (no `state=`, no `request_context_b64`) is an open loop and un-rechainable rather than a crash.
-Upstream's stock macOS Bash CI lane sets `FM_TEST_ONLY=test_first_register_succeeds_with_empty_lock_list_under_bash32` and runs `tests/fm-public-followup.test.sh` through real `/bin/bash` 3.2, proving the first `register` path is safe when its registry lock list starts empty.
+Upstream's stock macOS Bash CI lane sets `FM_TEST_STOCK_BASH=1` and runs `tests/fm-public-followup.test.sh` through `bin/fm-test-tap-verify.sh` under real `/bin/bash` 3.2, proving the first `register` path is safe when its registry lock list starts empty.
 This fork carries no workflows, so that proof reruns only when a maintainer runs the same command on macOS.
 
 The eight remote-route cases are the proof of guarantee 5.
