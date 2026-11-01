@@ -1999,7 +1999,7 @@ SH
       unsupported|error)
         grep -q 'content-landed proof unavailable' "$case_dir/stderr" \
           || fail "content-git-$mode: unavailable proof was reported as unlanded work"
-        ! grep -q 'not landed' "$case_dir/stderr" \
+        ! grep -q 'no merged PR containing its HEAD' "$case_dir/stderr" \
           || fail "content-git-$mode: unavailable proof still claims work is not landed"
         if [ "$mode" = unsupported ]; then
           grep -q -- 'merge-tree --write-tree.*Git 2.38' "$case_dir/stderr" \
@@ -2012,7 +2012,7 @@ SH
         fi
         ;;
       *)
-        grep -q 'not landed' "$case_dir/stderr" \
+        grep -q 'no merged PR containing its HEAD' "$case_dir/stderr" \
           || fail "content-git-$mode: genuine unlanded-work refusal changed"
         ! grep -q 'proof unavailable' "$case_dir/stderr" \
           || fail "content-git-$mode: supported Git was reported as unavailable"

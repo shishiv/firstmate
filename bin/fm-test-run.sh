@@ -965,6 +965,24 @@ tests/fm-watcher-lock.test.sh 72022
 tests/fm-worker-account-live-e2e.test.sh 3179
 tests/fm-worker-account.test.sh 37445
 tests/fm-worker-shell-live-e2e.test.sh 50
+tests/fm-backlog-pruner.test.sh 3306
+tests/fm-kiro-afk-host-live-e2e.test.sh 190
+tests/fm-kiro-host-mirror-live-e2e.test.sh 189
+tests/fm-kiro-primary-live-e2e.test.sh 189
+tests/fm-kiro-resume-live-e2e.test.sh 192
+tests/fm-kiro-supervision-host-live-e2e.test.sh 188
+tests/fm-live-alert-scout.test.sh 1803
+tests/fm-pi-notebook-live-e2e.test.sh 227
+tests/fm-primary-doorbell.test.sh 53560
+tests/fm-primary-endpoint.test.sh 326
+tests/fm-prior-sessions.test.sh 210
+tests/fm-runtime-pin-inheritance.test.sh 667
+tests/fm-spawn-quota-guard.test.sh 39237
+tests/fm-spawn-task-inbox.test.sh 5385
+tests/fm-task-browser-stop.test.sh 8869
+tests/fm-task-resources-stop.test.sh 10429
+tests/fm-tool-gaps.test.sh 3471
+tests/fm-unclosed-relay.test.sh 9194
 EOF
 }
 

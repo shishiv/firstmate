@@ -1722,7 +1722,7 @@ require_recorded_pr_identity() {
     case "$PROVIDER" in
       github)
         if command -v gh >/dev/null 2>&1 \
-          && fm_pr_github_read_record "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" \
+          && fm_pr_github_read_record "$FM_PR_HOST" "$FM_PR_OWNER" "$FM_PR_REPO" "$FM_PR_NUMBER" \
           && [ "$FM_PR_RECORD_MERGED" = true ] \
           && head_ref=$(gh pr view "$URL" --json headRefName -q .headRefName 2>/dev/null) \
           && [ -n "$head_ref" ]; then

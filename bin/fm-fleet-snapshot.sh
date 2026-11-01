@@ -2009,7 +2009,7 @@ contribution_input_json() {  # canonical backlog/tasks ownership pair on stdout
     || { echo "fm-fleet-snapshot: contribution task read failed" >&2; return 1; }
   jq -n --slurpfile backlog "$BACKLOG_JSON_FILE" --slurpfile tasks "$CONTRIBUTION_TASKS_JSON_FILE" \
     '{backlog:$backlog[0],tasks:$tasks[0]}' \
-    || { echo "fm-fleet-snapshot: contribution input build failed" >&2; return 1; }
+    || { echo "fm-fleet-snapshot: contribution input assembly failed" >&2; return 1; }
 }
 
 if [ "$OUTPUT_MODE" = contribution-input ]; then
