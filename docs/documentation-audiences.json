@@ -298,6 +298,26 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/verify-firstmate/SKILL.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": ".agents/skills/verify-firstmate/features/README.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": ".agents/skills/verify-firstmate/features/spawn-scout.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": ".agents/skills/verify-firstmate/features/steer-and-teardown.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": ".agents/skills/verify-firstmate/features/wake-queue.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": ".greptile/rules.md",
       "audience": "maintainer-architecture"
     },

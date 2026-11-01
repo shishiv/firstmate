@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Prove a Firstmate change end to end in a disposable lab home.
-# Usage: verify.sh [--keep] [--out <dir>]
+# Usage: verify.sh [--keep] [--out <dir>] [-- <fm-test-run.sh selection...>]
 #   Runs the hc lifecycle against a private herdr-core, with a stand-in agent:
 #   spawn one scout, see its status line reach the wake queue, steer it once,
-#   tear it down. Exits 0 only when every step passed. Evidence goes to --out
-#   (default /tmp/fmvf-evidence.<pid>); the scratch root is removed on exit
-#   unless --keep is given.
+#   tear it down. Then runs bin/fm-test-run.sh with the selection after --
+#   (default --changed). Exits 0 only when every step passed. Evidence goes to
+#   --out (default /tmp/fmvf-evidence.<pid>); the scratch root is removed on
+#   exit unless --keep is given.
 # Touches only: the lab home, a private hc core (own HC_SESSION and XDG dirs),
 # and a named Herdr lab session that guards the default session as a tripwire.
 set -u
@@ -13,11 +14,13 @@ set -u
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)"
 KEEP=0
 OUT=
+SUITE=(--changed)
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep) KEEP=1 ;;
     --out) shift; OUT=${1:-} ;;
-    *) echo "usage: verify.sh [--keep] [--out <dir>]" >&2; exit 2 ;;
+    --) shift; [ $# -eq 0 ] || SUITE=("$@"); break ;;
+    *) echo "usage: verify.sh [--keep] [--out <dir>] [-- <fm-test-run.sh selection...>]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -43,15 +46,17 @@ XDG_NAMES="XDG_STATE_HOME XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACH
 for n in $XDG_NAMES; do
   if [ -n "${!n+x}" ]; then eval "ORIG_$n=\${$n}"; eval "HAD_$n=1"; fi
 done
-herdr_helper() {
+host_env() {
   (
     for n in $XDG_NAMES; do
       h="HAD_$n"; o="ORIG_$n"
       if [ -n "${!h:-}" ]; then export "$n=${!o}"; else unset "$n"; fi
     done
-    "$HERDR_LAB_HELPER" "$@"
+    unset HC_SESSION
+    "$@"
   )
 }
+herdr_helper() { host_env "$HERDR_LAB_HELPER" "$@"; }
 
 unset HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE HC_SOCKET HERDR_ENV
 export HC_SESSION=$HC_SESSION_NAME XDG_STATE_HOME=$R XDG_RUNTIME_DIR=$R
@@ -162,3 +167,11 @@ fm fm-captain-hold.sh complete "$ID" --none >/dev/null 2>&1 || true
 fm fm-teardown.sh "$ID" 2>&1 | tee "$OUT/teardown.txt" | tail -2
 gone() { [ "$(hc ls --json --all | jq '.terminals | length')" = 0 ]; }
 if wait_for 20 gone; then check ok "no terminal left in the private core"; else check bad "no terminal left in the private core"; fi
+
+step "tests: bin/fm-test-run.sh ${SUITE[*]}"
+if host_env "$WT/bin/fm-test-run.sh" "${SUITE[@]}" >"$OUT/suite.txt" 2>&1; then
+  check ok "bin/fm-test-run.sh ${SUITE[*]} exited 0"
+else
+  check bad "bin/fm-test-run.sh ${SUITE[*]} exited 0"
+fi
+grep -E '^(fm-test-run: |FM_TEST_SUMMARY |FM_TEST_END .* exit=[1-9])' "$OUT/suite.txt" || true
