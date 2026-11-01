@@ -34,9 +34,23 @@
 #
 # Visibility in Herdr.app: the app shows a terminal that carries
 # herdr.space=<id> and herdr.tab=<id> labels, and an unknown id becomes a new
-# space or tab. create_task sets herdr.space=FM_HC_SPACE (default
-# fm-<hometag>) and herdr.tab=<scoped label>, so a home's tasks group in one
-# space with one tab each. Naming the space needs the app window and is not done.
+# space or tab. create_task puts each task in one space per home, with one tab
+# each (herdr.tab=<scoped label>). The space is FM_HC_SPACE when set, else the
+# primary's own space: the herdr.space label of the live hc terminal that
+# state/.primary-endpoint names on the same session. Without one it is a
+# per-home space, fm-<hometag>. A machine-qualified space id (`vps/sp...`)
+# falls back too.
+# Names: the app names an unnamed space after its first terminal's folder and
+# an unnamed tab by its position, and a space's name goes with it when its last
+# tab closes. On the `default` session, the one Herdr.app shows, create_task
+# therefore waits briefly for the app to show the new tab, names the tab after
+# the task (`tab.rename`) and the space after the home's folder name
+# (`space.rename`, which marks it named). Every spawn renames again, so a
+# per-home space that closed with its last task gets its name back with the
+# next one. Only the new tab and its space are renamed; no other tab, terminal,
+# or space is moved, renamed, or closed. Naming is best effort: with no app, or
+# no tab within the wait, the task still starts and a warning says why.
+# A firstmate.home-path=<FM_HOME> label lets an app mod find the task's state/.
 #
 # Measured limits on hc 0.1.13 (docs/hc-backend.md "Limits"):
 #   - `hc send` always presses Enter after pasting. There is no paste without
@@ -169,23 +183,66 @@ fm_backend_hc_container_ensure() {
 # into any parent. --keep gives a terminal lost with its core a shell at the
 # same address, which agent_state reads as dead, so relaunch can adopt it.
 fm_backend_hc_create_task() {  # <session> <window-label> <cwd>
-  local session=$1 label=$2 cwd=$3 home scoped dup out address
+  local session=$1 label=$2 cwd=$3 home scoped dup out address space home_path
   home=$(fm_backend_hometag)
   scoped=$(fm_backend_hc_scoped_label "$label")
+  home_path=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || home_path=$FM_HOME
   dup=$(fm_backend_hc_cli "$session" ls --json --label "firstmate.task=$label" --label "firstmate.home=$home" 2>/dev/null) \
     || { echo "error: 'hc ls' failed for session '$session'; cannot create $label" >&2; return 1; }
   if [ -n "$(printf '%s' "$dup" | jq -r '.terminals[]?.address' 2>/dev/null)" ]; then
     echo "error: hc terminal for $label already exists in session '$session'" >&2
     return 1
   fi
+  space=${FM_HC_SPACE:-}
+  [ -n "$space" ] || space=$(fm_backend_hc_primary_space "$session") || space=fm-$home
   out=$(fm_backend_hc_cli "$session" run --bg --json --keep --no-parent --outlive-parent --no-notify \
     --cwd "$cwd" \
-    --label "firstmate.task=$label" --label "firstmate.home=$home" \
-    --label "herdr.space=${FM_HC_SPACE:-fm-$home}" --label "herdr.tab=$scoped" 2>&1) \
+    --label "firstmate.task=$label" --label "firstmate.home=$home" --label "firstmate.home-path=$home_path" \
+    --label "herdr.space=$space" --label "herdr.tab=$scoped" 2>&1) \
     || { echo "error: hc run failed for $label: $out" >&2; return 1; }
   address=$(printf '%s' "$out" | jq -r '.address // empty' 2>/dev/null)
   fm_backend_hc_address_valid "$address" || { echo "error: hc run did not return a terminal address for $label (got: $out)" >&2; return 1; }
+  [ "$session" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "${home_path##*/}"
   printf '%s\n' "$address"
+}
+
+# fm_backend_hc_primary_space: the herdr.space label of the live terminal that
+# this home's state/.primary-endpoint names as an hc target on <session>.
+fm_backend_hc_primary_space() {  # <session>
+  local session=$1 endpoint backend target json space
+  endpoint="${STATE:-$FM_HOME/state}/.primary-endpoint"
+  [ -f "$endpoint" ] || return 1
+  backend=$(sed -n 's/^backend=//p' "$endpoint" 2>/dev/null)
+  target=$(sed -n 's/^target=//p' "$endpoint" 2>/dev/null)
+  [ "$backend" = hc ] || return 1
+  fm_backend_hc_parse_target "$target" && [ "$FM_BACKEND_HC_SESSION" = "$session" ] || return 1
+  json=$(fm_backend_hc_get "$target") || return 1
+  space=$(printf '%s' "$json" | jq -r 'select(.state == "live") | .labels["herdr.space"] // empty' 2>/dev/null)
+  fm_backend_hc_atom_valid "$space" || return 1
+  printf '%s' "$space"
+}
+
+# fm_backend_hc_app_name: name the new tab and its space in Herdr.app, once the
+# app shows the tab. Best effort; see "Names" in the header.
+FM_HC_APP_WAIT_TRIES=${FM_HC_APP_WAIT_TRIES:-30}
+fm_backend_hc_app_name() {  # <space-id> <tab-id> <tab-name> <space-name>
+  local space=$1 tab=$2 tab_name=$3 space_name=$4 tries=$FM_HC_APP_WAIT_TRIES ls shown
+  command -v herdr-app >/dev/null 2>&1 || return 0
+  while :; do
+    ls=$(herdr-app ls 2>/dev/null) \
+      || { echo "warning: Herdr.app is not answering, so tab $tab keeps the app's own names" >&2; return 0; }
+    shown=$(printf '%s' "$ls" | jq -r --arg s "$space" --arg t "$tab" \
+      '[.spaces[]? | select(.id == $s) | .tabs[]? | select(.id == $t)] | length' 2>/dev/null) || shown=0
+    [ "${shown:-0}" = 0 ] || break
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] || { echo "warning: Herdr.app did not show tab $tab in space $space, so it keeps the app's own names" >&2; return 0; }
+    sleep 0.1
+  done
+  herdr-app 'do' tab.rename "$(jq -nc --arg id "$tab" --arg name "$tab_name" '{id: $id, name: $name}')" >/dev/null 2>&1 \
+    || echo "warning: Herdr.app did not rename tab $tab to $tab_name" >&2
+  herdr-app 'do' space.rename "$(jq -nc --arg id "$space" --arg name "$space_name" '{id: $id, name: $name}')" >/dev/null 2>&1 \
+    || echo "warning: Herdr.app did not rename space $space to $space_name" >&2
+  return 0
 }
 
 # fm_backend_hc_capture: the screen plus <lines> of history, the same window

@@ -3979,3 +3979,35 @@ spawn-rc=0
 `tests/fm-backend-hc-smoke.test.sh` and `tests/fm-backend-hc-liveness-live-e2e.test.sh` passed on the same host; the live guard classified claude 2.1.316, opencode 2.1.2, pi 1.4.0, and grok 1.0.67 `alive` and reported codex and kimi as not installed.
 
 Not verified here: a ship spawn, a relaunch, and a doorbell rung into a Kiro primary that runs in an hc terminal (the gate above is read-only; `tests/fm-primary-endpoint.test.sh` pins publication and the ring against a fake `hc`).
+
+### Named tabs in one space per home
+
+Measured on 2026-11-01 with `hc 0.1.16` and `herdr-app 0.1.11` on Linux (7.2.8, GNU bash 5.3.20), with the Herdr.app window attached to the `default` core.
+A lab home `firstmate-lab` had a stand-in primary: an hc terminal in its own app space, started in a folder the app named `lab`, published as `backend=hc target=default:<t>` in the lab's `state/.primary-endpoint`.
+Scouts ran through `bin/fm-spawn.sh <id> <lab>/projects/demo --scout --backend hc --harness "<root>/agents/claude/claude --fake"` with a stand-in agent, and ended through `bin/fm-teardown.sh`.
+`herdr-app ls`, reduced to the lab's spaces:
+
+```text
+--- primary only
+{"id":"fm-lab-hcspace-4073225","name":"lab","tabs":[{"id":"fm-lab-hcspace-4073225-primary","name":"1"}]}
+--- s1 and s2 spawned
+{"id":"fm-lab-hcspace-4073225","name":"firstmate-lab","tabs":[{"id":"fm-lab-hcspace-4073225-primary","name":"1"},{"id":"firstmate-a0f3d4c6-fm-s2","name":"s2"},{"id":"firstmate-a0f3d4c6-fm-s1","name":"s1"}]}
+--- both torn down
+{"id":"fm-lab-hcspace-4073225","name":"firstmate-lab","tabs":[{"id":"fm-lab-hcspace-4073225-primary","name":"1"}]}
+--- s3 spawned
+{"id":"fm-lab-hcspace-4073225","name":"firstmate-lab","tabs":[{"id":"fm-lab-hcspace-4073225-primary","name":"1"},{"id":"firstmate-a0f3d4c6-fm-s3","name":"s3"}]}
+```
+
+With the endpoint removed, tasks went to the per-home space:
+
+```text
+--- s4 spawned
+{"id":"fm-firstmate-a0f3d4c6","name":"firstmate-lab","tabs":[{"id":"firstmate-a0f3d4c6-fm-s4","name":"s4"}]}
+--- s4 torn down: the space closed with its last tab
+--- s5 spawned
+{"id":"fm-firstmate-a0f3d4c6","name":"firstmate-lab","tabs":[{"id":"firstmate-a0f3d4c6-fm-s5","name":"s5"}]}
+```
+
+The primary's tab kept its own name `1` throughout.
+`herdr-app check share/herdr-app/mods/firstmate` passed, and the installed mod, opened with `herdr-app do mod.open --name firstmate`, listed the lab's two workers under `firstmate-lab` apart from the main home's, with `Needs decision` and `PR ready` appearing after lines were appended to their status records.
+A mod copied into `mods/` while the app runs is not docked until the next start; `mod.open` showed it at once.
