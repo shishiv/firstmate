@@ -116,6 +116,67 @@ test_watcher_wake_never_types_into_the_endpoint() {
 test_direct_ring_and_safety_guards
 test_watcher_wake_never_types_into_the_endpoint
 
+# A Kiro primary in a herdr-core terminal that was started from an old tmux or
+# Herdr 1 pane: the inherited TMUX_PANE and HERDR_* name a pane that is not this
+# session's, so the record must name the hc terminal and the ring must reach it.
+test_hc_primary_publishes_and_rings_its_own_terminal() {
+  local dir="$TMP_ROOT/hc-primary" fakehc record sent rc=0 script
+  mkdir -p "$dir/home/state" "$dir/root" "$dir/run/herdr-core" "$dir/hcbin"
+  cp -R "$ROOT/bin" "$dir/root/bin"
+  printf '# Firstmate\n' > "$dir/root/AGENTS.md"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$dir/run/herdr-core/fmtest.sock" \
+    || fail "could not create the fake hc socket"
+  printf 'transcript\n\n› ask a question or describe a task ↵\n' > "$dir/idle.screen"
+  printf 'transcript\n\n› half typed command\n' > "$dir/pending.screen"
+  : > "$dir/send.log"
+  fakehc="$dir/hcbin/hc"
+  cat > "$fakehc" <<'SH'
+#!/usr/bin/env bash
+set -u
+last=""
+for a in "$@"; do last=$a; done
+case "${1:-}" in
+  get)
+    [ "$last" = t1 ] || exit 3
+    printf '{"address":"t1","state":"live","pid":%s,"labels":{}}\n' "$(cat "$FM_STATE_OVERRIDE/.lock")"
+    ;;
+  read) cat "$FM_PRIMARY_TEST_SCREEN" ;;
+  send|keys) printf '%s %s\n' "HC_SESSION=${HC_SESSION:-}" "$*" >> "$FM_PRIMARY_TEST_SEND_LOG"; printf '{}\n' ;;
+  *) printf '{}\n' ;;
+esac
+SH
+  chmod +x "$fakehc"
+  script=$(cat <<'FAKE_KIRO'
+      set -eu
+      state=$FM_STATE_OVERRIDE
+      printf "%s\n" "$$" > "$state/.lock"
+      . "$FM_ROOT_OVERRIDE/bin/fm-primary-endpoint-lib.sh"
+      fm_primary_endpoint_publish "$state" "$FM_ROOT_OVERRIDE" "$FM_HOME" || exit 20
+      fm_primary_endpoint_ring_kiro "$state" "$FM_ROOT_OVERRIDE" "$FM_HOME" wake || exit 21
+      mv "$FM_PRIMARY_TEST_SEND_LOG" "$FM_PRIMARY_TEST_SEND_LOG.wake"; : > "$FM_PRIMARY_TEST_SEND_LOG"
+      export FM_PRIMARY_TEST_SCREEN=${FM_PRIMARY_TEST_SCREEN%/*}/pending.screen
+      if fm_primary_endpoint_ring_kiro "$state" "$FM_ROOT_OVERRIDE" "$FM_HOME" wake; then
+        exit 22
+      fi
+      [ ! -s "$FM_PRIMARY_TEST_SEND_LOG" ] || exit 23
+FAKE_KIRO
+)
+  env -u HC_SESSION -u HC_SOCKET PATH="$dir/hcbin:$FAKEBIN:$PATH" FM_HOME="$dir/home" \
+    FM_STATE_OVERRIDE="$dir/home/state" FM_ROOT_OVERRIDE="$dir/root" \
+    XDG_RUNTIME_DIR="$dir/run" HC_TERMINAL_ID=t1 HC_TERMINAL_SOCKET="$dir/run/herdr-core/fmtest.sock" \
+    TMUX_PANE='primary:0' HERDR_ENV=1 HERDR_PANE_ID='w28G:p6E' \
+    FM_PRIMARY_TEST_SCREEN="$dir/idle.screen" FM_PRIMARY_TEST_SEND_LOG="$dir/send.log" \
+    "$FAKEBIN/kiro-cli" -c "$script" > "$dir.out" 2>&1 || rc=$?
+  [ "$rc" = 0 ] || fail "hc primary scenario failed at step $rc: $(cat "$dir.out")"
+  record="$dir/home/state/.primary-endpoint"
+  assert_grep 'backend=hc' "$record" "the record must name the hc backend, not the inherited tmux or Herdr pane"
+  assert_grep 'target=fmtest:t1' "$record" "the record must name the hc terminal on its own session"
+  sent=$(cat "$dir/send.log.wake")
+  assert_contains "$sent" 'HC_SESSION=fmtest send --json t1 : Firstmate wake waiting:' "the doorbell must be pasted and submitted into the hc terminal"
+  pass "primary endpoint: a Kiro primary in an hc terminal publishes that terminal and rings it, and a pending composer stays silent"
+}
+test_hc_primary_publishes_and_rings_its_own_terminal
+
 test_primary_hook_delivers_startup_and_unacknowledged_wake_context() {
   local dir="$TMP_ROOT/primary-hook" shim home state hook out
   shim="$dir/root"; home="$dir/home"; state="$home/state"; hook="$shim/bin/fm-kiro-turnend-hook.sh"

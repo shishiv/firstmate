@@ -32,6 +32,7 @@
     "docs/orca-backend.md",
     "docs/cmux-backend.md",
     "docs/paseo-backend.md",
+    "docs/hc-backend.md",
     "docs/remote-secondmates.md"
   ],
   "requiredOwnerPointers": [
@@ -97,6 +98,10 @@
     },
     {
       "source": "docs/cmux-backend.md",
+      "target": "docs/verification/runtime-backends.md"
+    },
+    {
+      "source": "docs/hc-backend.md",
       "target": "docs/verification/runtime-backends.md"
     },
     {
@@ -423,6 +428,10 @@
     },
     {
       "path": "docs/paseo-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/hc-backend.md",
       "audience": "operator-current"
     },
     {

@@ -3070,3 +3070,131 @@ Without Firstmate's hooks, Herdr reported the question panel as `blocked`, which
 This live proof covers the watcher and queue boundary; it does not establish live daemon-consumer delivery.
 `bin/fm-test-run.sh tests/fm-daemon.test.sh` exercises that consumer routing separately with portable regressions for busy escalation and busy-bookkeeping failures in away and quiet mode.
 Repeat the hooked-worker check above before publication if watcher or task-inbox busy code changes; `bin/fm-test-run.sh tests/fm-task-inbox.test.sh` refreshes the portable ladder regressions.
+
+## hc
+
+Measured on 2026-10-29 with `hc 0.1.13` on macOS (Darwin 27.0.0, `/bin/bash` 3.2.57), against private cores only: a unique `HC_SESSION`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` under a short `/tmp/fmhc.*` directory, and `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, and `HC_SCOPE` unset.
+The default socket path under the scratchpad temp directory exceeded the 103-byte unix socket limit, which `hc` reports as a usage error, so the private root must be short.
+
+### CLI facts the adapter depends on
+
+| Probe | Result |
+| --- | --- |
+| `HC_SESSION=<private>` with an inherited `HC_TERMINAL_SOCKET` naming another core | `hc ls` listed only the private core's terminals. |
+| `HC_SOCKET=<core a socket> HC_SESSION=<core b> hc ls` (hc 0.1.14, 2026-10-30) | Listed core a's terminals: an exported `HC_SOCKET` wins over `HC_SESSION`. With `env -u HC_SOCKET` it listed core b's, so `fm_backend_hc_cli` drops `HC_SOCKET`. |
+| `hc run --bg --json --no-parent --outlive-parent --no-notify --cwd /tmp --label firstmate.task=x` with no argv | Started the user's login shell; printed `{"address":"t2","agent":"zsh",...}`. |
+| `hc get <missing>` | Exit 3, `{"error":{"kind":"not_found",...}}` on stderr. |
+| `hc kill <t>` on a live shell | Exit 0; `hc get` then reports `state: finished`, `reason: killed`. |
+| `hc rm <t>` after kill | Exit 0; `hc get` then exits 3. |
+| `hc send <t> 'cd /usr'` | Pasted and submitted; `foreground.cwd` became `/usr`. |
+| `hc get` of a terminal running the user's `claude` wrapper | `foreground` was `{"name":"hats","argv":["/Users/fran/.cargo/bin/hats","run","--"]}`; the Claude process was another member of that process group. |
+
+### Adapter lifecycle
+
+`tests/fm-backend-hc-smoke.test.sh` passed against its own private core, which it stopped on exit:
+
+```text
+ok - hc smoke: create_task started fmt55488:t1
+ok - hc smoke: current_path follows the shell's cwd
+ok - hc smoke: send_text_line ran the command and capture shows its output
+ok - hc smoke: agent_state reads dead for a shell and alive for an agent-named foreground
+ok - hc smoke: kill closes and removes the terminal
+FM_TEST_COMPLETE
+```
+
+A real Claude Code launch through the user's `claude` wrapper, typed into a task terminal with `fm_backend_hc_send_text_line` and never given a prompt, read `alive` from `fm_backend_agent_state` within three polls, and `fm_backend_kill` returned 0 with no surviving member of its process group.
+Before reading the process group, the same launch read `ambiguous`.
+
+### Spawn, steer, peek, and teardown
+
+A scout ran end to end in a scratch home with `HOME` and `TREEHOUSE_ROOT` in the scratch root, a private core (`HC_SESSION=fme1`), a local bare-origin project, and a compiled stand-in agent at `<root>/agents/claude/claude` that logs its argv, its `HC_*` and `FM_*` environment, and every input line:
+
+```sh
+FM_SPAWN_NO_GUARD=1 bin/fm-spawn.sh e2e1 "$R/home/projects/demo" --scout --backend hc --harness "$R/agents/claude/claude --fake"
+bin/fm-peek.sh e2e1
+bin/fm-send.sh e2e1 'Please also report the second line.'
+bin/fm-captain-hold.sh complete e2e1 --none
+bin/fm-teardown.sh e2e1
+```
+
+| Step | Result |
+| --- | --- |
+| Spawn | `spawned e2e1 harness=claude kind=scout window=fme1:t1 worktree=<root>/pool/.treehouse/demo-74e2e1/1/demo`; meta carried `backend=hc`, `hc_session=fme1`, `hc_terminal=t1`. |
+| Terminal screen | `treehouse get`, `cd -- '<worktree>'`, the exports, and `. '/tmp/fm-e2e1+<hash>/launch.<gen>.sh'` ran in order, then the stand-in printed its prompt. |
+| Agent environment | `HC_SESSION=fme1`, `HC_TERMINAL_ID=t1`, `HC_TERMINAL_SOCKET=<root>/herdr-core/fme1.sock`, `HC_SCOPE`, `FM_TASK_ID=e2e1`, `FM_TASK_INBOX`. |
+| `fm_backend_agent_state hc fme1:t1` | `alive`. |
+| `bin/fm-peek.sh e2e1` | Showed the terminal's screen. |
+| `bin/fm-send.sh e2e1 ...` twice | Exit 0; `001.msg` and `002.msg` in the inbox; the stand-in received the doorbell line each time. |
+| `bin/fm-crew-state.sh e2e1` | `state: working · source: pane · harness busy (fm-spawn)`. |
+| `bin/fm-teardown.sh e2e1` | `teardown e2e1 complete (window fme1:t1, ...)`; `hc ls --all` was empty and the worktree returned to the pool. |
+
+Before the launch-line fix the same spawn could not type `+`, which every launch line carries.
+
+### Live guard
+
+`tests/fm-backend-hc-liveness-live-e2e.test.sh` on this host:
+
+```text
+# claude 2.1.312 (Claude Code): foreground={"argv":["/Users/fran/.local/bin/claude"],"cwd":"/private/tmp/fmhl.gzWz93/wt","name":"2.1.312","pid":64496}
+ok - hc liveness: claude 2.1.312 (Claude Code) classifies alive in hc 0.1.13
+# codex codex-cli 0.163.0: foreground={"argv":["/Users/fran/.local/bin/codex"],"cwd":"/private/tmp/fmhl.gzWz93/wt","name":"codex","pid":65031}
+ok - hc liveness: codex codex-cli 0.163.0 classifies alive in hc 0.1.13
+# unverified on this machine (not installed): opencode pi grok kimi
+```
+
+### Not verified
+
+- A ship spawn, and a spawn with a real harness rather than the stand-in.
+- Submit confirmation against a real harness composer, since no prompt was submitted.
+- Native `status.state` reported by a real harness launched through `bin/fm-spawn.sh` (measured later for Kiro, below).
+- How the `herdr.space` and `herdr.tab` labels display in Herdr.app (measured later, below).
+
+### Runtime detection, Herdr.app placement, and a real Kiro scout
+
+Measured on 2026-11-01 with `hc 0.1.16` on Linux (7.2.8, GNU bash 5.3.20), `kiro-cli 2.37.0`, and the Herdr.app window attached to the `default` core.
+That core had been started from a Herdr 1 pane that no longer existed, so every terminal it runs inherits `HERDR_ENV=1`, `HERDR_PANE_ID=w28G:p6E`, `HERDR_SOCKET_PATH`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`.
+
+| Probe | Result |
+| --- | --- |
+| `HC_SESSION=<s> hc get <t>` or `hc ls` for a session with no running core | Started an empty core for `<s>`: reads are not side-effect free, so `fm_backend_hc_launcher_probe` asks only an existing socket. |
+| `hc get` inside an hc terminal with `HC_SESSION` unset | Answered from the `default` core even when `HC_TERMINAL_SOCKET` named another one; `HC_SESSION` and `HC_SOCKET` select the core, `HC_TERMINAL_SOCKET` does not. |
+| Process tree of the primary in terminal `t1` | `kiro-cli` -> `bash` (the pid `hc get t1` reports) -> `herdr-core` holder -> `systemd --user`. |
+| Process tree of the Herdr 1 server | `/usr/bin/herdr server` with parent `systemd --user`, so no Herdr 1 pane has an hc terminal's shell as an ancestor. |
+| `hc send` into a status-reporting program from inside another hc terminal, with `--no-parent` children | Text arrived as typed, with no `<hc from=...>` wrapper. |
+| `hc keys <t> '"'` (also `$`, `(`, `|`, `#`, `&`, `~`) | Refused as unknown keys, so a launch line can only be pasted with `hc send`. |
+
+From a hidden launcher terminal in the `default` core (no Herdr labels, created and removed by the run), with no `FM_BACKEND` and no `config/backend` in a lab home:
+
+```text
+--- resolved backend (no FM_BACKEND, no config/backend)
+hc signal=HC_TERMINAL_ID
+name=hc
+launcher=default:t3
+--- supervisor discovery
+backend=hc target=default:t3
+--- herdr launcher identity from here
+rc=2
+--- spawn
+spawned hcproof1 harness=kiro-cli kind=scout window=default:t4 worktree=/home/shiv/.treehouse/demo-85d56a/1/demo
+spawn-rc=0
+```
+
+`herdr-app ls` then listed the scout in its own space and tab, named by Herdr after the project folder:
+
+```text
+{"id":"sp9ba4b4a5660a08a471a1fb077e0f5e9c","name":"firstmate","tabs":[{"id":"tbcd9f1d0c246c9f9d5128148d06c0ec81","name":"1","terminals":[{"terminal":"t1","status":"idle","app":"kiro-cli"}]}]}
+{"id":"fm-firstmate-a0f3d4c6","name":"demo","tabs":[{"id":"firstmate-a0f3d4c6-fm-hcproof1","name":"1","terminals":[{"terminal":"t4","status":"done","app":"kiro-cli"}]}]}
+```
+
+| Step | Result |
+| --- | --- |
+| `hc get t4` | `parent: null`, `keep: true` once Herdr.app adopted it, the four labels, and native `status: {"app":"kiro-cli","state":"done"}` after the scout's turn. |
+| `fm_backend_composer_state hc default:t4 fm-hcproof1 kiro-cli`, agent state, busy state | `empty`, `alive`, `idle`. |
+| `bin/fm-send.sh hcproof1 '<steer>'` | Exit 0; the doorbell reached the Kiro composer, the scout read `001.msg`, moved it to `handled/`, and added the requested line to its report. |
+| `bin/fm-control.sh hcproof1 exit` | `stopped hcproof1 harness=kiro-cli backend=hc endpoint=default:t4`; agent state then `dead` with `bash` in the foreground. |
+| `bin/fm-teardown.sh hcproof1` | `teardown hcproof1 complete (window default:t4, ...)`; `hc ls --all` no longer listed `t4` and `herdr-app ls` no longer listed the space. |
+| Read-only gate on the real Kiro primary `default:t1` | `fm_backend_composer_state ... kiro-cli` read `empty` and agent state `alive`; nothing was sent to it. |
+
+`tests/fm-backend-hc-smoke.test.sh` and `tests/fm-backend-hc-liveness-live-e2e.test.sh` passed on the same host; the live guard classified claude 2.1.316, opencode 2.1.2, pi 1.4.0, and grok 1.0.67 `alive` and reported codex and kimi as not installed.
+
+Not verified here: a ship spawn, a relaunch, and a doorbell rung into a Kiro primary that runs in an hc terminal (the gate above is read-only; `tests/fm-primary-endpoint.test.sh` pins publication and the ring against a fake `hc`).
