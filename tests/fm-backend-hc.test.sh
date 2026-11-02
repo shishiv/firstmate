@@ -195,6 +195,88 @@ test_without_a_primary_space_the_home_space_is_named_again_on_every_spawn() {
   pass "hc: without a primary space the home's own space is named after the home on every spawn"
 }
 
+# A secondmate is a different home: its terminal opens that home's own space
+# rather than the parent's, under the parent's identity labels, and the
+# secondmate's own crew then land in the same space.
+test_secondmate_opens_its_own_space_which_its_crew_join() {
+  local tag mate mate_tag run
+  setup_case secondmate-space
+  tag=$(hometag_of)
+  mate="$D/mate"
+  mkdir -p "$mate/state"
+  printf 'sm1\n' > "$mate/.fm-secondmate-home"
+  mate_tag=$(HOMEDIR=$mate hometag_of)
+  primary_endpoint default:t1
+  jq -n '{address: "t1", state: "live", labels: {"herdr.space": "sp9ba4", "herdr.tab": "tbprimary"}}' > "$D/t1.json"
+  printf '{"address":"t2"}\n' > "$D/run.json"
+  app_ls_with "fm-$mate_tag" "$tag-fm-sm1"
+  FM_HC_SPACE=elsewhere hc_shell 'fm_backend_hc_create_task default fm-sm1 "'"$mate"'" "'"$mate"'"' >/dev/null 2>&1 \
+    || fail "secondmate create_task must succeed"
+  run=$(grep $'\x1frun\x1f' "$D/log")
+  for want in $'--cwd\x1f'"$mate" "firstmate.task=fm-sm1" "firstmate.home=$tag" "firstmate.home-path=$(cd "$HOMEDIR" && pwd -P)" \
+    "herdr.space=fm-$mate_tag" "herdr.tab=$tag-fm-sm1"; do
+    assert_contains "$run" "$want" "a secondmate's hc run must carry $want"
+  done
+  assert_not_contains "$run" "herdr.space=sp9ba4" "a secondmate must not join the parent's space"
+  assert_not_contains "$run" "herdr.space=elsewhere" "the parent's FM_HC_SPACE must not move a secondmate"
+  assert_equals "$(app_calls)" \
+    "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-sm1","name":"sm1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"fm-'"$mate_tag"'","name":"sm1"}' \
+    "the secondmate's tab and its space are both named after the secondmate"
+  : > "$D/log"
+  : > "$D/app.log"
+  jq -n --arg s "fm-$mate_tag" '{address: "t2", state: "live", labels: {"herdr.space": $s}}' > "$D/t2.json"
+  printf 'schema=fm-primary-endpoint.v1\nharness=kiro-cli\nbackend=hc\ntarget=default:t2\n' > "$mate/state/.primary-endpoint"
+  printf '{"address":"t3"}\n' > "$D/run.json"
+  app_ls_with "fm-$mate_tag" "$mate_tag-fm-c1"
+  HOMEDIR=$mate hc_shell 'fm_backend_hc_create_task default fm-c1 /proj' >/dev/null 2>&1 || fail "crew create_task must succeed"
+  run=$(grep $'\x1frun\x1f' "$D/log")
+  assert_contains "$run" "herdr.space=fm-$mate_tag" "the secondmate's crew must join its space"
+  assert_contains "$run" "firstmate.home=$mate_tag" "the secondmate's crew carry the secondmate's own labels"
+  assert_contains "$(app_calls)" "space.rename"$'\x1f''{"id":"fm-'"$mate_tag"'","name":"sm1"}' "the crew keep the secondmate's space name"
+  pass "hc: a secondmate opens its own space under this home's labels, and its crew join that space"
+}
+
+# fm-spawn.sh end to end against the stub: a --secondmate spawn on hc is
+# accepted, opens the secondmate home's space under this home's labels, and
+# stages a launch that runs in the secondmate home.
+test_secondmate_spawn_lands_in_its_home_on_hc() {
+  local id="hcsm$$" mate mate_abs tag mate_tag out rc=0 run meta launch staged
+  setup_case spawn-secondmate
+  mate="$D/mate"
+  mkdir -p "$mate/bin" "$mate/data" "$HOMEDIR/state" "$HOMEDIR/data" "$HOMEDIR/config"
+  printf '# Firstmate\n' > "$mate/AGENTS.md"
+  git -C "$mate" init -q
+  git -C "$mate" add AGENTS.md
+  git -C "$mate" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
+  printf 'Lab charter.\n' > "$mate/data/charter.md"
+  printf '%s\n' "$id" > "$mate/.fm-secondmate-home"
+  mate_abs=$(cd "$mate" && pwd -P)
+  printf '#!/bin/sh\nexit 0\n' > "$FB/treehouse"
+  chmod +x "$FB/treehouse"
+  tag=$(FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT bash -c '. "'"$FM_TEST_ROOT"'/bin/fm-backend.sh"; fm_backend_source hc; fm_backend_hometag')
+  mate_tag=$(HOMEDIR=$mate hometag_of)
+  printf '{"address":"t9"}\n' > "$D/run.json"
+  jq -n --arg t "fm-$id" --arg h "$tag" '{address: "t9", state: "live", labels: {"firstmate.task": $t, "firstmate.home": $h}, cwd: "/start"}' > "$D/t9.json"
+  out=$(FAKE_HC_DIR=$D PATH="$FB:$PATH" FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT HC_SESSION=fmtest \
+    FM_SPAWN_NO_GUARD=1 FM_SKIP_SECONDMATE_SYNC=1 FM_SKIP_SECONDMATE_INHERIT=1 \
+    "$FM_TEST_ROOT/bin/fm-spawn.sh" "$id" "$mate" "sh -c 'sleep 60'" --secondmate --backend hc 2>&1) || rc=$?
+  launch=$(grep $'\x1fsend\x1f' "$D/log" | sed -n "s/.*\. '\(\/tmp\/fm-$id+[^']*\)'.*/\1/p" | tail -1)
+  staged=no
+  [ -n "$launch" ] && grep -qF "FM_HOME='$mate_abs'" "$launch" && staged=yes
+  rm -rf "/tmp/fm-$id" "/tmp/fm-$id+"*
+  expect_code 0 "$rc" "a --secondmate spawn on hc must succeed"$'\n'"$out"
+  assert_equals yes "$staged" "the staged launch must run in the secondmate home"
+  run=$(grep $'\x1frun\x1f' "$D/log")
+  for want in $'--cwd\x1f'"$mate_abs" "firstmate.task=fm-$id" "firstmate.home=$tag" "herdr.space=fm-$mate_tag"; do
+    assert_contains "$run" "$want" "the secondmate's hc run must carry $want"
+  done
+  meta="$HOMEDIR/state/$id.meta"
+  for want in kind=secondmate backend=hc hc_session=fmtest hc_terminal=t9 "home=$mate_abs"; do
+    assert_contains "$(cat "$meta")" "$want" "the secondmate's record must carry $want"
+  done
+  pass "hc: fm-spawn --secondmate opens the secondmate home's space and launches it there"
+}
+
 test_naming_is_best_effort_and_never_blocks_the_task() {
   local out
   setup_case app-down
@@ -322,6 +404,30 @@ test_kill_refuses_another_tasks_terminal() {
   hc_shell 'fm_backend_kill hc fmtest:t2 "" fm-a1' || fail "closing the task's own labeled terminal must succeed"
   [ ! -f "$D/t2.json" ] || fail "the task's own terminal must be removed"
   pass "hc: teardown's expected label refuses another task's terminal and closes the matching one"
+}
+
+# Forced retirement of an hc secondmate closes its own terminal as this home
+# and each of its crew as the secondmate home whose labels they carry.
+test_forced_secondmate_teardown_closes_its_crew_as_their_home() {
+  local tag mate mate_tag out rc=0
+  setup_case teardown-secondmate
+  mate="$D/mate"
+  mkdir -p "$mate/state" "$mate/data" "$mate/config" "$HOMEDIR/state" "$HOMEDIR/data" "$HOMEDIR/config"
+  printf 'sm' > "$mate/.fm-secondmate-home"
+  tag=$(hometag_of)
+  mate_tag=$(HOMEDIR=$mate hometag_of)
+  write_terminal "$D" t2 live fm-sm "$tag" zsh /bin/zsh
+  write_terminal "$D" t3 live fm-crew "$mate_tag" zsh /bin/zsh
+  printf 'window=fmtest:t2\nendpoint_task_id=sm\nworktree=%s\nproject=%s\nhome=%s\nmode=secondmate\nprojects=\nharness=claude\nyolo=off\nkind=secondmate\nbackend=hc\nhc_session=fmtest\nhc_terminal=t2\n' \
+    "$mate" "$mate" "$mate" > "$HOMEDIR/state/sm.meta"
+  printf 'window=fmtest:t3\nendpoint_task_id=crew\nworktree=%s\nproject=%s\nharness=claude\nkind=ship\nbackend=hc\nhc_session=fmtest\nhc_terminal=t3\n' \
+    "$D/no-crew-copy" "$D/no-crew-copy" > "$mate/state/crew.meta"
+  out=$(FAKE_HC_DIR=$D PATH="$FB:$PATH" FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$HOMEDIR \
+    "$FM_TEST_ROOT/bin/fm-teardown.sh" sm --force 2>&1) || rc=$?
+  expect_code 0 "$rc" "forced teardown of an hc secondmate must succeed"$'\n'"$out"
+  [ ! -f "$D/t3.json" ] || fail "the secondmate's crew terminal must be closed"
+  [ ! -f "$D/t2.json" ] || fail "the secondmate's own terminal must be closed"
+  pass "hc: forced secondmate teardown closes its crew as their own home and its own terminal as this one"
 }
 
 test_capture_and_current_path_read_the_recorded_terminal() {
@@ -459,6 +565,8 @@ test_kiro_composer_reads_unstyled_idle_as_empty() {
 test_control_can_prove_an_hc_agent_stopped() {
   bash -c '. "'"$FM_TEST_ROOT"'/bin/fm-control-lib.sh"; fm_control_backend_state_verified hc' \
     || fail "hc has a process-level agent-state classifier, so exit and relaunch may rely on it"
+  bash -c '. "'"$FM_TEST_ROOT"'/bin/fm-control-lib.sh"; fm_control_backend_relaunch_supported hc' \
+    || fail "an hc terminal's shell outlives its agent, so a replacement can be launched into it"
   pass "hc: the control plane accepts hc's agent state as proof for exit and relaunch"
 }
 
@@ -466,6 +574,8 @@ test_hc_is_spawn_capable_and_its_marker_alone_never_selects_it
 test_create_task_is_independent_labeled_and_refuses_duplicates
 test_task_opens_as_a_named_tab_in_the_primarys_space
 test_without_a_primary_space_the_home_space_is_named_again_on_every_spawn
+test_secondmate_opens_its_own_space_which_its_crew_join
+test_secondmate_spawn_lands_in_its_home_on_hc
 test_naming_is_best_effort_and_never_blocks_the_task
 test_control_interrupt_delivers_the_harness_keys
 test_foreign_or_unlabeled_terminal_gets_no_input_and_no_close
@@ -475,6 +585,7 @@ test_agent_state_classifies_foreground_and_absence
 test_agent_state_reads_a_shell_wrappers_group
 test_kill_proves_the_terminal_is_gone
 test_kill_refuses_another_tasks_terminal
+test_forced_secondmate_teardown_closes_its_crew_as_their_home
 test_capture_and_current_path_read_the_recorded_terminal
 test_endpoint_validation_binds_hc_meta
 test_detect_needs_the_terminal_shell_among_ancestors

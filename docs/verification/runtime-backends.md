@@ -4011,3 +4011,31 @@ With the endpoint removed, tasks went to the per-home space:
 The primary's tab kept its own name `1` throughout.
 `herdr-app check share/herdr-app/mods/firstmate` passed, and the installed mod, opened with `herdr-app do mod.open --name firstmate`, listed the lab's two workers under `firstmate-lab` apart from the main home's, with `Needs decision` and `PR ready` appearing after lines were appended to their status records.
 A mod copied into `mods/` while the app runs is not docked until the next start; `mod.open` showed it at once.
+
+### A Kiro secondmate on hc
+
+Measured on 2026-11-02 with `hc 0.1.16` on Linux (7.2.8, GNU bash 5.3.20) and `kiro-cli 2.37.0`, on a private core for the session `fmlab-fm-secondmates-no-hc`, never the `default` one.
+The lab ran under `env -i` with only `HOME`, `USER`, `PATH`, `SHELL`, `TERM`, `LANG`, and `XDG_RUNTIME_DIR`, so no `HC_TERMINAL_*`, Herdr 1, or `FM_*` variable reached it.
+The parent was a marked lab home holding a primary checkout of the change, with `config/backend` set to `hc`; the secondmate home was seeded from it with `bin/fm-home-seed.sh <id> <root>/mate --no-projects` and an inline charter.
+
+```sh
+FM_SPAWN_NO_GUARD=1 bin/fm-spawn.sh <id> --secondmate --backend hc --harness kiro-cli --model claude-sonnet-5.5 --effort low
+bin/fm-send.sh <id> --fire-and-forget <delivery-id> 'Lab doorbell check: write the word pong to <root>/pong ...'
+bin/fm-control.sh <id> relaunch
+bin/fm-teardown.sh <id>
+```
+
+| Step | Result |
+| --- | --- |
+| Spawn | `spawned <id> harness=kiro-cli kind=secondmate mode=secondmate yolo=off window=fmlab-fm-secondmates-no-hc:t2 worktree=<root>/mate`; the record carried `backend=hc`, `hc_session`, and `hc_terminal`. |
+| Terminal labels | `firstmate.task=fm-<id>`, `firstmate.home` and `firstmate.home-path` of the parent, `herdr.space=fm-2ndmate-<id>-<hash>` (the secondmate home's own space), `herdr.tab=<parent tag>-fm-<id>`; the shell's `cwd` was the secondmate home and its foreground `kiro-cli`. |
+| `fm_backend_agent_state hc <target>` | `alive`. |
+| `fm_secondmate_liveness_probe <meta> <id> full` and `poll` | `status=alive state=alive line=secondmate <id> already live (backend=hc)` for both. |
+| The secondmate's own session | Published `state/.primary-endpoint` with `harness=kiro-cli`, `backend=hc`, `target=fmlab-fm-secondmates-no-hc:t2`, and its first turn ended with `fm_backend_composer_state ... kiro-cli` reading `empty`. |
+| Doorbell | The doorbell line reached the Kiro composer and ran as one turn; the secondmate wrote `pong`, moved `001.msg` into `handled/`, and the composer read `empty` again. |
+| Relaunch | `relaunched <id> harness=kiro-cli from=kiro-cli ... backend=hc endpoint=fmlab-fm-secondmates-no-hc:t2`; the same terminal, a new `spawn_gen`, agent state `alive`, and a republished endpoint with a new pid. |
+| Teardown | `teardown <id> complete (window fmlab-fm-secondmates-no-hc:t2, worktree <root>/mate)`; `hc get t2` answered not found, no terminal carried `fm-<id>`, and the record was retired. |
+
+A first run steered with an ordinary reply-bearing `bin/fm-send.sh`; the secondmate answered with a correlated `done` line, and teardown refused with `secondmate <id> still has an unresolved routed reply` because no parent drain ran in the lab, which is the expected teardown gate.
+
+Not verified here: the Herdr.app names of the secondmate's space and tab, because the lab never touched the `default` core the app shows (`tests/fm-backend-hc.test.sh` pins them against a fake `herdr-app`), and the session-start respawn of a secondmate whose terminal reads missing.

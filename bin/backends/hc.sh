@@ -40,16 +40,21 @@
 # state/.primary-endpoint names on the same session. Without one it is a
 # per-home space, fm-<hometag>. A machine-qualified space id (`vps/sp...`)
 # falls back too.
+# A --secondmate launch is the exception, as on herdr and rex: it opens the
+# secondmate home's own space, fm-<that home's tag>, which is also the space
+# that home's own crew land in. Its identity labels stay this home's, because
+# this home owns the task record and checks them on every later call.
 # Names: the app names an unnamed space after its first terminal's folder and
 # an unnamed tab by its position, and a space's name goes with it when its last
 # tab closes. On the `default` session, the one Herdr.app shows, create_task
 # therefore waits briefly for the app to show the new tab, names the tab after
-# the task (`tab.rename`) and the space after the home's folder name
-# (`space.rename`, which marks it named). Every spawn renames again, so a
-# per-home space that closed with its last task gets its name back with the
-# next one. Only the new tab and its space are renamed; no other tab, terminal,
-# or space is moved, renamed, or closed. Naming is best effort: with no app, or
-# no tab within the wait, the task still starts and a warning says why.
+# the task (`tab.rename`) and the space after its home (`space.rename`, which
+# marks it named): a secondmate home by its id, any other by its folder name.
+# Every spawn renames again, so a per-home space that closed with its last task
+# gets its name back with the next one. Only the new tab and its space are
+# renamed; no other tab, terminal, or space is moved, renamed, or closed.
+# Naming is best effort: with no app, or no tab within the wait, the task still
+# starts and a warning says why.
 # A firstmate.home-path=<FM_HOME> label lets an app mod find the task's state/.
 #
 # Measured limits on hc 0.1.13 (docs/hc-backend.md "Limits"):
@@ -182,8 +187,10 @@ fm_backend_hc_container_ensure() {
 # hc terminal firstmate itself runs in; --no-notify keeps hc from typing notes
 # into any parent. --keep gives a terminal lost with its core a shell at the
 # same address, which agent_state reads as dead, so relaunch can adopt it.
-fm_backend_hc_create_task() {  # <session> <window-label> <cwd>
-  local session=$1 label=$2 cwd=$3 home scoped dup out address space home_path
+# [other-home] is the secondmate home a --secondmate launch stands up; the
+# terminal then opens that home's space instead of this one's (see header).
+fm_backend_hc_create_task() {  # <session> <window-label> <cwd> [other-home]
+  local session=$1 label=$2 cwd=$3 other=${4:-} home scoped dup out address space space_home home_path
   home=$(fm_backend_hometag)
   scoped=$(fm_backend_hc_scoped_label "$label")
   home_path=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || home_path=$FM_HOME
@@ -193,8 +200,14 @@ fm_backend_hc_create_task() {  # <session> <window-label> <cwd>
     echo "error: hc terminal for $label already exists in session '$session'" >&2
     return 1
   fi
-  space=${FM_HC_SPACE:-}
-  [ -n "$space" ] || space=$(fm_backend_hc_primary_space "$session") || space=fm-$home
+  if [ -n "$other" ]; then
+    space=fm-$(FM_HOME=$other FM_ROOT=$other fm_backend_hometag)
+    space_home=$other
+  else
+    space=${FM_HC_SPACE:-}
+    [ -n "$space" ] || space=$(fm_backend_hc_primary_space "$session") || space=fm-$home
+    space_home=$home_path
+  fi
   out=$(fm_backend_hc_cli "$session" run --bg --json --keep --no-parent --outlive-parent --no-notify \
     --cwd "$cwd" \
     --label "firstmate.task=$label" --label "firstmate.home=$home" --label "firstmate.home-path=$home_path" \
@@ -202,8 +215,15 @@ fm_backend_hc_create_task() {  # <session> <window-label> <cwd>
     || { echo "error: hc run failed for $label: $out" >&2; return 1; }
   address=$(printf '%s' "$out" | jq -r '.address // empty' 2>/dev/null)
   fm_backend_hc_address_valid "$address" || { echo "error: hc run did not return a terminal address for $label (got: $out)" >&2; return 1; }
-  [ "$session" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "${home_path##*/}"
+  [ "$session" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "$(fm_backend_hc_home_name "$space_home")"
   printf '%s\n' "$address"
+}
+
+# fm_backend_hc_home_name: what Herdr.app calls <home>'s space.
+fm_backend_hc_home_name() {  # <home>
+  local marker="$1/$FM_BACKEND_HOMETAG_SECONDMATE_MARKER" id=
+  [ ! -f "$marker" ] || id=$(tr -d '[:space:]' < "$marker" 2>/dev/null)
+  printf '%s' "${id:-${1##*/}}"
 }
 
 # fm_backend_hc_primary_space: the herdr.space label of the live terminal that

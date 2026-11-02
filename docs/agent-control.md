@@ -182,10 +182,10 @@ The worktree and the task's records are unaffected either way.
 - A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
   Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape nor Ctrl+U.
   T3 Code has no composer, so Escape and Ctrl+C are both a turn interrupt and Ctrl+U is refused.
-- `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux, herdr, rex, and t3code - because without one the "the agent stopped" postcondition cannot be proven.
+- `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux, herdr, hc, rex, and t3code - because without one the "the agent stopped" postcondition cannot be proven.
   zellij, orca, cmux, and paseo are refused rather than reported as successful blind.
 - On t3code, `exit` refuses before anything is sent: a T3 thread has no composer for a typed exit command, and T3's `/mcp` tools offer no session stop.
-- `relaunch` additionally requires a backend that can host a replacement agent - tmux, herdr, and rex.
+- `relaunch` additionally requires a backend that can host a replacement agent - tmux, herdr, hc, and rex.
   t3code is refused before anything is stopped: a T3 thread keeps its conversation, so a new turn or a provider change on it continues the same agent rather than launching a fresh one.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts; a Rex `unreadable` acts only once the absence proof above settles it.
