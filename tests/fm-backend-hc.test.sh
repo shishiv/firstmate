@@ -236,6 +236,47 @@ test_secondmate_opens_its_own_space_which_its_crew_join() {
   pass "hc: a secondmate opens its own space under this home's labels, and its crew join that space"
 }
 
+# fm-spawn.sh end to end against the stub: a --secondmate spawn on hc is
+# accepted, opens the secondmate home's space under this home's labels, and
+# stages a launch that runs in the secondmate home.
+test_secondmate_spawn_lands_in_its_home_on_hc() {
+  local id="hcsm$$" mate mate_abs tag mate_tag out rc=0 run meta launch staged
+  setup_case spawn-secondmate
+  mate="$D/mate"
+  mkdir -p "$mate/bin" "$mate/data" "$HOMEDIR/state" "$HOMEDIR/data" "$HOMEDIR/config"
+  printf '# Firstmate\n' > "$mate/AGENTS.md"
+  git -C "$mate" init -q
+  git -C "$mate" add AGENTS.md
+  git -C "$mate" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
+  printf 'Lab charter.\n' > "$mate/data/charter.md"
+  printf '%s\n' "$id" > "$mate/.fm-secondmate-home"
+  mate_abs=$(cd "$mate" && pwd -P)
+  printf '#!/bin/sh\nexit 0\n' > "$FB/treehouse"
+  chmod +x "$FB/treehouse"
+  tag=$(FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT bash -c '. "'"$FM_TEST_ROOT"'/bin/fm-backend.sh"; fm_backend_source hc; fm_backend_hometag')
+  mate_tag=$(HOMEDIR=$mate hometag_of)
+  printf '{"address":"t9"}\n' > "$D/run.json"
+  jq -n --arg t "fm-$id" --arg h "$tag" '{address: "t9", state: "live", labels: {"firstmate.task": $t, "firstmate.home": $h}, cwd: "/start"}' > "$D/t9.json"
+  out=$(FAKE_HC_DIR=$D PATH="$FB:$PATH" FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT HC_SESSION=fmtest \
+    FM_SPAWN_NO_GUARD=1 FM_SKIP_SECONDMATE_SYNC=1 FM_SKIP_SECONDMATE_INHERIT=1 \
+    "$FM_TEST_ROOT/bin/fm-spawn.sh" "$id" "$mate" "sh -c 'sleep 60'" --secondmate --backend hc 2>&1) || rc=$?
+  launch=$(grep $'\x1fsend\x1f' "$D/log" | sed -n "s/.*\. '\(\/tmp\/fm-$id+[^']*\)'.*/\1/p" | tail -1)
+  staged=no
+  [ -n "$launch" ] && grep -qF "FM_HOME='$mate_abs'" "$launch" && staged=yes
+  rm -rf "/tmp/fm-$id" "/tmp/fm-$id+"*
+  expect_code 0 "$rc" "a --secondmate spawn on hc must succeed"$'\n'"$out"
+  assert_equals yes "$staged" "the staged launch must run in the secondmate home"
+  run=$(grep $'\x1frun\x1f' "$D/log")
+  for want in $'--cwd\x1f'"$mate_abs" "firstmate.task=fm-$id" "firstmate.home=$tag" "herdr.space=fm-$mate_tag"; do
+    assert_contains "$run" "$want" "the secondmate's hc run must carry $want"
+  done
+  meta="$HOMEDIR/state/$id.meta"
+  for want in kind=secondmate backend=hc hc_session=fmtest hc_terminal=t9 "home=$mate_abs"; do
+    assert_contains "$(cat "$meta")" "$want" "the secondmate's record must carry $want"
+  done
+  pass "hc: fm-spawn --secondmate opens the secondmate home's space and launches it there"
+}
+
 test_naming_is_best_effort_and_never_blocks_the_task() {
   local out
   setup_case app-down
@@ -534,6 +575,7 @@ test_create_task_is_independent_labeled_and_refuses_duplicates
 test_task_opens_as_a_named_tab_in_the_primarys_space
 test_without_a_primary_space_the_home_space_is_named_again_on_every_spawn
 test_secondmate_opens_its_own_space_which_its_crew_join
+test_secondmate_spawn_lands_in_its_home_on_hc
 test_naming_is_best_effort_and_never_blocks_the_task
 test_control_interrupt_delivers_the_harness_keys
 test_foreign_or_unlabeled_terminal_gets_no_input_and_no_close

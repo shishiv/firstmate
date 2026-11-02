@@ -48,7 +48,7 @@ The terminal carries these labels:
 
 The primary's own space is the `herdr.space` label of the live hc terminal that `state/.primary-endpoint` names on the same session, so a Kiro primary running in Herdr.app gets its workers as tabs beside its own.
 A primary with no such terminal or label, or one in another core or app, gets one space per home, `fm-<hometag>`.
-A secondmate is a different home, so its terminal opens that home's own space, `fm-<secondmate hometag>`, whatever `FM_HC_SPACE` or the primary's space say; the secondmate's own workers then join it as tabs beside it.
+A secondmate is a different home, so its terminal opens that home's own space, `fm-<secondmate hometag>`, whatever `FM_HC_SPACE` or the primary's space say; the secondmate's own workers then join it as tabs beside it, unless `FM_HC_SPACE` is set in the secondmate's own environment.
 Its identity labels stay those of the home that launched it, which owns its record.
 
 On the `default` session, the one Herdr.app shows, the spawn then waits up to three seconds for the app to show the new tab and names the tab after the task (`<id>`) and the space after its home with `herdr-app do tab.rename` and `space.rename`: a secondmate home by its id, any other home by its folder name.
