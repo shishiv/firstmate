@@ -133,12 +133,14 @@
 #   detected only on process-level proof, never on its inherited markers).
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
-#   absent backend= means tmux. Orca, cmux, paseo, tern, and hc do not support
+#   absent backend= means tmux. Orca, cmux, paseo, and tern do not support
 #   --secondmate spawns.
 #   A rex crewmate or scout opens one tab in the Rex session the launching
 #   firstmate runs in when it runs directly inside Rex, otherwise in its home's
 #   own Rex session; a --secondmate launch opens its tab in that secondmate
-#   home's own Rex session (bin/backends/rex.sh owns placement).
+#   home's own Rex session (bin/backends/rex.sh owns placement). An hc
+#   --secondmate launch likewise opens that home's own Herdr.app space
+#   (bin/backends/hc.sh owns placement).
 #   t3code is experimental (docs/t3code-backend.md): T3 Code
 #   owns the agent session, so the spawn leases a treehouse slot durably,
 #   launches a T3 thread on it, and sends the launch brief over T3's /mcp
@@ -2341,10 +2343,6 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   if [ "$BACKEND" = tern ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=tern does not support --secondmate spawns yet" >&2
-    exit 1
-  fi
-  if [ "$BACKEND" = hc ] && [ "$KIND" = secondmate ]; then
-    echo "error: backend=hc does not support --secondmate spawns yet" >&2
     exit 1
   fi
   fm_backend_runtime_check "$BACKEND" || exit 1
@@ -5304,8 +5302,12 @@ EOF
     T="$TERN_SESSION_ID:$TERN_BLOCK_ID"
     ;;
   hc)
+    # A --secondmate launch opens its own home's space, and its identity
+    # labels stay this home's (bin/backends/hc.sh owns placement).
+    HC_OTHER_HOME=
+    [ "$KIND" != secondmate ] || HC_OTHER_HOME=$PROJ_ABS
     HC_SES=$(fm_backend_hc_container_ensure) || exit 1
-    HC_TERMINAL=$(fm_backend_hc_create_task "$HC_SES" "$W" "$PROJ_ABS") || exit 1
+    HC_TERMINAL=$(fm_backend_hc_create_task "$HC_SES" "$W" "$PROJ_ABS" "$HC_OTHER_HOME") || exit 1
     T="$HC_SES:$HC_TERMINAL"
     ;;
   orca)
