@@ -4006,17 +4006,6 @@ resolve_project_dir_arg() {
   esac
 }
 
-path_is_ancestor_of() {
-  local ancestor=$1 path=$2
-  [ -n "$ancestor" ] || return 1
-  [ -n "$path" ] || return 1
-  [ "$ancestor" != "$path" ] || return 1
-  case "$path" in
-  "$ancestor"/*) return 0 ;;
-  esac
-  return 1
-}
-
 validate_firstmate_home_for_spawn() {
   local id=$1 home=$2 abs_home abs_active_home abs_root marker_id
   abs_home=$(resolved_existing_dir "$home") || return 1
@@ -4034,19 +4023,19 @@ validate_firstmate_home_for_spawn() {
     echo "error: secondmate home cannot be the firstmate repo: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_active_home" "$abs_home"; then
+  if fm_path_is_ancestor_of "$abs_active_home" "$abs_home"; then
     echo "error: secondmate home cannot be inside the active firstmate home: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_root" "$abs_home"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_home"; then
     echo "error: secondmate home cannot be inside the firstmate repo: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_home" "$abs_active_home"; then
+  if fm_path_is_ancestor_of "$abs_home" "$abs_active_home"; then
     echo "error: secondmate home cannot be an ancestor of the active firstmate home: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_home" "$abs_root"; then
+  if fm_path_is_ancestor_of "$abs_home" "$abs_root"; then
     echo "error: secondmate home cannot be an ancestor of the firstmate repo: $home" >&2
     return 1
   fi
@@ -4087,15 +4076,15 @@ validate_firstmate_operational_dirs() {
     else
       abs_dir="$abs_home/$name"
     fi
-    if ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
+    if ! fm_path_is_ancestor_of "$abs_home" "$abs_dir"; then
       echo "error: secondmate $name directory must resolve inside the secondmate home: $dir" >&2
       return 1
     fi
-    if [ "$abs_dir" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
+    if [ "$abs_dir" = "$abs_active_home" ] || fm_path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
       echo "error: secondmate $name directory cannot be inside the active firstmate home: $dir" >&2
       return 1
     fi
-    if [ "$abs_dir" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_dir"; then
+    if [ "$abs_dir" = "$abs_root" ] || fm_path_is_ancestor_of "$abs_root" "$abs_dir"; then
       echo "error: secondmate $name directory cannot be inside the firstmate repo: $dir" >&2
       return 1
     fi

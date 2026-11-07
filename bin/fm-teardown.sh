@@ -2075,17 +2075,6 @@ backlog_refresh_reminder() {
   fi
 }
 
-path_is_ancestor_of() {
-  local ancestor=$1 path=$2
-  [ -n "$ancestor" ] || return 1
-  [ -n "$path" ] || return 1
-  [ "$ancestor" != "$path" ] || return 1
-  case "$path" in
-    "$ancestor"/*) return 0 ;;
-  esac
-  return 1
-}
-
 removal_target_abs_path() {
   local target=$1
   if [ -d "$target" ]; then
@@ -2960,19 +2949,19 @@ validate_removal_target() {
     echo "REFUSED: unsafe $label removal target $target is the firstmate repo" >&2
     return 1
   fi
-  if [ -n "$abs_home" ] && path_is_ancestor_of "$abs_target" "$abs_home"; then
+  if [ -n "$abs_home" ] && fm_path_is_ancestor_of "$abs_target" "$abs_home"; then
     echo "REFUSED: unsafe $label removal target $target is an ancestor of the active firstmate home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_target" "$abs_root"; then
+  if fm_path_is_ancestor_of "$abs_target" "$abs_root"; then
     echo "REFUSED: unsafe $label removal target $target is an ancestor of the firstmate repo" >&2
     return 1
   fi
-  if [ -n "$abs_home" ] && path_is_ancestor_of "$abs_home" "$abs_target"; then
+  if [ -n "$abs_home" ] && fm_path_is_ancestor_of "$abs_home" "$abs_target"; then
     echo "REFUSED: unsafe $label removal target $target is inside the active firstmate home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_root" "$abs_target"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_target"; then
     echo "REFUSED: unsafe $label removal target $target is inside the firstmate repo" >&2
     return 1
   fi
@@ -2998,7 +2987,7 @@ registered_descendant_home_for_removal() {
         registered_abs=$(removal_target_abs_path "$registered_home" 2>/dev/null || true)
         [ -n "$registered_abs" ] || continue
         [ "$registered_abs" = "$target" ] && continue
-        if path_is_ancestor_of "$target" "$registered_abs"; then
+        if fm_path_is_ancestor_of "$target" "$registered_abs"; then
           printf '%s\t%s\n' "$id" "$registered_abs"
           return 0
         fi
@@ -3026,7 +3015,7 @@ validate_firstmate_operational_dirs_for_removal() {
     else
       abs_dir=
     fi
-    if [ -z "$abs_dir" ] || ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
+    if [ -z "$abs_dir" ] || ! fm_path_is_ancestor_of "$abs_home" "$abs_dir"; then
       echo "REFUSED: unsafe $label $name directory $dir resolves outside the secondmate home" >&2
       return 1
     fi
@@ -3039,13 +3028,13 @@ validate_child_worktree_for_removal() {
   [ -e "$target" ] || return 0
   abs_target=$(validate_removal_target "$target" "child worktree") || return 1
   if abs_home=$(cd "$FM_HOME" 2>/dev/null && pwd -P); then
-    if path_is_ancestor_of "$abs_home" "$abs_target"; then
+    if fm_path_is_ancestor_of "$abs_home" "$abs_target"; then
       echo "REFUSED: unsafe child worktree removal target $target is inside the active firstmate home" >&2
       return 1
     fi
   fi
   abs_root=$(cd "$FM_ROOT" && pwd -P)
-  if path_is_ancestor_of "$abs_root" "$abs_target"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_target"; then
     echo "REFUSED: unsafe child worktree removal target $target is inside the firstmate repo" >&2
     return 1
   fi

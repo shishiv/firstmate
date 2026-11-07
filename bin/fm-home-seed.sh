@@ -129,17 +129,6 @@ canonical_path_for_check() {
   normalize_joined_path "$prefix" "$tail"
 }
 
-path_is_ancestor_of() {
-  local ancestor=$1 path=$2
-  [ -n "$ancestor" ] || return 1
-  [ -n "$path" ] || return 1
-  [ "$ancestor" != "$path" ] || return 1
-  case "$path" in
-    "$ancestor"/*) return 0 ;;
-  esac
-  return 1
-}
-
 registry_home_conflict_for_assignment() {
   local id=$1 home=$2 target line registered_id registered_home registered_key
   [ -f "$REG" ] || return 1
@@ -159,7 +148,7 @@ registry_home_conflict_for_assignment() {
           printf 'exact\t%s\t%s\n' "$registered_id" "$registered_key"
           return 0
         fi
-        if path_is_ancestor_of "$registered_key" "$target" || path_is_ancestor_of "$target" "$registered_key"; then
+        if fm_path_is_ancestor_of "$registered_key" "$target" || fm_path_is_ancestor_of "$target" "$registered_key"; then
           printf 'overlap\t%s\t%s\n' "$registered_id" "$registered_key"
           return 0
         fi
@@ -234,19 +223,19 @@ refuse_active_home_path() {
     echo "error: secondmate home cannot be the firstmate repo: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_active_home" "$abs_home"; then
+  if fm_path_is_ancestor_of "$abs_active_home" "$abs_home"; then
     echo "error: secondmate home cannot be inside the active firstmate home: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_root" "$abs_home"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_home"; then
     echo "error: secondmate home cannot be inside the firstmate repo: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_home" "$abs_active_home"; then
+  if fm_path_is_ancestor_of "$abs_home" "$abs_active_home"; then
     echo "error: secondmate home cannot be an ancestor of the active firstmate home: $home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_home" "$abs_root"; then
+  if fm_path_is_ancestor_of "$abs_home" "$abs_root"; then
     echo "error: secondmate home cannot be an ancestor of the firstmate repo: $home" >&2
     return 1
   fi
@@ -263,15 +252,15 @@ validate_operational_dir() {
   abs_dir=$(resolved_path "$dir")
   abs_active_home=$(resolved_path "$FM_HOME")
   abs_root=$(resolved_path "$FM_ROOT")
-  if ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
+  if ! fm_path_is_ancestor_of "$abs_home" "$abs_dir"; then
     echo "error: secondmate $name directory must resolve inside the secondmate home: $dir" >&2
     return 1
   fi
-  if [ "$abs_dir" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
+  if [ "$abs_dir" = "$abs_active_home" ] || fm_path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
     echo "error: secondmate $name directory cannot be inside the active firstmate home: $dir" >&2
     return 1
   fi
-  if [ "$abs_dir" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_dir"; then
+  if [ "$abs_dir" = "$abs_root" ] || fm_path_is_ancestor_of "$abs_root" "$abs_dir"; then
     echo "error: secondmate $name directory cannot be inside the firstmate repo: $dir" >&2
     return 1
   fi
@@ -333,19 +322,19 @@ validate_project_destination() {
   abs_dst=$(resolved_path "$dst")
   abs_active_home=$(resolved_path "$FM_HOME")
   abs_root=$(resolved_path "$FM_ROOT")
-  if ! path_is_ancestor_of "$abs_home" "$abs_projects"; then
+  if ! fm_path_is_ancestor_of "$abs_home" "$abs_projects"; then
     echo "error: secondmate projects directory must resolve inside the secondmate home: $projects_dir" >&2
     return 1
   fi
-  if ! path_is_ancestor_of "$abs_projects" "$abs_dst"; then
+  if ! fm_path_is_ancestor_of "$abs_projects" "$abs_dst"; then
     echo "error: seeded project $project destination must resolve inside the secondmate projects directory: $dst" >&2
     return 1
   fi
-  if [ "$abs_dst" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dst"; then
+  if [ "$abs_dst" = "$abs_active_home" ] || fm_path_is_ancestor_of "$abs_active_home" "$abs_dst"; then
     echo "error: seeded project $project destination cannot be inside the active firstmate home: $dst" >&2
     return 1
   fi
-  if [ "$abs_dst" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_dst"; then
+  if [ "$abs_dst" = "$abs_root" ] || fm_path_is_ancestor_of "$abs_root" "$abs_dst"; then
     echo "error: seeded project $project destination cannot be inside the firstmate repo: $dst" >&2
     return 1
   fi
@@ -571,19 +560,19 @@ seed_rollback_target() {
     echo "REFUSED: unsafe $label rollback target $target is the firstmate repo" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_target" "$abs_home"; then
+  if fm_path_is_ancestor_of "$abs_target" "$abs_home"; then
     echo "REFUSED: unsafe $label rollback target $target is an ancestor of the active firstmate home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_target" "$abs_root"; then
+  if fm_path_is_ancestor_of "$abs_target" "$abs_root"; then
     echo "REFUSED: unsafe $label rollback target $target is an ancestor of the firstmate repo" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_home" "$abs_target"; then
+  if fm_path_is_ancestor_of "$abs_home" "$abs_target"; then
     echo "REFUSED: unsafe $label rollback target $target is inside the active firstmate home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_root" "$abs_target"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_target"; then
     echo "REFUSED: unsafe $label rollback target $target is inside the firstmate repo" >&2
     return 1
   fi
@@ -614,11 +603,11 @@ seed_project_rollback_target() {
   abs_target=$(seed_rollback_target "$target" "created project") || return 1
   abs_home=$(resolved_path "$SEED_HOME")
   abs_projects=$(resolved_path "$SEED_HOME/projects")
-  if ! path_is_ancestor_of "$abs_home" "$abs_projects"; then
+  if ! fm_path_is_ancestor_of "$abs_home" "$abs_projects"; then
     echo "REFUSED: unsafe created project rollback target $target has projects directory outside the secondmate home" >&2
     return 1
   fi
-  if ! path_is_ancestor_of "$abs_projects" "$abs_target"; then
+  if ! fm_path_is_ancestor_of "$abs_projects" "$abs_target"; then
     echo "REFUSED: unsafe created project rollback target $target is outside the secondmate projects directory" >&2
     return 1
   fi

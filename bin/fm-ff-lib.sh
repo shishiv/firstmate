@@ -43,6 +43,8 @@
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-path-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-path-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -89,17 +91,6 @@ resolved_existing_dir() {
   cd "$path" && pwd -P
 }
 
-path_is_ancestor_of() {
-  local ancestor=$1 path=$2
-  [ -n "$ancestor" ] || return 1
-  [ -n "$path" ] || return 1
-  [ "$ancestor" != "$path" ] || return 1
-  case "$path" in
-    "$ancestor"/*) return 0 ;;
-  esac
-  return 1
-}
-
 VALIDATED_HOME=""
 VALIDATION_ERROR=""
 
@@ -122,15 +113,15 @@ validate_operational_dirs() {
     else
       abs_dir="$abs_home/$name"
     fi
-    if ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
+    if ! fm_path_is_ancestor_of "$abs_home" "$abs_dir"; then
       VALIDATION_ERROR="secondmate $name directory must resolve inside the secondmate home"
       return 1
     fi
-    if [ "$abs_dir" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
+    if [ "$abs_dir" = "$abs_active_home" ] || fm_path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
       VALIDATION_ERROR="secondmate $name directory cannot be inside the active firstmate home"
       return 1
     fi
-    if [ "$abs_dir" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_dir"; then
+    if [ "$abs_dir" = "$abs_root" ] || fm_path_is_ancestor_of "$abs_root" "$abs_dir"; then
       VALIDATION_ERROR="secondmate $name directory cannot be inside the firstmate repo"
       return 1
     fi
@@ -165,19 +156,19 @@ validate_secondmate_home() {
     VALIDATION_ERROR="secondmate home cannot be the firstmate repo"
     return 1
   fi
-  if path_is_ancestor_of "$abs_active_home" "$abs_home"; then
+  if fm_path_is_ancestor_of "$abs_active_home" "$abs_home"; then
     VALIDATION_ERROR="secondmate home cannot be inside the active firstmate home"
     return 1
   fi
-  if path_is_ancestor_of "$abs_root" "$abs_home"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_home"; then
     VALIDATION_ERROR="secondmate home cannot be inside the firstmate repo"
     return 1
   fi
-  if path_is_ancestor_of "$abs_home" "$abs_active_home"; then
+  if fm_path_is_ancestor_of "$abs_home" "$abs_active_home"; then
     VALIDATION_ERROR="secondmate home cannot be an ancestor of the active firstmate home"
     return 1
   fi
-  if path_is_ancestor_of "$abs_home" "$abs_root"; then
+  if fm_path_is_ancestor_of "$abs_home" "$abs_root"; then
     VALIDATION_ERROR="secondmate home cannot be an ancestor of the firstmate repo"
     return 1
   fi

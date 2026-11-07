@@ -37,3 +37,16 @@ fm_basename_to() {  # <output-variable> <path>
   while [ "${fm_path%$'\n'}" != "$fm_path" ]; do fm_path=${fm_path%$'\n'}; done
   printf -v "$1" '%s' "$fm_path"
 }
+
+# True when <path> lies strictly below <ancestor>, compared as spelled; callers
+# pass already-resolved absolute paths.
+fm_path_is_ancestor_of() {  # <ancestor> <path>
+  local ancestor=$1 path=$2
+  [ -n "$ancestor" ] || return 1
+  [ -n "$path" ] || return 1
+  [ "$ancestor" != "$path" ] || return 1
+  case "$path" in
+    "$ancestor"/*) return 0 ;;
+  esac
+  return 1
+}
