@@ -136,7 +136,7 @@ scan_backlog() {  # <workdir>: writes items.tsv and block/<id>
 }
 
 item_hash() {  # <workdir> <id>
-  fm_custom_check_sha256 "$1/block/$2"
+  fm_sha256_file "$1/block/$2"
 }
 
 ledger_epoch() {  # <id> <hash> -> epoch recorded for that exact content, empty when none

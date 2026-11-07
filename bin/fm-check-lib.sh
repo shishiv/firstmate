@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
+# shellcheck source=bin/fm-sha256-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-sha256-lib.sh"
 
 FM_CUSTOM_CHECK_HASH=
 FM_CUSTOM_CHECK_SNAPSHOT=
-
-fm_custom_check_sha256() {
-  local file=$1
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$file" 2>/dev/null | awk '{print $1}'
-  elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$file" 2>/dev/null | awk '{print $1}'
-  else
-    return 1
-  fi
-}
 
 fm_custom_check_trust_read() {
   local state=$1 id=$2 trust state_device version hash
@@ -41,7 +32,7 @@ fm_custom_check_registered() {
   fm_custom_check_trust_read "$state" "$id" || return 1
   state_device=$(fm_pr_file_device "$state") || return 1
   fm_pr_private_file_valid "$check" 700 "$state_device" || return 1
-  hash=$(fm_custom_check_sha256 "$check") || return 1
+  hash=$(fm_sha256_file "$check") || return 1
   [ "$hash" = "$FM_CUSTOM_CHECK_HASH" ]
 }
 
@@ -63,7 +54,7 @@ fm_custom_check_snapshot_prepare() {
     || { fm_custom_check_snapshot_cleanup; return 1; }
   [ "$(fm_pr_file_link_count "$FM_CUSTOM_CHECK_SNAPSHOT")" = 1 ] \
     || { fm_custom_check_snapshot_cleanup; return 1; }
-  hash=$(fm_custom_check_sha256 "$FM_CUSTOM_CHECK_SNAPSHOT") \
+  hash=$(fm_sha256_file "$FM_CUSTOM_CHECK_SNAPSHOT") \
     || { fm_custom_check_snapshot_cleanup; return 1; }
   [ "$hash" = "$FM_CUSTOM_CHECK_HASH" ] || { fm_custom_check_snapshot_cleanup; return 1; }
 }

@@ -18,12 +18,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-sha256-lib.sh
+. "$SCRIPT_DIR/fm-sha256-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
-sha256_file() {
-  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi
-}
 
 resolve_file() { # <relative-path>
   local rel=$1 parent base home_real parent_real path
@@ -121,7 +120,7 @@ put_handoff_file() { # <home-real> <name> <max-bytes> <relative-path> <bytes> <s
     bytes=$(LC_ALL=C wc -c < "$tmp" | tr -d ' ')
     [ "$bytes" -le "$max" ] || exit 4
     [ "$bytes" -eq "$expected_bytes" ] || exit 6
-    actual_hash=$(sha256_file "$tmp") || exit 5
+    actual_hash=$(fm_sha256_file "$tmp") || exit 5
     [ "$actual_hash" = "$expected_hash" ] || exit 6
     chmod 600 "$tmp" || exit 5
     named=$(CDPATH='' cd -- "$home_real/state/handoff" 2>/dev/null && directory_identity) || exit 3

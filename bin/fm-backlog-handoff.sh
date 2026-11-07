@@ -89,6 +89,8 @@ REG="$DATA/secondmates.md"
 MAIN_BACKLOG="$DATA/backlog.md"
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-sha256-lib.sh
+. "$SCRIPT_DIR/fm-sha256-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-ff-lib.sh
@@ -118,9 +120,6 @@ release_remote_locks() {
 trap release_remote_locks EXIT
 trap 'exit 1' HUP INT TERM
 
-sha256_file() {
-  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi
-}
 
 RESUME_PENDING=0
 if [ "${1:-}" = --resume-pending ]; then
@@ -536,7 +535,7 @@ remote_deliver_outbox() { # <secondmate-id> <outbox-path>
     return 1
   fi
   bytes=$(LC_ALL=C wc -c <"$snapshot" | tr -d ' ')
-  hash=$(sha256_file "$snapshot") || {
+  hash=$(fm_sha256_file "$snapshot") || {
     rm -f -- "$snapshot"
     return 1
   }

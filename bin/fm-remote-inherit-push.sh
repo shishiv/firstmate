@@ -22,13 +22,12 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-sha256-lib.sh
+. "$SCRIPT_DIR/fm-sha256-lib.sh"
 # shellcheck source=bin/fm-config-inherit-lib.sh
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-sha256_file() {
-  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi
-}
 file_link_count() {
   if [ "$(uname)" = Darwin ]; then /usr/bin/stat -f %l "$1" 2>/dev/null; else stat -c %h "$1" 2>/dev/null; fi
 }
@@ -46,7 +45,7 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 EMPTY="$TMP/empty"
 : > "$EMPTY"
-EMPTY_HASH=$(sha256_file "$EMPTY") || die "cannot hash empty inheritance payload"
+EMPTY_HASH=$(fm_sha256_file "$EMPTY") || die "cannot hash empty inheritance payload"
 
 ITEMS=$(fm_config_inherit_items)
 # Phase 1 is local: every item is classified, validated, and snapshotted in
@@ -90,7 +89,7 @@ while IFS= read -r rel; do
     cp -p -- "$source" "$snapshot" || die "cannot snapshot inherited source: $source"
     [ -f "$snapshot" ] && [ ! -L "$snapshot" ] || die "inherited source snapshot is unsafe: $source"
     bytes=$(LC_ALL=C wc -c < "$snapshot" | tr -d ' ')
-    hash=$(sha256_file "$snapshot") || die "cannot hash inherited source: $source"
+    hash=$(fm_sha256_file "$snapshot") || die "cannot hash inherited source: $source"
     printf 'put %s %s\n' "$bytes" "$hash" > "$TMP/item.$N.plan"
   else
     printf 'absent\n' > "$TMP/item.$N.plan"
