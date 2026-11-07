@@ -601,7 +601,7 @@ fi
 
 # Classify a from-firstmate -> secondmate request. Only a task selector resolved
 # through this home's meta whose authoritative kind is secondmate is marked: the
-# secondmate then routes its reply via the status path (see fm-marker-lib.sh).
+# secondmate then routes its reply via the status path (see fm-operational-input.sh).
 # An explicit backend target (the escape hatch for endpoints outside this home)
 # and any crewmate/scout target are left unmarked, and so is the --key path.
 MARK_FROM_FIRSTMATE=0

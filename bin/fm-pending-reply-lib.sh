@@ -122,10 +122,10 @@
 # This directive does double duty: it also binds _FM_PENDING_REPLY_LIB_DIR as
 # the bin/ source prefix so the deliberately undirected lazy sources below
 # still resolve for ShellCheck instead of warning SC1091.
-# shellcheck source=bin/fm-marker-lib.sh
+# shellcheck source=bin/fm-operational-input.sh
 _FM_PENDING_REPLY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_PENDING_REPLY_LIB_DIR="."
-# shellcheck source=bin/fm-marker-lib.sh
-. "$_FM_PENDING_REPLY_LIB_DIR/fm-marker-lib.sh"
+# shellcheck source=bin/fm-operational-input.sh
+. "$_FM_PENDING_REPLY_LIB_DIR/fm-operational-input.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$_FM_PENDING_REPLY_LIB_DIR/fm-backend.sh"
 # Deliberately undirected: this library consumes no symbols from
