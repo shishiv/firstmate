@@ -45,13 +45,27 @@ SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-path-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-path-lib.sh"
-# shellcheck source=bin/fm-tangle-lib.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-tangle-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
 first_line() {
   printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'
+}
+
+default_branch() {
+  local dir=$1 ref branch
+  ref=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    echo "${ref#origin/}"
+    return 0
+  fi
+  for branch in main master; do
+    if git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
+      echo "$branch"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # Resolve the PRIMARY checkout's current default-branch commit - the local-HEAD
@@ -61,7 +75,7 @@ first_line() {
 # stray feature branch to the fleet. Echoes the commit SHA, or returns 1.
 primary_head_commit() {
   local root=$1 default
-  default=$(fm_default_branch "$root") || return 1
+  default=$(default_branch "$root") || return 1
   git -C "$root" rev-parse --verify --quiet "refs/heads/$default^{commit}" 2>/dev/null || return 1
 }
 
@@ -384,7 +398,7 @@ ff_target() {
   fi
 
   local default base cur instr local_rev base_rev before after out
-  default=$(fm_default_branch "$dir") || {
+  default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
     return 0
   }
