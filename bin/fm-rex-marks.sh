@@ -78,6 +78,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$SCRIPT_DIR/fm-meta-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -159,13 +161,6 @@ tint_color() {
   esac
 }
 
-meta_value() { # <meta> <key>
-  local line value=
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in "$2="*) value=${line#*=} ;; esac
-  done <"$1" 2>/dev/null
-  printf '%s' "$value"
-}
 
 LIBS_LOADED=0
 load_status_libs() {
@@ -240,9 +235,9 @@ plan_progress() {
   local wt branch out run_branch line pct position total step round
   G_PCT=clear
   G_MSG=
-  [ "$2" = ship ] && [ "$(meta_value "$3" mode)" = no-mistakes ] || return 0
-  wt=$(meta_value "$3" worktree)
-  branch=$(meta_value "$3" branch)
+  [ "$2" = ship ] && [ "$(fm_meta_get "$3" mode)" = no-mistakes ] || return 0
+  wt=$(fm_meta_get "$3" worktree)
+  branch=$(fm_meta_get "$3" branch)
   [ -n "$branch" ] && [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
   load_nm_lib || return 0
@@ -273,10 +268,10 @@ collect_tasks() { # [<task>]
     id=${id%.meta}
     task_ok "$id" || continue
     [ -z "$only" ] || [ "$id" = "$only" ] || continue
-    [ "$(meta_value "$meta" backend)" = rex ] || continue
-    kind=$(meta_value "$meta" kind)
+    [ "$(fm_meta_get "$meta" backend)" = rex ] || continue
+    kind=$(fm_meta_get "$meta" kind)
     case "${kind:-ship}" in ship | scout | secondmate) ;; *) continue ;; esac
-    target=$(meta_value "$meta" window)
+    target=$(fm_meta_get "$meta" window)
     case "$target" in '' | *[[:space:]]*) continue ;; esac
     TASKS+=("$id"$'\t'"${kind:-ship}"$'\t'"$target"$'\t'"fm-$id")
   done
@@ -456,7 +451,7 @@ cmd_sync() {
       for cache in "$STATE/$prefix"*; do
         [ -f "$cache" ] || continue
         task=${cache##*/"$prefix"}
-        [ -f "$STATE/$task.meta" ] && [ "$(meta_value "$STATE/$task.meta" backend)" = rex ] || rm -f "$cache"
+        [ -f "$STATE/$task.meta" ] && [ "$(fm_meta_get "$STATE/$task.meta" backend)" = rex ] || rm -f "$cache"
       done
     done
   fi

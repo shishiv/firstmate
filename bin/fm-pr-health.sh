@@ -65,6 +65,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 export FM_HOME FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$SCRIPT_DIR/fm-meta-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
@@ -85,7 +87,6 @@ trap 'exit 1' HUP INT TERM
 
 flag_on() { [ -e "$CONFIG/pr-health-monitor" ]; }
 
-meta_value() { sed -n "s/^$2=//p" "$1" | tail -n 1; }
 
 live_tasks() { # id <TAB> worktree, for each task that is not a secondmate
   local meta id
@@ -93,8 +94,8 @@ live_tasks() { # id <TAB> worktree, for each task that is not a secondmate
     [ -f "$meta" ] && [ ! -L "$meta" ] || continue
     id=$(basename "$meta" .meta)
     fm_pr_task_id_valid "$id" || continue
-    [ "$(meta_value "$meta" kind)" != secondmate ] || continue
-    printf '%s\t%s\n' "$id" "$(meta_value "$meta" worktree)"
+    [ "$(fm_meta_get "$meta" kind)" != secondmate ] || continue
+    printf '%s\t%s\n' "$id" "$(fm_meta_get "$meta" worktree)"
   done
 }
 
@@ -211,7 +212,7 @@ enroll_new() { # deadline : enroll recorded and branch PRs not yet durably owned
     branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || continue
     default=$(git -C "$wt" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
     [ "$branch" != "${default#origin/}" ] || continue
-    [ "$branch" != "$(meta_value "$STATE/$id.meta" base_branch)" ] || continue
+    [ "$branch" != "$(fm_meta_get "$STATE/$id.meta" base_branch)" ] || continue
     cached=$(jq -r --arg id "$id" --arg branch "$branch" --slurpfile owned "$TMP/owned.json" '
       .prs as $prs | .branches[$id] | select(.branch == $branch) | .url
       | select(($prs[.].final // false) | not)

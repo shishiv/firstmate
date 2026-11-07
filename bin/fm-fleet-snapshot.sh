@@ -308,9 +308,6 @@ path_present_json() {  # <contract-path> [<observed-path>]
     '{path:$path,present:$present}'
 }
 
-meta_value() {  # <meta-file> <key>
-  fm_meta_get "$1" "$2"
-}
 
 last_nonempty_line() {  # <file>
   [ -f "$1" ] || return 1
@@ -616,9 +613,9 @@ snapshot_task_generation_is_current() {  # <captured-meta> <id>
   local captured_meta=$1 id=$2 current_meta captured_gen current_gen captured_contents current_contents
   current_meta="$STATE/$id.meta"
   [ -f "$current_meta" ] || return 1
-  captured_gen=$(meta_value "$captured_meta" spawn_gen)
+  captured_gen=$(fm_meta_get "$captured_meta" spawn_gen)
   if [ -n "$captured_gen" ]; then
-    current_gen=$(meta_value "$current_meta" spawn_gen)
+    current_gen=$(fm_meta_get "$current_meta" spawn_gen)
     [ "$current_gen" = "$captured_gen" ]
   else
     # Legacy metadata has no generation token. Exact equality is the strongest
@@ -633,7 +630,7 @@ prefetch_task_observations() {  # <meta> <id>
   local meta=$1 id=$2 remote_host current_file endpoint_file current_pid='' current_rc=0
   local status_log status_capture report_path report_capture
   local kind backend target endpoint_exists=null agent_alive=not_checked generation_current=1
-  remote_host=$(meta_value "$meta" remote_host)
+  remote_host=$(fm_meta_get "$meta" remote_host)
   current_file="$SNAPSHOT_TASK_DIR/$id.json"
   endpoint_file="$SNAPSHOT_TASK_DIR/$id.endpoint"
   status_log="$STATE/$id.status"
@@ -654,7 +651,7 @@ prefetch_task_observations() {  # <meta> <id>
   elif [ "$generation_current" = 1 ]; then
     crew_state_json "$id" "$meta" "$status_capture" > "$current_file" &
     current_pid=$!
-    kind=$(meta_value "$meta" kind)
+    kind=$(fm_meta_get "$meta" kind)
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     if [ -n "$target" ]; then
@@ -753,30 +750,30 @@ task_json_lines() {
     index=$((index + 1))
     id=$(basename "$meta" .meta)
     original_meta="$STATE/$id.meta"
-    kind=$(meta_value "$meta" kind)
+    kind=$(fm_meta_get "$meta" kind)
     [ -n "$kind" ] || kind=ship
-    harness=$(meta_value "$meta" harness)
-    mode=$(meta_value "$meta" mode)
-    yolo=$(meta_value "$meta" yolo)
-    project=$(meta_value "$meta" project)
-    worktree=$(meta_value "$meta" worktree)
-    home=$(meta_value "$meta" home)
-    projects=$(meta_value "$meta" projects)
-    spawn_gen=$(meta_value "$meta" spawn_gen)
-    branch=$(meta_value "$meta" branch)
-    remote_host=$(meta_value "$meta" remote_host)
-    remote_root=$(meta_value "$meta" remote_root)
+    harness=$(fm_meta_get "$meta" harness)
+    mode=$(fm_meta_get "$meta" mode)
+    yolo=$(fm_meta_get "$meta" yolo)
+    project=$(fm_meta_get "$meta" project)
+    worktree=$(fm_meta_get "$meta" worktree)
+    home=$(fm_meta_get "$meta" home)
+    projects=$(fm_meta_get "$meta" projects)
+    spawn_gen=$(fm_meta_get "$meta" spawn_gen)
+    branch=$(fm_meta_get "$meta" branch)
+    remote_host=$(fm_meta_get "$meta" remote_host)
+    remote_root=$(fm_meta_get "$meta" remote_root)
     if [ -n "$remote_host" ]; then
-      backend=$(meta_value "$meta" remote_backend)
+      backend=$(fm_meta_get "$meta" remote_backend)
       [ -n "$backend" ] || backend=unknown
-      target=$(meta_value "$meta" remote_target)
+      target=$(fm_meta_get "$meta" remote_target)
     else
       backend=$(fm_backend_of_meta "$meta")
       target=$(fm_backend_target_of_meta "$meta")
     fi
     status_log="$SNAPSHOT_TASK_DIR/$id.status"
     report_path="$SNAPSHOT_TASK_DIR/$id.report"
-    pr=$(meta_value "$meta" pr)
+    pr=$(fm_meta_get "$meta" pr)
     pr_source=meta
     if [ -z "$pr" ]; then
       pr_from_status=$(first_pr_url_in_file "$status_log" || true)
@@ -872,7 +869,7 @@ task_json_lines() {
       --arg remote_root "$remote_root" \
       --arg pr "$pr" \
       --arg pr_source "$pr_source" \
-      --arg pr_head "$(meta_value "$meta" pr_head)" \
+      --arg pr_head "$(fm_meta_get "$meta" pr_head)" \
       --arg agent_alive "$agent_alive" \
       --arg observed_at "$SNAPSHOT_NOW" \
       --arg last_event_raw "$last_event_raw" \
@@ -1983,8 +1980,8 @@ contribution_tasks_json() {
     if fm_merge_authority_resolve "$FM_HOME" "$STATE" "$meta" "$id"; then
       merge_authority=$FM_MERGE_AUTHORITY
     fi
-    jq -n --arg id "$id" --arg kind "$(meta_value "$meta" kind)" \
-      --arg url "$(meta_value "$meta" pr)" --arg head "$(meta_value "$meta" pr_head)" \
+    jq -n --arg id "$id" --arg kind "$(fm_meta_get "$meta" kind)" \
+      --arg url "$(fm_meta_get "$meta" pr)" --arg head "$(fm_meta_get "$meta" pr_head)" \
       --arg merge_authority "$merge_authority" '{id:$id,kind:$kind,pr:{url:$url,head:$head},merge_authority:$merge_authority}'
   done | jq -s .
 }

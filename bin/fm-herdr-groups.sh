@@ -54,6 +54,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$SCRIPT_DIR/fm-meta-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -223,13 +225,6 @@ resolve_state() {
   esac
 }
 
-meta_value() { # <meta> <key>
-  local line value=
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in "$2="*) value=${line#*=} ;; esac
-  done < "$1" 2>/dev/null
-  printf '%s' "$value"
-}
 
 # Collected ship and scout Herdr tasks, one tab-separated record each:
 # task, kind, project, session, workspace, pane.
@@ -244,13 +239,13 @@ collect_tasks() { # [<task>]
     id=${id%.meta}
     task_ok "$id" || continue
     [ -z "$only" ] || [ "$id" = "$only" ] || continue
-    [ "$(meta_value "$meta" backend)" = herdr ] || continue
-    kind=$(meta_value "$meta" kind)
+    [ "$(fm_meta_get "$meta" backend)" = herdr ] || continue
+    kind=$(fm_meta_get "$meta" kind)
     case "${kind:-ship}" in ship|scout) ;; *) continue ;; esac
-    project=$(meta_value "$meta" project)
-    session=$(meta_value "$meta" herdr_session)
-    workspace=$(meta_value "$meta" herdr_workspace_id)
-    pane=$(meta_value "$meta" herdr_pane_id)
+    project=$(fm_meta_get "$meta" project)
+    session=$(fm_meta_get "$meta" herdr_session)
+    workspace=$(fm_meta_get "$meta" herdr_workspace_id)
+    pane=$(fm_meta_get "$meta" herdr_pane_id)
     case "$session$workspace$pane" in *[[:space:]]*) continue ;; esac
     [ -n "$session" ] && [ -n "$workspace" ] && [ -n "$pane" ] || continue
     TASKS+=("$id"$'\t'"${kind:-ship}"$'\t'"$project"$'\t'"$session"$'\t'"$workspace"$'\t'"$pane")

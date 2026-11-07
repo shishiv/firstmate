@@ -71,6 +71,8 @@
 
 FM_BACKEND_SCRIPT=${BASH_SOURCE[0]:-$0}
 FM_BACKEND_LIB_DIR="$(cd "$(dirname "$FM_BACKEND_SCRIPT")" && pwd)"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-meta-lib.sh"
 unset FM_BACKEND_SCRIPT
 FM_BACKEND_DEFAULT_ROOT="$(cd "$FM_BACKEND_LIB_DIR/.." && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-${FM_ROOT:-$FM_BACKEND_DEFAULT_ROOT}}"
@@ -477,20 +479,6 @@ fm_backend_required_tool_available() {  # <backend> <tool>
       ;;
     *) command -v "$tool" >/dev/null 2>&1 ;;
   esac
-}
-
-# fm_meta_get: the LAST value of `key=` in <meta-file>, or empty (never
-# errors) if the file or key is absent. Mirrors the ad hoc `grep '^key=' |
-# tail -1 | cut -d= -f2-` snippet every fm-*.sh script used to repeat inline.
-fm_meta_get() {  # <meta-file> <key>
-  local meta=$1 key=$2 line value=''
-  [ -f "$meta" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "$key="*) value=${line#*=} ;;
-    esac
-  done < "$meta" 2>/dev/null || true
-  printf '%s' "$value"
 }
 
 # fm_backend_of_meta: the backend recorded in <meta-file>, defaulting to

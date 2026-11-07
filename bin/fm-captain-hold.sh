@@ -250,6 +250,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-relay-ledger-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-relay-ledger-lib.sh"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$SCRIPT_DIR/fm-meta-lib.sh"
 
 PARENT_HOLD_PUBLISHED=0
 publish_parent_hold() {  # <task-id> <occurrence> <verb> <note>
@@ -468,9 +470,6 @@ sorted_key_union() {  # <comma-list> <newline-or-space-separated-new-keys>
   } | sed '/^$/d' | LC_ALL=C sort -u | paste -sd, -
 }
 
-meta_value() {  # <meta> <key>
-  grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
-}
 
 # A resolution record written by this script or by the retired
 # fm-decision-hold.sh. Both carry the same leader-then-captain-decision shape.
@@ -899,7 +898,7 @@ restore_hold_body() {  # <task-id> <shown-original-body>
 
 refuse_self_inventory() {
   local origin=$1 entry=$2 meta="$STATE/$1.meta"
-  if list_has_key "$(meta_value "$meta" decision_keys)" "$entry"; then
+  if list_has_key "$(fm_meta_get "$meta" decision_keys)" "$entry"; then
     fail "origin $origin cannot be its own captain-call inventory entry; historical decision_keys in $meta still contains $entry; hold a separate captain task with --origin $origin, replace only $entry in the final decision_keys= line with that task id while preserving all other entries, then re-run complete $origin <task-id>"
   fi
   fail "origin $origin cannot be its own captain-call inventory entry; hold a separate captain task for the call and list that task"
@@ -1134,7 +1133,7 @@ command_hold() {
     [ -n "$title" ] || fail "--title is required to create task $id"
     validate_one_line title "$title"
     if [ -z "$repo" ] && [ -n "$origin" ] && [ -f "$STATE/$origin.meta" ]; then
-      repo=$(meta_value "$STATE/$origin.meta" project)
+      repo=$(fm_meta_get "$STATE/$origin.meta" project)
       repo=${repo%/}
       repo=${repo##*/}
     fi
@@ -1938,7 +1937,7 @@ command_complete() {
     done
   fi
   if [ "$has_meta" = 1 ]; then
-    previous=$(meta_value "$meta" decision_keys)
+    previous=$(fm_meta_get "$meta" decision_keys)
   fi
   keys=$(sorted_key_union "$previous" "$supplied")
   if [ -n "$keys" ]; then
@@ -1967,7 +1966,7 @@ EOF
   fi
 
   if [ "$has_meta" = 1 ]; then
-    if [ "$(meta_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
+    if [ "$(fm_meta_get "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
       tmp=$(mktemp "$STATE/.$origin.meta.XXXXXX") \
         || fail "cannot stage the completion record for $origin"
       if ! awk -v keys="$keys" '
@@ -2015,9 +2014,9 @@ command_verify() {
   meta="$STATE/$origin.meta"
   [ -f "$meta" ] || fail "origin metadata is absent: $meta"
   require_tasks_axi
-  reviewed=$(meta_value "$meta" decisions_reviewed)
+  reviewed=$(fm_meta_get "$meta" decisions_reviewed)
   [ "$reviewed" = 1 ] || fail "origin $origin has no completed captain-call inventory"
-  keys=$(meta_value "$meta" decision_keys)
+  keys=$(fm_meta_get "$meta" decision_keys)
   if [ -n "$keys" ]; then
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue

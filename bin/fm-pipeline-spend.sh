@@ -89,6 +89,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$SCRIPT_DIR/fm-meta-lib.sh"
 
 usage() {
   sed -n '2,/^set -eu$/s/^# \{0,1\}//p' "$0"
@@ -111,14 +113,11 @@ TIMEOUT=30
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] && [ ! -L "$META" ] || fail "no task record for $ID"
-meta_value() {  # <key>
-  grep "^$1=" "$META" 2>/dev/null | tail -1 | cut -d= -f2- || true
-}
-[ "$(meta_value kind)" != secondmate ] || fail "$ID is a secondmate, not a task"
+[ "$(fm_meta_get "$META" kind)" != secondmate ] || fail "$ID is a secondmate, not a task"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to read no-mistakes' state database"
 
-WT=$(meta_value worktree)
-SPAWN_GEN=$(meta_value spawn_gen)
+WT=$(fm_meta_get "$META" worktree)
+SPAWN_GEN=$(fm_meta_get "$META" spawn_gen)
 BRANCH=
 SINCE=
 REPO=
