@@ -57,7 +57,7 @@ install_scripts() {
   for f in fm-sessionstart-agy.sh fm-turnend-guard-agy.sh \
            fm-turnend-guard.sh fm-sessionstart-run.sh fm-sessionstart-nudge.sh \
            fm-arm-pretool-check.sh fm-cd-pretool-check.sh fm-subagent-pretool-check.sh \
-           fm-claude-stop-autoarm.sh fm-hook-host-lib.sh \
+           fm-claude-stop-autoarm.sh fm-hook-host-lib.sh fm-pretool-deny-lib.sh \
            fm-primary-scope-lib.sh fm-supervision-lib.sh fm-wake-lib.sh fm-path-lib.sh \
            fm-session-lock-lib.sh fm-cursor-lib.sh fm-gemini-lib.sh fm-operational-input.sh \
            fm-supervision-instructions.sh fm-harness.sh fm-lock.sh \

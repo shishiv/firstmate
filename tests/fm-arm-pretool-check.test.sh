@@ -488,7 +488,7 @@ test_pi_nested_command_transport() {
   mkdir -p "$dir/bin" "$dir/.pi/extensions/lib"
   git init -q "$dir"
   : > "$dir/AGENTS.md"
-  cp "$ROOT"/bin/fm-{arm,cd}-pretool-check.sh "$ROOT"/bin/fm-{arm,cd}-command-policy.mjs "$dir/bin/"
+  cp "$ROOT"/bin/fm-{arm,cd}-pretool-check.sh "$ROOT"/bin/fm-pretool-deny-lib.sh "$ROOT"/bin/fm-{arm,cd}-command-policy.mjs "$dir/bin/"
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$dir/.pi/extensions/"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$dir/.pi/extensions/lib/"
   FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$dir/state" node --input-type=module <<'JS' || fail "Pi nested-command transport regression"

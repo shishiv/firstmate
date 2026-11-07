@@ -192,11 +192,6 @@ EOF
 
 REASON="[kiro-worker-background] a worker command detaches itself from the current turn ($MATCHED, in: $MATCHED_LINE), which leaves it unsupervised: no watcher, no busy state, and no status line tells firstmate it is still running. Run the command in the foreground instead, or if it genuinely needs to outlive this turn, append \`paused: {job and completion condition}\` to the status file and stop."
 
-json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' '
-}
-
-ESCAPED=$(json_escape "$REASON")
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"%s"}\n' "$ESCAPED" >&2
-[ "$CLAUDE_MODE" -eq 1 ] || printf '{"decision":"deny","reason":"%s"}\n' "$ESCAPED"
-exit 2
+# shellcheck source=bin/fm-pretool-deny-lib.sh
+. "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/fm-pretool-deny-lib.sh" || exit 0
+fm_pretool_deny_exit "$REASON" "$(fm_pretool_render "$CLAUDE_MODE" 0 0)"
