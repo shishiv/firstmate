@@ -4723,7 +4723,7 @@ freshen_spawn_worktree_base() { # <worktree> <base-branch> <project> <mode>; 2 w
       echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
       return 1
     fi
-    default=$(default_branch "$worktree") || {
+    default=$(fm_default_branch "$worktree") || {
       echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
       return 1
     }
