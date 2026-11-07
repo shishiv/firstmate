@@ -132,6 +132,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-path-lib.sh`         | Fork-free `dirname`/`basename` equivalents with no source-time side effects             |
 | `fm-meta-lib.sh`         | The one side-effect-free reader of `key=value` task records (`fm_meta_get`) |
 | `fm-sha256-lib.sh`       | The one SHA-256 file digest helper (`fm_sha256_file`) |
+| `fm-json-lib.sh`         | The one JSON string-content encoder (`fm_json_escape`) for hand-built JSON |
 | `fm-pretool-deny-lib.sh` | The one PreToolUse deny renderer (Claude, Grok, Cursor, Antigravity) shared by the seatbelt transports |
 | `fm-classify-lib.sh`     | Shared wake classification, durable keyed-decision folds and scans, unread status selection, home-owned status-append ranges, and bounded latest-event snapshots |
 | `fm-send.sh`             | Steer a task via a durable inbox record plus doorbell, or send a supported key or typed harness invocation through the recorded backend |
