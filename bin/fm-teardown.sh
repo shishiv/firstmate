@@ -440,6 +440,7 @@ for _teardown_source in \
   fm-nm-run-lib.sh \
   fm-wake-lib.sh \
   fm-path-lib.sh \
+  fm-tangle-lib.sh \
   fm-lease-lib.sh
 do
   teardown_require_source "$SCRIPT_DIR/$_teardown_source"
@@ -447,6 +448,8 @@ done
 unset _teardown_source
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"  # fm_default_branch
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # Pending replies load the shared backend dispatcher and status classifier.
@@ -1534,22 +1537,6 @@ elif [ "$FORCE" != "--force" ] && fm_pf_relay_active "$FM_HOME"; then
   PUBLIC_FOLLOWUP_RELAY_ACTIVE=1
 fi
 
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
-}
-
 meta_value() {
   local meta=$1 key=$2
   fm_meta_get "$meta" "$key"
@@ -1872,7 +1859,7 @@ content_in_branch() {
 content_in_default() {
   local name=${BASE_BRANCH:-}
   CONTENT_LANDED_PROOF_ERROR=
-  [ -n "$name" ] || name=$(default_branch) || return 1
+  [ -n "$name" ] || name=$(fm_default_branch "$PROJ") || return 1
   content_in_branch "$name"
 }
 
@@ -1907,7 +1894,7 @@ content_in_pr_base() {
   candidates=$(pr_targets_for_branch "$branch")
   [ -n "$candidates" ] || return 1
   default=${BASE_BRANCH:-}
-  [ -n "$default" ] || default=$(default_branch) || default=
+  [ -n "$default" ] || default=$(fm_default_branch "$PROJ") || default=
   while IFS= read -r target; do
     [ -n "$target" ] || continue
     view=$(cd "$WT" && gh pr view "$target" --json state,baseRefName -q '.state + "\t" + .baseRefName' 2>/dev/null) || continue
@@ -2363,7 +2350,7 @@ validate_worktree_teardown_safety() {
 
   if [ "$MODE" = local-only ]; then
     if [ -n "$unpushed" ]; then
-      DEFAULT=$(default_branch) || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
+      DEFAULT=$(fm_default_branch "$PROJ") || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
       if ! unmerged_raw=$(git -C "$WT" log --oneline HEAD --not "$DEFAULT" -- 2>/dev/null); then
         if worktree_safety_blocked_by_lock "commits not on $DEFAULT"; then
           return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
