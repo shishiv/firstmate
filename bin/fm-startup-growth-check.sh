@@ -309,84 +309,15 @@ run_check() {
   NEW_RECORD=
 }
 
-SHIM_TMP=
-ARM_BACKUP=
-
-shim_write() {  # <wanted-bytes> <state-device>
-  local want=$1 device=$2
-  fm_pr_regular_destination_on_device_or_absent "$CHECK_SHIM" "$device" || return 1
-  if [ -e "$CHECK_SHIM" ] && [ "$(fm_pr_file_mode "$CHECK_SHIM")" = 700 ] \
-    && [ "$(cat "$CHECK_SHIM" 2>/dev/null)" = "$want" ]; then
-    return 0
-  fi
-  SHIM_TMP=$(umask 077; mktemp "$STATE/.startup-growth-check-shim.XXXXXX" 2>/dev/null) || return 1
-  if ! printf '%s\n' "$want" > "$SHIM_TMP" \
-    || ! chmod 0700 "$SHIM_TMP" \
-    || ! fm_pr_private_file_valid "$SHIM_TMP" 700 "$device" \
-    || ! fm_pr_regular_destination_on_device_or_absent "$CHECK_SHIM" "$device" \
-    || ! mv -f -- "$SHIM_TMP" "$CHECK_SHIM"; then
-    rm -f -- "$SHIM_TMP"
-    SHIM_TMP=
-    return 1
-  fi
-  SHIM_TMP=
-  fm_pr_private_file_valid "$CHECK_SHIM" 700 "$device"
-}
-
-shim_backup() {  # <state-device>
-  local device=$1 tmp
-  tmp=$(umask 077; mktemp "$STATE/.startup-growth-check-shim.XXXXXX" 2>/dev/null) || return 1
-  if ! cat "$CHECK_SHIM" > "$tmp" 2>/dev/null \
-    || ! chmod 0700 "$tmp" \
-    || ! fm_pr_private_file_valid "$tmp" 700 "$device"; then
-    rm -f -- "$tmp"
-    return 1
-  fi
-  printf '%s\n' "$tmp"
-}
-
-arm_rollback() {
-  [ -z "$SHIM_TMP" ] || rm -f -- "$SHIM_TMP"
-  SHIM_TMP=
-  if [ -n "$ARM_BACKUP" ]; then
-    mv -f -- "$ARM_BACKUP" "$CHECK_SHIM" 2>/dev/null || rm -f -- "$ARM_BACKUP"
-    ARM_BACKUP=
-    if fm_custom_check_registered "$STATE" "$CHECK_ID"; then
-      return 0
-    fi
-  fi
-  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST"
-}
-
-arm_failed() {  # <message>
-  trap - HUP INT TERM
-  arm_rollback
-  fail "$1"
-}
-
 arm() {
-  local state_device home want
+  local home want
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || fail "state directory is unavailable"
   case "$FM_HOME" in
     /*) home=$FM_HOME ;;
     *) home=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || fail "cannot resolve FM_HOME $FM_HOME" ;;
   esac
-  state_device=$(fm_pr_file_device "$STATE") || fail "state directory is unavailable"
-  want=$(printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    "export FM_HOME=$(printf '%q' "$home")" \
-    "exec $(printf '%q' "$SCRIPT_DIR/fm-startup-growth-check.sh") check")
-  ARM_BACKUP=
-  if [ -f "$CHECK_SHIM" ] && [ ! -L "$CHECK_SHIM" ]; then
-    ARM_BACKUP=$(shim_backup "$state_device") || fail "could not save the existing check shim"
-  fi
-  trap 'arm_failed "arming was interrupted"' HUP INT TERM
-  shim_write "$want" "$state_device" || arm_failed "check shim path is unavailable"
-  FM_HOME="$home" "$REGISTER_BIN" "$CHECK_ID" >/dev/null || arm_failed "could not register the check shim"
-  trap - HUP INT TERM
-  [ -z "$ARM_BACKUP" ] || rm -f -- "$ARM_BACKUP"
-  ARM_BACKUP=
-  printf 'armed: state/%s.check.sh\n' "$CHECK_ID"
+  want=$(fm_check_shim_content "$home" "$SCRIPT_DIR/fm-startup-growth-check.sh")
+  fm_check_shim_arm fm-startup-growth-check "$home" "$want" .startup-growth-check-shim || exit 1
 }
 
 disarm() {
