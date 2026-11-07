@@ -91,6 +91,8 @@ DOCUMENT_LOCAL_FAILURE=2
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-sha256-lib.sh
+. "$SCRIPT_DIR/fm-sha256-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
@@ -113,17 +115,8 @@ cleanup_temp_paths() {
 }
 trap cleanup_temp_paths EXIT
 
-sha256_file() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
-  elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    die "no SHA-256 tool is available"
-  fi
-}
 
-empty_hash() { sha256_file /dev/null; }
+empty_hash() { fm_sha256_file /dev/null; }
 
 validate_id() {
   case "$1" in ''|*[!A-Za-z0-9._-]*) die "invalid secondmate id: $1" ;; esac
@@ -220,7 +213,7 @@ ingest_receipt_matches() { # <id> <sequence> <result>
   stored=$(sed -n 's/^result_sha256=//p' "$path")
   case "$stored" in *[!A-Fa-f0-9]*|'') die "remote reply ingestion receipt is malformed: $path" ;; esac
   [ "${#stored}" -eq 64 ] || die "remote reply ingestion receipt is malformed: $path"
-  actual=$(sha256_file "$3") || die "cannot hash remote reply result"
+  actual=$(fm_sha256_file "$3") || die "cannot hash remote reply result"
   [ "$stored" = "$actual" ] || die "remote reply generation conflicts with its ingestion receipt"
 }
 
@@ -233,7 +226,7 @@ write_ingest_receipt() { # <id> <sequence> <result>
     ingest_receipt_matches "$id" "$seq" "$result"
     return $?
   fi
-  hash=$(sha256_file "$result") || return 1
+  hash=$(fm_sha256_file "$result") || return 1
   tmp=$(umask 077; mktemp "$CURSOR_DIR/.ingested.XXXXXX") || return 1
   printf 'result_sha256=%s\n' "$hash" > "$tmp" \
     || { rm -f -- "$tmp"; return 1; }
@@ -584,7 +577,7 @@ cmd_ingest() {
   payload="$tmp/payload"
   tail -n "+$((blank + 1))" "$result" > "$payload"
   actual_bytes=$(LC_ALL=C wc -c < "$payload" | tr -d ' ')
-  actual_hash=$(sha256_file "$payload")
+  actual_hash=$(fm_sha256_file "$payload")
   [ "$actual_bytes" -eq "$payload_bytes" ] && [ "$actual_hash" = "$payload_hash" ] \
     || die "result payload bytes do not match its committed digest"
   normalized_payload="$tmp/normalized-payload"

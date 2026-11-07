@@ -24,14 +24,13 @@ LOCK_STALE_SECS=30
 
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-sha256-lib.sh
+. "$SCRIPT_DIR/fm-sha256-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
-sha256_file() {
-  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi
-}
 
 backlog_key_section() { # <file> <key>
   awk -v key="$2" '
@@ -133,7 +132,7 @@ case "$STORED_HASH" in ''|*[!A-Fa-f0-9]*) die "delivered outbox generation is ma
   || die "delivered outbox generation is superseded or conflicting"
 ACTUAL_BYTES=$(LC_ALL=C wc -c < "$DELIVERED" | tr -d ' ')
 [ "$ACTUAL_BYTES" -eq "$EXPECTED_BYTES" ] || die "delivered outbox length does not match its commitment"
-ACTUAL_HASH=$(sha256_file "$DELIVERED") || die "cannot hash delivered outbox"
+ACTUAL_HASH=$(fm_sha256_file "$DELIVERED") || die "cannot hash delivered outbox"
 [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || die "delivered outbox digest does not match its commitment"
 [ ! -L "$DEST" ] || die "destination backlog must not be a symlink"
 if [ -e "$DEST" ] && [ ! -f "$DEST" ]; then die "destination backlog is not a regular file"; fi

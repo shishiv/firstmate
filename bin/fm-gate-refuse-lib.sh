@@ -48,7 +48,7 @@
 # stand-downs that read it directly are unaffected by the marker.
 #
 # The gate-context backstop mirrors the unspoofable-marker precedent in
-# bin/fm-marker-lib.sh; the lab-home marker is deliberately not unspoofable.
+# bin/fm-operational-input.sh; the lab-home marker is deliberately not unspoofable.
 # This boundary layers above no-mistakes' separately-shipping HEAD-continuity
 # guard, which remains the adversarial/residual backstop.
 #

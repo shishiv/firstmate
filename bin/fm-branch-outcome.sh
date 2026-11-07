@@ -143,6 +143,8 @@ set -eu
 SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-json-lib.sh
+. "$SCRIPT_DIR/fm-json-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-branch-outcome-lib.sh
@@ -178,22 +180,6 @@ bounded_uint() {
   case "$value" in ''|*[!0-9]*|0[0-9]*) return 1 ;; esac
   [ "${#value}" -le "${#MAX_SAFE_SEQ}" ] || return 1
   [ "$value" -le "$MAX_SAFE_SEQ" ]
-}
-
-json_escape() { # <text> -> escaped JSON string content on stdout
-  printf '%s' "$1" | awk '
-    BEGIN { ORS = "" }
-    {
-      if (NR > 1) print "\\n"
-      line = $0
-      gsub(/\\/, "\\\\", line)
-      gsub(/"/, "\\\"", line)
-      gsub(/\t/, "\\t", line)
-      gsub(/\r/, "\\r", line)
-      # Any remaining C0 control character would break the JSON line record.
-      gsub(/[\001-\010\013\014\016-\037]/, "", line)
-      print line
-    }'
 }
 
 read_cursor() {
@@ -555,9 +541,9 @@ case "$CMD" in
     capture_status_position "$TASK"
     rm -f -- "$OUTCOME_INDEX_READY" || { fm_lock_release "$LOCK"; exit 1; }
     printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"statusEndpoint":%s,"statusIdent":"%s","spawnGen":"%s"}\n' \
-      "$SEQ" "$(date +%s)" "$(json_escape "$TASK")" "$(json_escape "$WAKE")" \
-      "$VERDICT" "$(json_escape "$SUMMARY")" "$SILENT" "$CAPTURED_STATUS_ENDPOINT" \
-      "$(json_escape "$CAPTURED_STATUS_IDENT")" "$CAPTURED_SPAWN" >> "$STORE"
+      "$SEQ" "$(date +%s)" "$(fm_json_escape "$TASK")" "$(fm_json_escape "$WAKE")" \
+      "$VERDICT" "$(fm_json_escape "$SUMMARY")" "$SILENT" "$CAPTURED_STATUS_ENDPOINT" \
+      "$(fm_json_escape "$CAPTURED_STATUS_IDENT")" "$CAPTURED_SPAWN" >> "$STORE"
     write_outcome_tail || echo "warning: outcome $SEQ was stored but its display tail copy could not be refreshed" >&2
     # A task with neither a live meta nor a status log is retired: the branch
     # reports the teardown it just performed, and writing the index here would

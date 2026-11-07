@@ -203,19 +203,6 @@ fi
 
 REASON="[subagent-dispatch] the firstmate primary dispatches through the fleet, not the harness's own delegation tools: work started that way has no durable fleet record, leaves every firstmate guard inert, and dies with this session. Instead, $ROUTE (blocked tool: $TOOL, delegation-shaped on \"$MATCHED\"). Launch the session with FM_ALLOW_SUBAGENT=1 for a deliberate exception."
 
-json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' '
-}
-
-ESCAPED=$(json_escape "$REASON")
-if [ "$AGY_MODE" -eq 1 ]; then
-  if command -v jq >/dev/null 2>&1; then
-    jq -cn --arg r "$REASON" '{decision:"deny",reason:$r}'
-  else
-    printf '{"decision":"deny","reason":"%s"}\n' "$ESCAPED"
-  fi
-  exit 0
-fi
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"%s"}\n' "$ESCAPED" >&2
-[ "$CLAUDE_MODE" -eq 1 ] || printf '{"decision":"deny","reason":"%s"}\n' "$ESCAPED"
-exit 2
+# shellcheck source=bin/fm-pretool-deny-lib.sh
+. "$SCRIPT_DIR/fm-pretool-deny-lib.sh" || exit 0
+fm_pretool_deny_exit "$REASON" "$(fm_pretool_render "$CLAUDE_MODE" 0 "$AGY_MODE")"

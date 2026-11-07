@@ -422,6 +422,7 @@ for _teardown_source in \
   fm-backlog-transition-lib.sh \
   fm-timeout-lib.sh \
   fm-backend.sh \
+  fm-meta-lib.sh \
   fm-control-lib.sh \
   fm-lock-lib.sh \
   fm-classify-lib.sh \
@@ -434,13 +435,13 @@ for _teardown_source in \
   fm-secondmate-parent-lib.sh \
   fm-pending-reply-lib.sh \
   fm-operational-input.sh \
-  fm-marker-lib.sh \
   fm-tmux-lib.sh \
   fm-composer-lib.sh \
   fm-cursor-lib.sh \
   fm-nm-run-lib.sh \
   fm-wake-lib.sh \
   fm-path-lib.sh \
+  fm-tangle-lib.sh \
   fm-lease-lib.sh
 do
   teardown_require_source "$SCRIPT_DIR/$_teardown_source"
@@ -448,6 +449,8 @@ done
 unset _teardown_source
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"  # fm_default_branch
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # Pending replies load the shared backend dispatcher and status classifier.
@@ -1535,45 +1538,24 @@ elif [ "$FORCE" != "--force" ] && fm_pf_relay_active "$FM_HOME"; then
   PUBLIC_FOLLOWUP_RELAY_ACTIVE=1
 fi
 
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
-}
-
-meta_value() {
-  local meta=$1 key=$2
-  fm_meta_get "$meta" "$key"
-}
-
 # Remove only Polytoken's firstmate-generated worktree wiring, as named by
 # fm_control_harness_wiring_paths. Its tracked hook and facet layers belong to
 # the project. Other harnesses retain their existing worktree-return cleanup.
 remove_harness_worktree_wiring() {  # <worktree>
   local wt=$1 path
-  [ "$(meta_value "$META" harness)" = polytoken ] || return 0
+  [ "$(fm_meta_get "$META" harness)" = polytoken ] || return 0
   while IFS= read -r path; do
     case "$path" in "$wt"/*) ;; *) continue ;; esac
     git -C "$wt" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue
     rm -f "$path"
   done <<EOF
-$(fm_control_harness_wiring_paths "$(meta_value "$META" harness)" "$wt" "$STATE" "$ID")
+$(fm_control_harness_wiring_paths "$(fm_meta_get "$META" harness)" "$wt" "$STATE" "$ID")
 EOF
 }
 
 require_orca_worktree_id() {
   local meta=$1 id
-  id=$(meta_value "$meta" orca_worktree_id)
+  id=$(fm_meta_get "$meta" orca_worktree_id)
   if [ -z "$id" ]; then
     echo "error: missing orca_worktree_id in $meta; cannot remove Orca worktree" >&2
     return 1
@@ -1583,7 +1565,7 @@ require_orca_worktree_id() {
 
 require_orca_terminal() {
   local meta=$1 terminal
-  terminal=$(meta_value "$meta" terminal)
+  terminal=$(fm_meta_get "$meta" terminal)
   if [ -z "$terminal" ]; then
     echo "error: missing terminal in $meta; cannot close Orca terminal" >&2
     return 1
@@ -1593,7 +1575,7 @@ require_orca_terminal() {
 
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   ORCA_WORKTREE_ID=$(require_orca_worktree_id "$META") || exit 1
-  T_ORCA=$(meta_value "$META" terminal)
+  T_ORCA=$(fm_meta_get "$META" terminal)
   [ -z "$T_ORCA" ] || T=$T_ORCA
 fi
 
@@ -1873,7 +1855,7 @@ content_in_branch() {
 content_in_default() {
   local name=${BASE_BRANCH:-}
   CONTENT_LANDED_PROOF_ERROR=
-  [ -n "$name" ] || name=$(default_branch) || return 1
+  [ -n "$name" ] || name=$(fm_default_branch "$PROJ") || return 1
   content_in_branch "$name"
 }
 
@@ -1908,7 +1890,7 @@ content_in_pr_base() {
   candidates=$(pr_targets_for_branch "$branch")
   [ -n "$candidates" ] || return 1
   default=${BASE_BRANCH:-}
-  [ -n "$default" ] || default=$(default_branch) || default=
+  [ -n "$default" ] || default=$(fm_default_branch "$PROJ") || default=
   while IFS= read -r target; do
     [ -n "$target" ] || continue
     view=$(cd "$WT" && gh pr view "$target" --json state,baseRefName -q '.state + "\t" + .baseRefName' 2>/dev/null) || continue
@@ -2073,17 +2055,6 @@ backlog_refresh_reminder() {
   else
     printf '%s\n' "Backlog: $ID just finished ($BACKLOG_SKIP_REASON). Update $backlog_display - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
   fi
-}
-
-path_is_ancestor_of() {
-  local ancestor=$1 path=$2
-  [ -n "$ancestor" ] || return 1
-  [ -n "$path" ] || return 1
-  [ "$ancestor" != "$path" ] || return 1
-  case "$path" in
-    "$ancestor"/*) return 0 ;;
-  esac
-  return 1
 }
 
 removal_target_abs_path() {
@@ -2375,7 +2346,7 @@ validate_worktree_teardown_safety() {
 
   if [ "$MODE" = local-only ]; then
     if [ -n "$unpushed" ]; then
-      DEFAULT=$(default_branch) || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
+      DEFAULT=$(fm_default_branch "$PROJ") || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
       if ! unmerged_raw=$(git -C "$WT" log --oneline HEAD --not "$DEFAULT" -- 2>/dev/null); then
         if worktree_safety_blocked_by_lock "commits not on $DEFAULT"; then
           return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
@@ -2960,19 +2931,19 @@ validate_removal_target() {
     echo "REFUSED: unsafe $label removal target $target is the firstmate repo" >&2
     return 1
   fi
-  if [ -n "$abs_home" ] && path_is_ancestor_of "$abs_target" "$abs_home"; then
+  if [ -n "$abs_home" ] && fm_path_is_ancestor_of "$abs_target" "$abs_home"; then
     echo "REFUSED: unsafe $label removal target $target is an ancestor of the active firstmate home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_target" "$abs_root"; then
+  if fm_path_is_ancestor_of "$abs_target" "$abs_root"; then
     echo "REFUSED: unsafe $label removal target $target is an ancestor of the firstmate repo" >&2
     return 1
   fi
-  if [ -n "$abs_home" ] && path_is_ancestor_of "$abs_home" "$abs_target"; then
+  if [ -n "$abs_home" ] && fm_path_is_ancestor_of "$abs_home" "$abs_target"; then
     echo "REFUSED: unsafe $label removal target $target is inside the active firstmate home" >&2
     return 1
   fi
-  if path_is_ancestor_of "$abs_root" "$abs_target"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_target"; then
     echo "REFUSED: unsafe $label removal target $target is inside the firstmate repo" >&2
     return 1
   fi
@@ -2998,7 +2969,7 @@ registered_descendant_home_for_removal() {
         registered_abs=$(removal_target_abs_path "$registered_home" 2>/dev/null || true)
         [ -n "$registered_abs" ] || continue
         [ "$registered_abs" = "$target" ] && continue
-        if path_is_ancestor_of "$target" "$registered_abs"; then
+        if fm_path_is_ancestor_of "$target" "$registered_abs"; then
           printf '%s\t%s\n' "$id" "$registered_abs"
           return 0
         fi
@@ -3026,7 +2997,7 @@ validate_firstmate_operational_dirs_for_removal() {
     else
       abs_dir=
     fi
-    if [ -z "$abs_dir" ] || ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
+    if [ -z "$abs_dir" ] || ! fm_path_is_ancestor_of "$abs_home" "$abs_dir"; then
       echo "REFUSED: unsafe $label $name directory $dir resolves outside the secondmate home" >&2
       return 1
     fi
@@ -3039,13 +3010,13 @@ validate_child_worktree_for_removal() {
   [ -e "$target" ] || return 0
   abs_target=$(validate_removal_target "$target" "child worktree") || return 1
   if abs_home=$(cd "$FM_HOME" 2>/dev/null && pwd -P); then
-    if path_is_ancestor_of "$abs_home" "$abs_target"; then
+    if fm_path_is_ancestor_of "$abs_home" "$abs_target"; then
       echo "REFUSED: unsafe child worktree removal target $target is inside the active firstmate home" >&2
       return 1
     fi
   fi
   abs_root=$(cd "$FM_ROOT" && pwd -P)
-  if path_is_ancestor_of "$abs_root" "$abs_target"; then
+  if fm_path_is_ancestor_of "$abs_root" "$abs_target"; then
     echo "REFUSED: unsafe child worktree removal target $target is inside the firstmate repo" >&2
     return 1
   fi
@@ -3295,11 +3266,11 @@ preflight_firstmate_home_process_event_tree() {
   if [ -d "$sub_state" ]; then
     for child_meta in "$sub_state"/*.meta; do
       [ -e "$child_meta" ] || continue
-      child_kind=$(meta_value "$child_meta" kind)
+      child_kind=$(fm_meta_get "$child_meta" kind)
       [ "$child_kind" = secondmate ] || continue
       child_id=$(basename "$child_meta" .meta)
-      child_wt=$(meta_value "$child_meta" worktree)
-      child_home=$(meta_value "$child_meta" home)
+      child_wt=$(fm_meta_get "$child_meta" worktree)
+      child_home=$(fm_meta_get "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
       preflight_firstmate_home_process_event_tree "$child_home" "child firstmate home for $child_id" || return 1
     done
@@ -3355,12 +3326,12 @@ collect_descendant_task_locks() {
   [ "${#child_ids[@]}" -gt 0 ] || return 0
   while IFS= read -r child_id; do
     child_meta="$sub_state/$child_id.meta"
-    child_kind=$(meta_value "$child_meta" kind)
+    child_kind=$(fm_meta_get "$child_meta" kind)
     [ -n "$child_kind" ] || child_kind=ship
     child_home=
     if [ "$child_kind" = secondmate ]; then
-      child_wt=$(meta_value "$child_meta" worktree)
-      child_home=$(meta_value "$child_meta" home)
+      child_wt=$(fm_meta_get "$child_meta" worktree)
+      child_home=$(fm_meta_get "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
     fi
     DESCENDANT_TASK_STATES+=("$sub_state")
@@ -3411,15 +3382,15 @@ preflight_descendant_task_locks() {
       echo "REFUSED: descendant task $task_id changed while forced teardown acquired its locks; forced teardown changed nothing" >&2
       return 1
     }
-    kind=$(meta_value "$meta" kind)
+    kind=$(fm_meta_get "$meta" kind)
     [ -n "$kind" ] || kind=ship
     [ "$kind" = "${DESCENDANT_TASK_KINDS[$i]}" ] || {
       echo "REFUSED: descendant task $task_id changed kind while forced teardown acquired its locks; forced teardown changed nothing" >&2
       return 1
     }
     if [ "$kind" = secondmate ]; then
-      child_wt=$(meta_value "$meta" worktree)
-      child_home=$(meta_value "$meta" home)
+      child_wt=$(fm_meta_get "$meta" worktree)
+      child_home=$(fm_meta_get "$meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
       [ "$child_home" = "${DESCENDANT_TASK_HOMES[$i]}" ] || {
         echo "REFUSED: descendant task $task_id changed home while forced teardown acquired its locks; forced teardown changed nothing" >&2
@@ -3435,11 +3406,11 @@ preflight_descendant_treehouse_slots() {
     state=${DESCENDANT_TASK_STATES[$i]}
     task_id=${DESCENDANT_TASK_IDS[$i]}
     meta="$state/$task_id.meta"
-    kind=$(meta_value "$meta" kind)
+    kind=$(fm_meta_get "$meta" kind)
     [ -n "$kind" ] || kind=ship
     backend=$(fm_backend_of_meta "$meta")
-    worktree=$(meta_value "$meta" worktree)
-    project=$(meta_value "$meta" project)
+    worktree=$(fm_meta_get "$meta" worktree)
+    project=$(fm_meta_get "$meta" project)
     if [ "$kind" = secondmate ] || [ "$backend" = orca ]; then
       continue
     fi
@@ -3468,11 +3439,11 @@ preflight_descendant_treehouse_slots() {
     state=${DESCENDANT_TASK_STATES[$i]}
     task_id=${DESCENDANT_TASK_IDS[$i]}
     meta="$state/$task_id.meta"
-    kind=$(meta_value "$meta" kind)
+    kind=$(fm_meta_get "$meta" kind)
     [ -n "$kind" ] || kind=ship
     backend=$(fm_backend_of_meta "$meta")
-    worktree=$(meta_value "$meta" worktree)
-    project=$(meta_value "$meta" project)
+    worktree=$(fm_meta_get "$meta" worktree)
+    project=$(fm_meta_get "$meta" project)
     if [ "$kind" = secondmate ] || [ "$backend" = orca ]; then
       continue
     fi
@@ -3499,13 +3470,13 @@ validate_firstmate_home_children_removal() {
     child_id=$(basename "$child_meta" .meta)
     fm_backend_validate_task_endpoint "$child_meta" "$child_id" || return 1
     validate_pr_poll_cleanup "$sub_state" "$child_id" || return 1
-    child_wt=$(meta_value "$child_meta" worktree)
-    child_kind=$(meta_value "$child_meta" kind)
+    child_wt=$(fm_meta_get "$child_meta" worktree)
+    child_kind=$(fm_meta_get "$child_meta" kind)
     [ -n "$child_kind" ] || child_kind=ship
     child_backend=$(fm_backend_of_meta "$child_meta")
     teardown_require_backend_prerequisites "$child_backend" "$child_id" || return 1
     if [ "$child_kind" = secondmate ]; then
-      child_home=$(meta_value "$child_meta" home)
+      child_home=$(fm_meta_get "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
       [ "$child_backend" != t3code ] || t3code_secondmate_lsof_check "$child_id" "$child_home" || return 1
       validate_firstmate_home_for_removal "$child_home" "child firstmate home" "$child_id" >/dev/null || return 1
@@ -3513,12 +3484,12 @@ validate_firstmate_home_children_removal() {
     elif [ "$child_backend" = orca ]; then
       child_orca_worktree_id=$(require_orca_worktree_id "$child_meta") || return 1
       if [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
-        child_proj=$(meta_value "$child_meta" project)
+        child_proj=$(fm_meta_get "$child_meta" project)
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         require_orca_worktree_path_match "$child_orca_worktree_id" "$child_wt" || return 1
       fi
     elif [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
-      child_proj=$(meta_value "$child_meta" project)
+      child_proj=$(fm_meta_get "$child_meta" project)
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
     fi
   done
@@ -3645,11 +3616,11 @@ preflight_firstmate_home_herdr_children() {  # <home>
     if [ "$child_backend" = herdr ]; then
       teardown_herdr_preflight_target "$child_target" "$child_id" || return 1
     fi
-    child_kind=$(meta_value "$child_meta" kind)
+    child_kind=$(fm_meta_get "$child_meta" kind)
     [ -n "$child_kind" ] || child_kind=ship
     if [ "$child_kind" = secondmate ]; then
-      child_wt=$(meta_value "$child_meta" worktree)
-      child_home=$(meta_value "$child_meta" home)
+      child_wt=$(fm_meta_get "$child_meta" worktree)
+      child_home=$(fm_meta_get "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
       preflight_firstmate_home_herdr_children "$child_home" || return 1
     fi
@@ -3709,13 +3680,13 @@ cleanup_firstmate_home_children() {
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
-    child_wt=$(meta_value "$child_meta" worktree)
-    child_proj=$(meta_value "$child_meta" project)
-    child_kind=$(meta_value "$child_meta" kind)
+    child_wt=$(fm_meta_get "$child_meta" worktree)
+    child_proj=$(fm_meta_get "$child_meta" project)
+    child_kind=$(fm_meta_get "$child_meta" kind)
     [ -n "$child_kind" ] || child_kind=ship
     child_backend=$(fm_backend_of_meta "$child_meta")
     if [ "$child_backend" = orca ]; then
-      child_t=$(meta_value "$child_meta" terminal)
+      child_t=$(fm_meta_get "$child_meta" terminal)
     else
       child_t=$(fm_backend_target_of_meta "$child_meta")
     fi
@@ -3741,25 +3712,25 @@ cleanup_firstmate_home_children() {
         # Zellij titles and hc labels are scoped by the owning home tag, so
         # forced secondmate cleanup must verify child endpoints as that child
         # home, not the parent.
-        ( unset FM_ROOT_OVERRIDE; FM_HOME=$home FM_ROOT=$home fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" ) \
+        ( unset FM_ROOT_OVERRIDE; FM_HOME=$home FM_ROOT=$home fm_backend_kill "$child_backend" "$child_t" "$(fm_meta_get "$child_meta" zellij_tab_id)" "fm-$child_id" ) \
           || { endpoint_close_refusal "child $child_id" "$child_backend" "$child_t" 0; return 1; }
       elif [ "$child_backend" = rex ]; then
         child_rex_home=$home
         if [ "$child_kind" = secondmate ]; then
-          child_rex_home=$(meta_value "$child_meta" home)
+          child_rex_home=$(fm_meta_get "$child_meta" home)
           [ -n "$child_rex_home" ] || child_rex_home=$child_wt
         fi
         ( unset FM_ROOT_OVERRIDE; FM_HOME="$child_rex_home" FM_ROOT="$child_rex_home" STATE="$child_rex_home/state" \
           fm_backend_kill "$child_backend" "$child_t" "" "fm-$child_id" ) \
           || { endpoint_close_refusal "child $child_id" "$child_backend" "$child_t" 0; return 1; }
       else
-        fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" \
+        fm_backend_kill "$child_backend" "$child_t" "$(fm_meta_get "$child_meta" zellij_tab_id)" "fm-$child_id" \
           || { endpoint_close_refusal "child $child_id" "$child_backend" "$child_t" 0; return 1; }
       fi
     fi
     teardown_export_records "$sub_state" "$child_id" || return 1
     if [ "$child_kind" = secondmate ]; then
-      child_home=$(meta_value "$child_meta" home)
+      child_home=$(fm_meta_get "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
       if [ -n "$child_home" ] && [ -d "$child_home" ]; then
         cleanup_firstmate_home_children "$child_home" "$archive_parent/children/$child_id" || return $?
@@ -3819,7 +3790,7 @@ cleanup_firstmate_home_children() {
     remove_grok_turnend_auth "$sub_state" "$child_id" || return 1
     remove_kimi_turnend_auth "$sub_state" "$child_id" || return 1
     remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
-    child_busy_gen=$(meta_value "$child_meta" busy_gen)
+    child_busy_gen=$(fm_meta_get "$child_meta" busy_gen)
     if [ -z "$child_busy_gen" ]; then
       child_busy_gen=$(cat "$sub_state/$child_id.busy-gen" 2>/dev/null || true)
     fi
@@ -4165,7 +4136,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     remove_harness_worktree_wiring "$WT"
   fi
   if [ -n "$T_ORCA" ]; then
-    fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" \
+    fm_backend_kill "$BACKEND" "$T" "$(fm_meta_get "$META" zellij_tab_id)" "fm-$ID" \
       || { endpoint_close_refusal "$ID" "$BACKEND" "$T" 0; exit 1; }
   fi
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
@@ -4237,9 +4208,9 @@ HERDR_PRESENTATION_PANE=
 if [ "$BACKEND" = herdr ] \
    && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   fm_backend_source herdr || true
-  HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
-  HERDR_PRESENTATION_WORKSPACE=$(meta_value "$META" herdr_workspace_id)
-  HERDR_PRESENTATION_PANE=$(meta_value "$META" herdr_pane_id)
+  HERDR_PRESENTATION_SESSION=$(fm_meta_get "$META" herdr_session)
+  HERDR_PRESENTATION_WORKSPACE=$(fm_meta_get "$META" herdr_workspace_id)
+  HERDR_PRESENTATION_PANE=$(fm_meta_get "$META" herdr_pane_id)
   if [ -n "$HERDR_PRESENTATION_SESSION" ] \
      && [ -n "$HERDR_PRESENTATION_WORKSPACE" ] \
      && [ -n "$HERDR_PRESENTATION_PANE" ] \
@@ -4285,7 +4256,7 @@ elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$TEARDOWN_WINDOWLE
   if [ "$BACKEND" = rex ] && { [ -e "$STATE/.rex-mark-$ID" ] || [ -e "$STATE/.rex-progress-$ID" ] || [ -e "$STATE/.rex-tint-$ID" ]; }; then
     FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-rex-marks.sh" clear "$ID" >/dev/null 2>&1 || true
   fi
-  fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" \
+  fm_backend_kill "$BACKEND" "$T" "$(fm_meta_get "$META" zellij_tab_id)" "fm-$ID" \
     || endpoint_close_refusal "$ID" "$BACKEND" "$T" 1 || exit 1
 fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
