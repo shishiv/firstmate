@@ -229,25 +229,16 @@ refuse() { echo "error: refusing to pre-register Claude trust: $1" >&2; exit 1; 
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/fm-gate-refuse-lib.sh"
 
-real_dir() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
+# Builtins only: the no-node refusal must still run on a PATH without coreutils.
+FM_TRUST_LIB_DIR=${BASH_SOURCE[0]%/*}
+[ "$FM_TRUST_LIB_DIR" != "${BASH_SOURCE[0]}" ] || FM_TRUST_LIB_DIR=.
+# shellcheck source=bin/fm-path-lib.sh
+. "$FM_TRUST_LIB_DIR/fm-path-lib.sh"
 
-# The fully resolved path of an existing file, or empty. Resolution runs in node
-# because it must follow a symlink chain to its final target, and node is
-# already this script's JSON writer.
-real_file() { node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$1" 2>/dev/null; }
-
-# The resolved common dir of a git worktree, or empty. --git-common-dir can be
-# relative, so it is resolved from inside the worktree rather than joined here.
-common_dir_of() {
-  local dir=$1 common
-  common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
-  (cd -P -- "$dir" && real_dir "$common")
-}
-
-TARGET_REAL=$(real_dir "$TARGET_ARG") || true
+TARGET_REAL=$(fm_real_dir "$TARGET_ARG") || true
 [ -n "$TARGET_REAL" ] || refuse "$SCOPE_NOUN '$TARGET_ARG' is not an accessible directory"
 if [ "$MODE" = worktree ]; then
-  PROJ_REAL=$(real_dir "$PROJ_ARG") || true
+  PROJ_REAL=$(fm_real_dir "$PROJ_ARG") || true
   [ -n "$PROJ_REAL" ] || refuse "project '$PROJ_ARG' is not an accessible directory"
 fi
 
@@ -265,10 +256,10 @@ esac
 # to exist, because claude creates its own store directory. Create it here for
 # the same reason, and refuse only when it genuinely cannot be written, since a
 # store this cannot reach means the worker meets the dialog after all.
-CONFIG_DIR_REAL=$(real_dir "$CONFIG_DIR") || true
+CONFIG_DIR_REAL=$(fm_real_dir "$CONFIG_DIR") || true
 if [ -z "$CONFIG_DIR_REAL" ]; then
   mkdir -p "$CONFIG_DIR" 2>/dev/null || true
-  CONFIG_DIR_REAL=$(real_dir "$CONFIG_DIR") || true
+  CONFIG_DIR_REAL=$(fm_real_dir "$CONFIG_DIR") || true
 fi
 [ -n "$CONFIG_DIR_REAL" ] || refuse "Claude config directory '$CONFIG_DIR' does not exist and could not be created"
 
@@ -278,25 +269,25 @@ fi
 [ "$TARGET_REAL" != / ] || refuse "'/' is the filesystem root, not a $SCOPE_NOUN"
 [ "$TARGET_REAL" != "$CONFIG_DIR_REAL" ] || refuse "'$TARGET_REAL' is the Claude config directory, not a $SCOPE_NOUN"
 if [ -n "${HOME:-}" ]; then
-  HOME_REAL=$(real_dir "$HOME") || true
+  HOME_REAL=$(fm_real_dir "$HOME") || true
   [ "$TARGET_REAL" != "${HOME_REAL:-}" ] || refuse "'$TARGET_REAL' is the home directory, not a $SCOPE_NOUN"
 fi
 
 if [ "$MODE" = worktree ]; then
   WT_TOP=$(git -C "$TARGET_REAL" rev-parse --show-toplevel 2>/dev/null) || true
   [ -n "$WT_TOP" ] || refuse "'$TARGET_REAL' is not inside a git repository"
-  WT_TOP_REAL=$(real_dir "$WT_TOP") || true
+  WT_TOP_REAL=$(fm_real_dir "$WT_TOP") || true
   [ "$WT_TOP_REAL" = "$TARGET_REAL" ] || refuse "'$TARGET_REAL' is not a worktree root (its root is '${WT_TOP_REAL:-unresolvable}')"
 
   WT_GIT_DIR=$(git -C "$TARGET_REAL" rev-parse --absolute-git-dir 2>/dev/null) || true
   [ -n "$WT_GIT_DIR" ] || refuse "'$TARGET_REAL' has no resolvable git directory"
-  WT_GIT_DIR=$(real_dir "$WT_GIT_DIR") || true
+  WT_GIT_DIR=$(fm_real_dir "$WT_GIT_DIR") || true
   [ -n "$WT_GIT_DIR" ] || refuse "'$TARGET_REAL' has an unresolvable git directory"
-  WT_COMMON=$(common_dir_of "$TARGET_REAL") || true
+  WT_COMMON=$(fm_git_common_dir "$TARGET_REAL") || true
   [ -n "$WT_COMMON" ] || refuse "'$TARGET_REAL' has no resolvable git common directory"
   [ "$WT_GIT_DIR" != "$WT_COMMON" ] || refuse "'$TARGET_REAL' is a primary checkout, not an isolated worktree"
 
-  PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
+  PROJ_COMMON=$(fm_git_common_dir "$PROJ_REAL") || true
   [ -n "$PROJ_COMMON" ] || refuse "project '$PROJ_REAL' is not inside a git repository"
   [ "$WT_COMMON" = "$PROJ_COMMON" ] || refuse "'$TARGET_REAL' is not a worktree of project '$PROJ_REAL'"
 
@@ -315,16 +306,16 @@ if [ "$MODE" = worktree ]; then
   # guess.
   PROJ_GIT_DIR=$(git -C "$PROJ_REAL" rev-parse --absolute-git-dir 2>/dev/null) || true
   [ -n "$PROJ_GIT_DIR" ] || refuse "project '$PROJ_REAL' has no resolvable git directory"
-  PROJ_GIT_DIR=$(real_dir "$PROJ_GIT_DIR") || true
+  PROJ_GIT_DIR=$(fm_real_dir "$PROJ_GIT_DIR") || true
   [ -n "$PROJ_GIT_DIR" ] || refuse "project '$PROJ_REAL' has an unresolvable git directory"
   if [ "$PROJ_GIT_DIR" = "$PROJ_COMMON" ]; then
     PROJ_CANON=$PROJ_REAL
   else
-    PROJ_CANON=$(real_dir "$(dirname -- "$PROJ_COMMON")") || true
+    PROJ_CANON=$(fm_real_dir "$(dirname -- "$PROJ_COMMON")") || true
     [ -n "$PROJ_CANON" ] \
       || refuse "project '$PROJ_REAL' is a linked worktree whose primary checkout could not be resolved"
     CANON_GIT_DIR=$(git -C "$PROJ_CANON" rev-parse --absolute-git-dir 2>/dev/null) || true
-    CANON_GIT_DIR=$(real_dir "${CANON_GIT_DIR:-}") || true
+    CANON_GIT_DIR=$(fm_real_dir "${CANON_GIT_DIR:-}") || true
     [ -n "$CANON_GIT_DIR" ] && [ "$CANON_GIT_DIR" = "$PROJ_COMMON" ] \
       || refuse "project '$PROJ_REAL' is a linked worktree whose primary checkout could not be resolved"
   fi
@@ -337,11 +328,11 @@ elif [ "$MODE" = lab-home ]; then
   [ -f "$TARGET_REAL/AGENTS.md" ] || refuse "'$TARGET_REAL' has no AGENTS.md, so it is not a firstmate home"
   [ -d "$TARGET_REAL/bin" ] || refuse "'$TARGET_REAL' has no bin/, so it is not a firstmate home"
   LAB_TOP=$(git -C "$TARGET_REAL" rev-parse --show-toplevel 2>/dev/null) || true
-  [ -n "$LAB_TOP" ] && [ "$(real_dir "$LAB_TOP")" = "$TARGET_REAL" ] \
+  [ -n "$LAB_TOP" ] && [ "$(fm_real_dir "$LAB_TOP")" = "$TARGET_REAL" ] \
     || refuse "'$TARGET_REAL' is not the top level of a git checkout"
   LAB_GIT_DIR=$(git -C "$TARGET_REAL" rev-parse --absolute-git-dir 2>/dev/null) || true
-  LAB_GIT_DIR=$(real_dir "${LAB_GIT_DIR:-}") || true
-  LAB_COMMON=$(common_dir_of "$TARGET_REAL") || true
+  LAB_GIT_DIR=$(fm_real_dir "${LAB_GIT_DIR:-}") || true
+  LAB_COMMON=$(fm_git_common_dir "$TARGET_REAL") || true
   [ -n "$LAB_GIT_DIR" ] && [ "$LAB_GIT_DIR" = "$LAB_COMMON" ] \
     || refuse "'$TARGET_REAL' is a linked worktree, not the primary checkout a lab primary launches in"
 else
@@ -369,7 +360,7 @@ else
     fi
     [ -e "$sub_dir" ] || continue
     [ -d "$sub_dir" ] || refuse "'$sub_dir' is not a directory, so '$TARGET_REAL' is not a seeded secondmate home"
-    sub_dir_real=$(real_dir "$sub_dir") || true
+    sub_dir_real=$(fm_real_dir "$sub_dir") || true
     [ -n "$sub_dir_real" ] || refuse "'$sub_dir' cannot be resolved"
     case "$sub_dir_real" in
       "$TARGET_REAL"/*) ;;
@@ -395,7 +386,7 @@ STORE="$CONFIG_DIR_REAL/.claude.json"
 # place, since staging beside the link and renaming would replace it with a
 # regular file and break that layout.
 if [ -L "$STORE" ]; then
-  STORE_REAL=$(real_file "$STORE") || true
+  STORE_REAL=$(fm_real_file "$STORE") || true
   [ -n "$STORE_REAL" ] || refuse "'$STORE' is a symlink whose target cannot be resolved"
   STORE=$STORE_REAL
 fi

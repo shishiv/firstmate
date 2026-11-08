@@ -121,7 +121,8 @@ die() { echo "fm-live-lab: $*" >&2; exit 1; }
 help_text() { sed -n '/^# Usage:/,/^# up builds/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 usage() { help_text >&2; exit 2; }
 
-real_dir() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
+# shellcheck source=bin/fm-path-lib.sh
+. "$SCRIPT_DIR/fm-path-lib.sh"
 
 digest() {  # <file> -> sha256 of its bytes, or "absent"
   [ -f "$1" ] || { echo absent; return; }
@@ -137,7 +138,7 @@ rec_get() {  # <root> <key>
 load_lab() {  # <root>: refuse anything up did not build, then load its record
   local root=$1
   [ -n "$root" ] || usage
-  ROOT=$(real_dir "$root") || die "no lab at '$root'"
+  ROOT=$(fm_real_dir "$root") || die "no lab at '$root'"
   [ -f "$ROOT/$RECORD_NAME" ] && [ ! -L "$ROOT/$RECORD_NAME" ] && [ -O "$ROOT/$RECORD_NAME" ] \
     && [ "$(sed -n 1p "$ROOT/$RECORD_NAME")" = "$RECORD_TOKEN" ] \
     || die "refusing '$ROOT': it carries no lab record written by fm-live-lab.sh up"
@@ -217,9 +218,9 @@ check_primary() {
   local path gitdir common pid
   window_alive main || { echo "fail primary: window main is not running"; return 1; }
   path=$(window_field main '#{pane_current_path}')
-  [ "$(real_dir "$path")" = "$LAB" ] || { echo "fail primary: window main runs in '$path', not the lab home $LAB"; return 1; }
-  gitdir=$(real_dir "$(git -C "$LAB" rev-parse --absolute-git-dir 2>/dev/null)")
-  common=$(cd "$LAB" && real_dir "$(git rev-parse --git-common-dir 2>/dev/null)")
+  [ "$(fm_real_dir "$path")" = "$LAB" ] || { echo "fail primary: window main runs in '$path', not the lab home $LAB"; return 1; }
+  gitdir=$(fm_real_dir "$(git -C "$LAB" rev-parse --absolute-git-dir 2>/dev/null)")
+  common=$(cd "$LAB" && fm_real_dir "$(git rev-parse --git-common-dir 2>/dev/null)")
   [ -n "$gitdir" ] && [ "$gitdir" = "$common" ] || { echo "fail primary: the lab home is not a primary checkout"; return 1; }
   pid=$(sed -n 1p "$LAB/state/.lock" 2>/dev/null)
   pid_alive "$pid" || { echo "fail primary: the lab session lock names no live process (session start has not run)"; return 1; }
@@ -494,7 +495,7 @@ cmd_up() {
   else
     mkdir -p "$root" || die "cannot create '$root'"
   fi
-  ROOT=$(real_dir "$root")
+  ROOT=$(fm_real_dir "$root")
   LAB="$ROOT/home"
   HARNESS=$harness EXPECT_HOST=$expect_host WANT_MATE=$mate WANT_WORKER=$worker
   NONCE=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')

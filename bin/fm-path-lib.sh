@@ -75,3 +75,22 @@ fm_resolve_directory_input() {  # <name> <path>
   }
   printf '%s\n' "$resolved"
 }
+
+# The physical path of an existing directory, or empty with status 1.
+fm_real_dir() {  # <dir>
+  (cd -P -- "$1" 2>/dev/null && pwd -P)
+}
+
+# The fully resolved path of an existing file, or empty. Resolution runs in
+# node because it must follow a symlink chain to its final target.
+fm_real_file() {  # <file>
+  node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$1" 2>/dev/null
+}
+
+# The resolved common dir of a git worktree, or empty. --git-common-dir can be
+# relative, so it is resolved from inside the worktree rather than joined here.
+fm_git_common_dir() {  # <worktree>
+  local dir=$1 common
+  common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
+  (cd -P -- "$dir" && fm_real_dir "$common")
+}
