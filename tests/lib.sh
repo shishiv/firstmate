@@ -59,6 +59,10 @@ export FM_TEST_SEAM=1
 # fixture spawn. tests/fm-spawn-quota-guard.test.sh unsets both per case.
 export FM_SPAWN_QUOTA_GUARD=off FM_SPAWN_PROVIDER_WATCH_SECS=0
 
+# Keep bin/fm-spawn.sh's worker memory scope wrapper out of every suite that
+# pins today's launch text. tests/fm-spawn-worker-memory-scope.test.sh unsets it.
+export FM_SPAWN_WORKER_MEMORY_SCOPE=off
+
 # Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
 # panes. This suite builds git-init fixture repositories whose primary checkout
 # it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary

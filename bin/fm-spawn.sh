@@ -478,6 +478,22 @@
 #   first line of the local, gitignored config/worker-pipefail. The file is read
 #   on every spawn and relaunch, is not inherited into secondmate homes, and a
 #   secondmate itself is never given BASH_ENV.
+# Worker memory scope (config/worker-memory-high):
+#   Every pane launch (ship, scout, secondmate, and relaunch; never T3 Code,
+#   which owns its own process) runs through bin/fm-worker-memory-scope.sh,
+#   which puts the worker in its own systemd user scope,
+#   firstmate.slice/fm-worker-<id>-<spawn_gen>.scope, with MemoryHigh set. The
+#   kernel then throttles one runaway worker before it pushes the desktop into
+#   swap; it does not kill it. The default is 3G. The content of the local,
+#   gitignored config/worker-memory-high, with all whitespace removed, selects
+#   `off` (no wrapper, today's uncapped launch text) or another size: a positive
+#   whole number with an optional K, M, G or T suffix. Any other value, or an
+#   unreadable file, refuses the spawn before any endpoint, worktree or record
+#   exists. The file is read on every spawn and relaunch and is not inherited
+#   into secondmate homes. Where no systemd user scope is reachable (macOS, a
+#   remote host without a user manager) the helper launches uncapped; its
+#   header owns that fallback. A raw --harness command now runs under
+#   `/bin/sh -c`, so it must be POSIX sh unless the home writes `off`.
 # Codex permission mode: docs/configuration.md owns config/codex-permission-mode.
 #
 # Claude permission mode (config/claude-permission-mode):
@@ -970,6 +986,27 @@ fi
 WORKER_PIPEFAIL_SETTING=
 if [ -f "$CONFIG/worker-pipefail" ]; then
   IFS= read -r WORKER_PIPEFAIL_SETTING <"$CONFIG/worker-pipefail" || true
+fi
+# config/worker-memory-high (header "Worker memory scope"): resolved once per
+# spawn or relaunch, before any mutation, so a malformed file refuses instead of
+# launching a worker under a cap the captain did not choose.
+if ! WORKER_MEMORY_HIGH_PRESENT=$(fm_config_source_present "$CONFIG/worker-memory-high"); then
+  exit 1
+fi
+WORKER_MEMORY_HIGH=3G
+if [ "$WORKER_MEMORY_HIGH_PRESENT" = 1 ]; then
+  if [ ! -f "$CONFIG/worker-memory-high" ] || [ ! -r "$CONFIG/worker-memory-high" ]; then
+    echo "error: config/worker-memory-high must be a readable regular file holding off or a size such as 3G" >&2
+    exit 1
+  fi
+  WORKER_MEMORY_HIGH=$(tr -d '[:space:]' <"$CONFIG/worker-memory-high" || true)
+  if [ "$WORKER_MEMORY_HIGH" != off ] && ! [[ "$WORKER_MEMORY_HIGH" =~ ^[1-9][0-9]*[KMGT]?$ ]]; then
+    echo "error: config/worker-memory-high holds '$WORKER_MEMORY_HIGH'; accepted values are: off, or a size such as 3G (a positive whole number with an optional K, M, G or T suffix); an absent file means 3G" >&2
+    exit 1
+  fi
+fi
+if [ "${FM_TEST_SEAM:-}" = 1 ] && [ "${FM_SPAWN_WORKER_MEMORY_SCOPE:-}" = off ]; then
+  WORKER_MEMORY_HIGH=off
 fi
 # Set by the forge agreement below for a forge=external ship.
 EXTERNAL_REVIEW=0
@@ -7961,6 +7998,17 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     LAUNCH_ENV_PREFIX="$LAUNCH_ENV_PREFIX "'${TRACEPARENT+"TRACEPARENT=$TRACEPARENT"}'
   fi
   LAUNCH="$LAUNCH_ENV_PREFIX /bin/sh -c $(shell_quote "$LAUNCH")"
+fi
+# Worker memory scope (header section of that name): the pane runs the whole
+# launch as one command inside the worker's own MemoryHigh scope. The
+# allowlist launch is already one simple command, so it is prefixed directly.
+if [ "$BACKEND" != t3code ] && [ "$WORKER_MEMORY_HIGH" != off ]; then
+  WORKER_SCOPE_PREFIX="$(shell_quote "$SCRIPT_DIR/fm-worker-memory-scope.sh") $(shell_quote "$WORKER_MEMORY_HIGH") $(shell_quote "fm-worker-$ID-$SPAWN_GEN.scope") --"
+  if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
+    LAUNCH="$WORKER_SCOPE_PREFIX $LAUNCH"
+  else
+    LAUNCH="$WORKER_SCOPE_PREFIX /bin/sh -c $(shell_quote "$LAUNCH")"
+  fi
 fi
 if [ "$BACKEND" = t3code ]; then
   # No pane: the launch is the thread's first message, carrying the same

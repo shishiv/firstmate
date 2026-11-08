@@ -406,6 +406,7 @@ family_for_basename() {
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|fm-spawn-task-inbox.test.sh|\
     fm-spawn-compact-adviser-disable.test.sh|fm-spawn-quota-guard.test.sh|\
     fm-spawn-compact-adviser-disable-remote.test.sh|\
+    fm-spawn-worker-memory-scope.test.sh|fm-worker-memory-scope.test.sh|\
     fm-project-capacity.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
@@ -910,6 +911,7 @@ tests/fm-spawn-compact-adviser-disable.test.sh 21654
 tests/fm-spawn-dispatch-profile.test.sh 197548
 tests/fm-spawn-orca-worktree.test.sh 2400
 tests/fm-spawn-pool-base-freshen.test.sh 68652
+tests/fm-spawn-worker-memory-scope.test.sh 27900
 tests/fm-spawn-worktree-settle.test.sh 9309
 tests/fm-startup-memory-budget.test.sh 8086
 tests/fm-startup-network.test.sh 72106
@@ -964,6 +966,7 @@ tests/fm-watch-wedge-cap-live.test.sh 74
 tests/fm-watcher-lock.test.sh 72022
 tests/fm-worker-account-live-e2e.test.sh 3179
 tests/fm-worker-account.test.sh 37445
+tests/fm-worker-memory-scope.test.sh 300
 tests/fm-worker-shell-live-e2e.test.sh 50
 tests/fm-backlog-pruner.test.sh 3306
 tests/fm-kiro-afk-host-live-e2e.test.sh 190
@@ -1835,6 +1838,11 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     .agents/skills/*/SKILL.md)
+      printf '%s\n' pure-contract-unit
+      ;;
+    .agents/skills/verify-firstmate/features/*|.agents/skills/verify-firstmate/scripts/*)
+      # The skill's own lab run (scripts/verify.sh) is the proof of its script;
+      # the contract family covers the skill's docs, as for its SKILL.md.
       printf '%s\n' pure-contract-unit
       ;;
     .no-mistakes.yaml)

@@ -318,6 +318,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": ".agents/skills/verify-firstmate/features/worker-memory-scope.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": ".greptile/rules.md",
       "audience": "maintainer-architecture"
     },
