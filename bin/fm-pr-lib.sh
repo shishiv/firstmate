@@ -383,6 +383,29 @@ fm_pr_number_from_branch() {  # <worktree> <branch> [open|closed|all]
   printf '%s' "$n"
 }
 
+# The PR number in a GitHub /pull/<n> or Forgejo /pulls/<n> URL, or a bare
+# leading number; status 1 for anything else.
+fm_pr_number_from_target() {  # <PR URL or number>
+  local target=$1 n
+  case "$target" in
+    '' ) return 1 ;;
+    *"/pull/"*)
+      n=${target##*/pull/}
+      n=${n%%[!0-9]*}
+      ;;
+    *"/pulls/"*)  # Forgejo addresses pulls as /pulls/<n> and serves refs/pull/<n>/head.
+      n=${target##*/pulls/}
+      n=${n%%[!0-9]*}
+      ;;
+    [0-9]*)
+      n=${target%%[!0-9]*}
+      ;;
+    *) return 1 ;;
+  esac
+  [ -n "$n" ] || return 1
+  printf '%s' "$n"
+}
+
 # The one reading of a GitHub pull request's draft state. Prints "true" or
 # "false" for a boolean isDraft and nothing for anything else, so a caller can
 # tell a positive draft from an unreadable payload. bin/fm-pr-merge.sh refuses

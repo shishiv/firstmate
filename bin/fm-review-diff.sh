@@ -45,6 +45,8 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-tangle-lib.sh
 . "$SCRIPT_DIR/fm-tangle-lib.sh"  # fm_default_branch
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"  # fm_pr_number_from_target
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -97,27 +99,6 @@ if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; th
   git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $WT" >&2; exit 1; }
 fi
 
-pr_number_from_target() {
-  local target=$1 n
-  case "$target" in
-    '' ) return 1 ;;
-    *"/pull/"*)
-      n=${target##*/pull/}
-      n=${n%%[!0-9]*}
-      ;;
-    *"/pulls/"*)  # Forgejo addresses pulls as /pulls/<n>.
-      n=${target##*/pulls/}
-      n=${n%%[!0-9]*}
-      ;;
-    [0-9]*)
-      n=${target%%[!0-9]*}
-      ;;
-    *) return 1 ;;
-  esac
-  [ -n "$n" ] || return 1
-  printf '%s' "$n"
-}
-
 fetch_pull_head() {
   local n=$1 resolved
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
@@ -132,7 +113,7 @@ fetch_pull_head() {
 
 resolve_pr_head() {
   local pr_url=$1 recorded_head=$2 n resolved
-  n=$(pr_number_from_target "$pr_url") || true
+  n=$(fm_pr_number_from_target "$pr_url") || true
   if [ -n "$n" ]; then
     if resolved=$(fetch_pull_head "$n"); then
       printf '%s' "$resolved"
