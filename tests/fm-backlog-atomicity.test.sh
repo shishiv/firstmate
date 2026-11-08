@@ -781,7 +781,7 @@ test_captain_hold_preserves_relocated_backlog_on_backend_error() {
     esac
     rc=0
     out=$(env -u TASKS_AXI_BACKEND HOME="$case_dir/user-home" FM_HOME="$home" \
-      FM_DATA_OVERRIDE="$data" "$ROOT/bin/fm-captain-hold.sh" hold "$id" \
+      FM_DATA_OVERRIDE="$data" "$ROOT/bin/fm-captain-hold.sh" hold "$id" --class business \
       --title "Hold regression" --reason "Captain must choose" 2>&1) || rc=$?
     if [ "$config_state" = dangling ]; then
       [ "$rc" -ne 0 ] || fail "captain hold accepted an unresolved backend and changed the wrong backlog"
