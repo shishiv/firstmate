@@ -98,6 +98,8 @@ CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$SCRIPT_DIR/fm-meta-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-branch-outcome-lib.sh
@@ -305,20 +307,17 @@ write_scan_marker() { # <cursor>
   mv -f "$marker_tmp" "$SCAN_MARKER" || { rm -f "$marker_tmp"; return 1; }
 }
 
-meta_field() {
-  grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
-}
 
 meta_incarnation() { # <meta>
   local meta=$1 incarnation identity
-  incarnation=$(meta_field "$meta" spawn_gen)
+  incarnation=$(fm_meta_get "$meta" spawn_gen)
   if valid_id "$incarnation"; then
     printf '%s\n' "$incarnation"
     return
   fi
-  identity=$(meta_field "$meta" tasktmp)
+  identity=$(fm_meta_get "$meta" tasktmp)
   if [ -z "$identity" ]; then
-    identity="$(meta_field "$meta" window)|$(meta_field "$meta" worktree)"
+    identity="$(fm_meta_get "$meta" window)|$(fm_meta_get "$meta" worktree)"
   fi
   printf 'legacy-%s\n' "$(sha256_text "$identity")"
 }
@@ -332,8 +331,8 @@ meta_incarnation() { # <meta>
 # A scout never delivers a PR, so it never carries one.
 pr_for_task() { # <meta> [preferred-line]
   local meta=$1 preferred=${2:-} value
-  [ "$(meta_field "$meta" kind)" != scout ] || return 0
-  value=$(meta_field "$meta" pr)
+  [ "$(fm_meta_get "$meta" kind)" != scout ] || return 0
+  value=$(fm_meta_get "$meta" pr)
   if [ -z "$value" ] && [ -n "$preferred" ]; then
     value=$(printf '%s\n' "$preferred" \
       | sed -nE 's|^done( \[at=[^]]*\])?: PR (https?://[^[:space:])"]+/pull/[0-9]+)( checks green)?$|\2|p' \
@@ -424,8 +423,8 @@ report_child_ledger_locked() { # <id> <meta>
   fingerprint=$(sha256_text "$incarnation|$id|$state|ledger|$last")
   if [ "$state" = "done" ] && [ ! -f "$(record_path "$fingerprint" reported)" ] \
     && [ ! -f "$(record_path "$fingerprint" pending)" ] \
-    && ! fm_dod_accept_ship_done "$(meta_field "$meta" kind)" "$(meta_field "$meta" mode)" \
-      "$(meta_field "$meta" worktree)" "$(meta_field "$meta" project)" "$last" \
+    && ! fm_dod_accept_ship_done "$(fm_meta_get "$meta" kind)" "$(fm_meta_get "$meta" mode)" \
+      "$(fm_meta_get "$meta" worktree)" "$(fm_meta_get "$meta" project)" "$last" \
       "$STATE" "$id" "$meta" meta-locked >/dev/null; then
     return 0
   fi
@@ -443,8 +442,8 @@ report_child_ledger_locked() { # <id> <meta>
     return 1
   fi
   note=$(clean_field "$(status_line_note "$last")")
-  mode=$(clean_field "$(meta_field "$meta" mode)")
-  yolo=$(clean_field "$(meta_field "$meta" yolo)")
+  mode=$(clean_field "$(fm_meta_get "$meta" mode)")
+  yolo=$(clean_field "$(fm_meta_get "$meta" yolo)")
   data="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
   line="$state [key=$outcome_key]: child $id $state: $note"
   [ -z "$pr" ] || line="$line pr=$pr"
@@ -472,11 +471,11 @@ ledger_pass() {
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
     valid_id "$id" || continue
-    [ "$(meta_field "$meta" kind)" != secondmate ] || continue
+    [ "$(fm_meta_get "$meta" kind)" != secondmate ] || continue
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
     if [ ! -f "$meta" ] || [ -L "$meta" ] \
-      || [ "$(meta_field "$meta" kind)" = secondmate ]; then
+      || [ "$(fm_meta_get "$meta" kind)" = secondmate ]; then
       fm_lock_release "$lock"
       continue
     fi
@@ -493,7 +492,7 @@ report_child() { # <id>
   home_secondmate_id >/dev/null || { rc=$?; [ "$rc" -eq 1 ] && return 0; return 1; }
   meta="$STATE/$id.meta"
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
-  [ "$(meta_field "$meta" kind)" != secondmate ] || return 0
+  [ "$(fm_meta_get "$meta" kind)" != secondmate ] || return 0
   report_child_ledger_locked "$id" "$meta"
 }
 
@@ -501,7 +500,7 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
   local id=$1 meta=$2 self=${3:-} timeout=$4 status turn last age state_line state pr incarnation fingerprint outcome_key payload kind state_rc=0
   local endpoint ident spawn
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
-  kind=$(meta_field "$meta" kind)
+  kind=$(fm_meta_get "$meta" kind)
   [ "$kind" = secondmate ] && return 0
   status="$STATE/$id.status"
   turn="$STATE/$id.turn-ended"
