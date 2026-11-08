@@ -834,32 +834,15 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 
-resolve_directory_input() {
-  local name=$1 path=$2 resolved raw_bytes
-  raw_bytes=$(fm_backlog_bytes_of_string "$path") || return 1
-  if ! fm_backlog_control_bytes_valid 0 "$raw_bytes"; then
-    echo "error: $name directory contains an invalid control byte" >&2
-    return 1
-  fi
-  case "$path" in
-  /*)
-    printf '%s\n' "$path"
-    return 0
-    ;;
-  esac
-  resolved=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || {
-    echo "error: $name directory cannot be resolved: $path" >&2
-    return 1
-  }
-  printf '%s\n' "$resolved"
-}
+# shellcheck source=bin/fm-path-lib.sh
+. "$SCRIPT_DIR/fm-path-lib.sh"
 
-FM_HOME=$(resolve_directory_input FM_HOME "$FM_HOME") || exit 1
+FM_HOME=$(fm_resolve_directory_input FM_HOME "$FM_HOME") || exit 1
 if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
-  FM_STATE_OVERRIDE=$(resolve_directory_input FM_STATE_OVERRIDE "$FM_STATE_OVERRIDE") || exit 1
+  FM_STATE_OVERRIDE=$(fm_resolve_directory_input FM_STATE_OVERRIDE "$FM_STATE_OVERRIDE") || exit 1
 fi
 if [ -n "${FM_DATA_OVERRIDE:-}" ]; then
-  FM_DATA_OVERRIDE=$(resolve_directory_input FM_DATA_OVERRIDE "$FM_DATA_OVERRIDE") || exit 1
+  FM_DATA_OVERRIDE=$(fm_resolve_directory_input FM_DATA_OVERRIDE "$FM_DATA_OVERRIDE") || exit 1
 fi
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
@@ -3856,8 +3839,8 @@ effort_flag_for_harness() {
 case "$LAUNCH" in
 *__MUSEBIN__*)
   MUSE_BIN=$(resolve_muse_binary) || exit 1
-  MUSE_CONFIG_HOME=$(resolve_directory_input XDG_CONFIG_HOME "${XDG_CONFIG_HOME:-${HOME:-}/.config}") || exit 1
-  MUSE_DATA_HOME=$(resolve_directory_input XDG_DATA_HOME "${XDG_DATA_HOME:-${HOME:-}/.local/share}") || exit 1
+  MUSE_CONFIG_HOME=$(fm_resolve_directory_input XDG_CONFIG_HOME "${XDG_CONFIG_HOME:-${HOME:-}/.config}") || exit 1
+  MUSE_DATA_HOME=$(fm_resolve_directory_input XDG_DATA_HOME "${XDG_DATA_HOME:-${HOME:-}/.local/share}") || exit 1
   MUSE_AUTH_FILE="$MUSE_CONFIG_HOME/muse/auth.json"
   if ! muse_credential_present "$MUSE_AUTH_FILE"; then
     if [ -n "${META_API_KEY:-}" ]; then
