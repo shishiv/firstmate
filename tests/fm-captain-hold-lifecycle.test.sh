@@ -110,7 +110,7 @@ run_captain() {  # <home> <command args...>
 # the origin task is never accepted as its own inventory entry.
 complete_through_sibling() {  # <home> <origin-id>
   local home=$1 id=$2
-  run_captain "$home" hold "$id-call" --title "Sibling captain call for $id" \
+  run_captain "$home" hold "$id-call" --class business --title "Sibling captain call for $id" \
     --reason "captain must decide the sibling call" --repo sample --origin "$id" >/dev/null \
     && run_captain "$home" complete "$id" "$id-call"
 }
@@ -609,6 +609,15 @@ case "${1:-}" in
     esac
     printf 'ok: done %s\n' "${2:-}"
     ;;
+  list)
+    case " $* " in
+      *" --file "*)
+        printf '%s\n' 'error: beads list received a markdown file override' >&2
+        exit 1
+        ;;
+    esac
+    printf '%s\n' 'count: 0' 'tasks: []'
+    ;;
   show)
     [ "${2:-}" = "@ID@" ] || exit 1
     case " $* " in
@@ -639,7 +648,7 @@ SH
   PATH="$fb:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
-    "$ROOT/bin/fm-captain-hold.sh" hold "$id" --reason "captain must decide" >/dev/null \
+    "$ROOT/bin/fm-captain-hold.sh" hold "$id" --class business --reason "captain must decide" >/dev/null \
     || fail "holding on a beads-configured home failed without a markdown backlog"
   assert_grep "hold $id" "$log" \
     "the captain-hold mutation never reached the configured backend"
@@ -678,7 +687,7 @@ test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type() {
     fail "bd accepted --type captain; the fixture still has a types.custom captain registration"
   fi
   id=fm-fresh-captain-call
-  run_captain "$home" hold "$id" --title "Choose the sample route" \
+  run_captain "$home" hold "$id" --class business --title "Choose the sample route" \
     --reason "captain must decide" --repo sample >/dev/null \
     || fail "hold could not create a captain row under due.required without types.custom"
   show=$(tasks_in "$home" show "$id") || fail "the created captain row is missing"
@@ -770,17 +779,17 @@ EOF
     fail "completion accepted an inventory entry that names no task"
   fi
 
-  run_captain "$home" hold sample-route-call \
+  run_captain "$home" hold sample-route-call --class business \
     --title "Choose route: north, south" --reason "captain route and access choices pending" \
     --repo sample --origin "$id" >/dev/null \
     || fail "could not register the captain-held task"
-  run_captain "$home" hold sample-route-call \
+  run_captain "$home" hold sample-route-call --class business \
     --title "Choose route: north, south" --reason "captain route and access choices pending" \
     --repo sample >/dev/null \
     || fail "idempotent hold retry failed"
   [ "$(grep -cE "^- \[ \] sample-route-call -" "$home/data/backlog.md")" = 1 ] \
     || fail "idempotent retry duplicated the captain-held task"
-  if run_captain "$home" hold sample-route-call --title "A different title" \
+  if run_captain "$home" hold sample-route-call --class business --title "A different title" \
     --reason "captain route and access choices pending" > "$home/title.out" 2> "$home/title.err"; then
     fail "hold accepted a changed title on an existing task"
   fi
@@ -839,7 +848,7 @@ test_answer_records_and_closes() {
   write_origin_meta "$home" "$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Guard review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold sample-guard-call \
+  run_captain "$home" hold sample-guard-call --class business \
     --title "Choose the guard option" --reason "captain guard choice pending" --repo sample >/dev/null \
     || fail "could not register the captain-held task"
   run_captain "$home" complete "$id" sample-guard-call >/dev/null \
@@ -912,7 +921,7 @@ EOF
   tasks_in "$home" add sample-widget "Ship the sample widget" --kind ship --repo sample \
     --body-file "$home/widget-body.txt" >/dev/null \
     || fail "could not create the held work item"
-  FM_CAPTAIN_HOLD_NOW=2026-06-01T12:00:00Z run_captain "$home" hold sample-widget \
+  FM_CAPTAIN_HOLD_NOW=2026-06-01T12:00:00Z run_captain "$home" hold sample-widget --class business \
     --reason "captain go needed before shipping" >/dev/null \
     || fail "could not hold the work item for the captain"
   printf 'Not urgent; ship it as planned.\n' > "$home/go.txt"
@@ -942,7 +951,7 @@ EOF
 
   tasks_in "$home" add sample-empty-label-widget "Ship without a display label" \
     --kind ship --repo sample >/dev/null
-  run_captain "$home" hold sample-empty-label-widget --reason "captain go needed" >/dev/null
+  run_captain "$home" hold sample-empty-label-widget --class business --reason "captain go needed" >/dev/null
   out=$(printf 'sample-empty-label-widget\tgo\t\trelease\n' \
     | run_captain "$home" answers --source "empty-label release fixture") \
     || fail "an empty answer label shifted the release close mode"
@@ -955,7 +964,7 @@ EOF
     "an empty-label release recorded the wrong close mode"
 
   # A NEW captain gate on the same task later takes a NEW answer.
-  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-widget \
+  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-widget --class business \
     --reason "captain pricing call needed" >/dev/null \
     || fail "could not re-hold the released work item"
   snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
@@ -1017,7 +1026,7 @@ exec "$REAL_TASKS_AXI" "$@"
 EOF
   chmod +x "$home/fakebin/tasks-axi"
 
-  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-old-call \
+  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-old-call --class business \
     --reason "captain route choice pending" >/dev/null \
     || fail "hold was published before its hold-set stamp"
   assert_present "$home/hold-observed-after-stamp" \
@@ -1027,7 +1036,7 @@ EOF
   assert_contains "$show" "Captain hold set: 2026-07-14T12:00:00Z" \
     "the visible captain hold lost its timestamp"
 
-  if FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-stamp-failure \
+  if FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-stamp-failure --class business \
     --reason "captain route choice pending" > "$home/stamp-failure.out" 2> "$home/stamp-failure.err"; then
     fail "hold succeeded after its timestamp update failed"
   fi
@@ -1048,7 +1057,7 @@ test_interrupted_answer_preserves_hold_age() {
 
 ## Done
 EOF
-  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-interrupted-call \
+  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-interrupted-call --class business \
     --reason "captain route choice pending" >/dev/null \
     || fail "could not hold the interrupted-answer fixture"
   printf 'Not urgent in the historical answer.\n' > "$home/interrupted-answer.txt"
@@ -1123,19 +1132,19 @@ test_deferral_leaves_captains_call_until_due() {
 
 ## Done
 EOF
-  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-existing-call \
+  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-existing-call --class business \
     --reason "captain choice on existing work" >/dev/null \
     || fail "could not hold the existing task"
-  FM_CAPTAIN_HOLD_NOW=2026-07-20T12:00:00Z run_captain "$home" hold sample-existing-call \
+  FM_CAPTAIN_HOLD_NOW=2026-07-20T12:00:00Z run_captain "$home" hold sample-existing-call --class business \
     --reason "captain choice on existing work" >/dev/null \
     || fail "could not repeat the existing task hold"
-  run_captain "$home" hold sample-later-call --title "Revisit the sample plan" \
+  run_captain "$home" hold sample-later-call --class business --title "Revisit the sample plan" \
     --reason "captain deferred revisit later" --repo sample --until 2026-08-01 >/dev/null \
     || fail "could not register the deferred captain call"
-  run_captain "$home" hold sample-now-call --title "Decide the sample cut" \
+  run_captain "$home" hold sample-now-call --class business --title "Decide the sample cut" \
     --reason "captain cut choice pending" --repo sample >/dev/null \
     || fail "could not register the live captain call"
-  if run_captain "$home" hold sample-bad-date --title "Bad date" \
+  if run_captain "$home" hold sample-bad-date --class business --title "Bad date" \
     --reason "captain choice" --until 2026-8-1 > "$home/bad-date.out" 2> "$home/bad-date.err"; then
     fail "hold accepted a malformed --until date"
   fi
@@ -1198,7 +1207,7 @@ test_out_of_band_close_is_recordable() {
   write_origin_meta "$home" "$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Sample full run review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold sample-submission-call --title "Choose the sample submission" \
+  run_captain "$home" hold sample-submission-call --class business --title "Choose the sample submission" \
     --reason "captain submission choice pending" --repo sample --origin "$id" >/dev/null \
     || fail "could not register the captain-held task"
   run_captain "$home" complete "$id" sample-submission-call >/dev/null \
@@ -1267,7 +1276,7 @@ test_visual_review_uses_shared_completion_owner() {
 
   mkdir -p "$home/.lavish"
   printf '<html><body>Synthetic sample board</body></html>\n' > "$home/.lavish/sample-board.html"
-  run_captain "$home" hold sample-layout-call --title "Choose the sample layout" \
+  run_captain "$home" hold sample-layout-call --class business --title "Choose the sample layout" \
     --reason "captain layout choice pending" --repo sample --origin "$id" >/dev/null \
     || fail "post-teardown visual review could not use the shared hold owner"
   run_captain "$home" complete "$id" sample-layout-call >/dev/null \
@@ -1330,7 +1339,7 @@ test_completion_replaces_a_pair_recorded_after_pr() {
   tasks_in "$home" add "$id" "Review a legacy sample change" --kind scout --repo sample --start >/dev/null
   write_origin_meta "$home" "$id"
   for out in old-call new-call; do
-    run_captain "$home" hold "$out" --title "Call $out" --reason "Choose" --origin "$id" >/dev/null \
+    run_captain "$home" hold "$out" --class business --title "Call $out" --reason "Choose" --origin "$id" >/dev/null \
       || fail "could not create $out"
   done
   meta="$home/state/$id.meta"
@@ -1417,7 +1426,7 @@ EOF
   write_origin_meta "$mate" "$origin"
   printf 'done: report and visual review complete\n' > "$mate/state/$origin.status"
   printf '# Sample secondmate review\n\nOne captain choice remains.\n' > "$mate/data/$origin/report.md"
-  run_captain "$mate" hold sample-release-call --title "Choose the sample release" \
+  run_captain "$mate" hold sample-release-call --class business --title "Choose the sample release" \
     --reason "captain release choice pending" --repo sample --origin "$origin" >/dev/null \
     || fail "secondmate-owned hold creation failed"
   run_captain "$mate" complete "$origin" sample-release-call >/dev/null \
@@ -1474,17 +1483,17 @@ EOF
   tasks_in "$mate" add quoted-record-call "Choose quoted record handling" --kind ship --repo sample \
     --body 'Documentation quote: Resolution recorded by fm-captain-hold.' >/dev/null \
     || fail "could not create quoted-record captain call"
-  run_captain "$mate" hold quoted-record-call --reason "quoted record choice pending" \
+  run_captain "$mate" hold quoted-record-call --class business --reason "quoted record choice pending" \
     --origin quoted-origin >/dev/null || fail "quoted-record hold failed"
   assert_grep 'needs-decision [key=captain-hold-quoted-record-call-1]: captain hold quoted-record-call: quoted record choice pending' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel") "body prose was incorrectly counted as a resolution record"
 
-  run_captain "$mate" hold mate-call --title "Choose the mate release" \
+  run_captain "$mate" hold mate-call --class business --title "Choose the mate release" \
     --reason "release choice pending" --repo sample >/dev/null \
     || fail "mate hold failed"
   assert_grep 'needs-decision [key=captain-hold-mate-call-1]: captain hold mate-call: release choice pending' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel") "the mate's hold did not reach the parent channel"
-  run_captain "$mate" hold mate-call --reason "release choice pending" >/dev/null \
+  run_captain "$mate" hold mate-call --class business --reason "release choice pending" >/dev/null \
     || fail "repeated mate hold failed"
   [ "$(grep -c 'captain-hold-mate-call-1' "$channel")" = 1 ] \
     || fail "a repeated hold duplicated the parent decision: $(cat "$channel")"
@@ -1495,7 +1504,7 @@ EOF
   assert_grep 'resolved [key=captain-hold-mate-call-1]: captain hold mate-call: released' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel") "the released answer did not close the parent decision"
 
-  run_captain "$mate" hold mate-call --reason "second release choice" >/dev/null \
+  run_captain "$mate" hold mate-call --class business --reason "second release choice" >/dev/null \
     || fail "re-hold after release failed"
   assert_grep 'needs-decision [key=captain-hold-mate-call-2]: captain hold mate-call: second release choice' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel") "a re-held task did not open a distinct parent decision"
@@ -1511,7 +1520,7 @@ EOF
   [ "$(grep -c 'captain-hold-mate-call' "$channel")" = 4 ] \
     || fail "unexpected parent channel contents: $(cat "$channel")"
 
-  run_captain "$mate" hold batch-call --title "Choose the batch release" \
+  run_captain "$mate" hold batch-call --class business --title "Choose the batch release" \
     --reason "batch choice pending" --repo sample >/dev/null \
     || fail "batch hold failed"
   mv "$channel" "$channel.saved"
@@ -1529,7 +1538,7 @@ EOF
   [ "$(grep -c 'resolved \[key=captain-hold-batch-call-1\]' "$channel")" = 1 ] \
     || fail "batch retry did not restore exactly one parent resolution: $(cat "$channel")"
 
-  run_captain "$parent" hold main-call --title "Choose the main release" \
+  run_captain "$parent" hold main-call --class business --title "Choose the main release" \
     --reason "main choice pending" --repo sample >/dev/null || fail "main hold failed"
   [ ! -e "$parent/state/parent-replies.status" ] || fail "a main home wrote a parent reply"
   assert_no_grep 'captain-hold-main-call' "$channel" "a main home's hold leaked onto a mate channel"
@@ -1548,7 +1557,7 @@ test_secondmate_reconcile_publishes_before_request_retirement() {
 
   tasks_in "$mate" add reconcile-channel-call "Verify the mate call" --kind ship --repo sample >/dev/null \
     || fail "could not create the reconcile channel call"
-  run_captain "$mate" hold reconcile-channel-call --reason "verify current release state" >/dev/null \
+  run_captain "$mate" hold reconcile-channel-call --class business --reason "verify current release state" >/dev/null \
     || fail "could not hold the reconcile channel call"
   request_reconciles "$mate" reconcile-board reconcile-channel-call \
     || fail "could not request the channel reconciliation"
@@ -1582,7 +1591,7 @@ test_secondmate_reconcile_publishes_before_request_retirement() {
     || fail "the reconciliation retry duplicated or changed its parent resolution: $(cat "$channel")"
   tasks_in "$mate" add answer-channel-call "Answer the mate call" --kind ship --repo sample >/dev/null \
     || fail "could not create the normal-answer channel call"
-  run_captain "$mate" hold answer-channel-call --reason "captain answer needed" >/dev/null \
+  run_captain "$mate" hold answer-channel-call --class business --reason "captain answer needed" >/dev/null \
     || fail "could not hold the normal-answer channel call"
   request_reconciles "$mate" reconcile-board answer-channel-call \
     || fail "could not create the normal-answer retry trigger"
@@ -1624,27 +1633,27 @@ test_bound_channel_answers_close_at_answer_time() {
   write_origin_meta "$home" "$id"
   printf 'done: proposal deck ready for the captain\n' > "$home/state/$id.status"
   printf '# Sample eval proposal\n\nThree captain choices remain.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold sample-membership-call --title "Captain call: membership" \
+  run_captain "$home" hold sample-membership-call --class business --title "Captain call: membership" \
     --reason "captain membership choice pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-headline-call --title "Captain call: headline" \
+  run_captain "$home" hold sample-headline-call --class business --title "Captain call: headline" \
     --reason "captain headline choice pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-forged-call --title "Captain call: forged" \
+  run_captain "$home" hold sample-forged-call --class business --title "Captain call: forged" \
     --reason "captain forged choice pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-invalid-close-call --title "Captain call: invalid close" \
+  run_captain "$home" hold sample-invalid-close-call --class business --title "Captain call: invalid close" \
     --reason "captain close mode validation pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-source-reconcile --title "Captain call: reconcile" \
+  run_captain "$home" hold sample-source-reconcile --class business --title "Captain call: reconcile" \
     --reason "captain re-check pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-bare-reconcile --title "Captain call: bare reconcile" \
+  run_captain "$home" hold sample-bare-reconcile --class business --title "Captain call: bare reconcile" \
     --reason "captain bare re-check pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-old-shape --title "Captain call: old board shape" \
+  run_captain "$home" hold sample-old-shape --class business --title "Captain call: old board shape" \
     --reason "captain old board pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-old-reconcile --title "Captain call: old bare reconcile" \
+  run_captain "$home" hold sample-old-reconcile --class business --title "Captain call: old bare reconcile" \
     --reason "captain old bare reconcile pending" --repo sample --origin "$id" >/dev/null
-  run_captain "$home" hold sample-old-reconcile-note --title "Captain call: old annotated reconcile" \
+  run_captain "$home" hold sample-old-reconcile-note --class business --title "Captain call: old annotated reconcile" \
     --reason "captain old annotated reconcile pending" --repo sample --origin "$id" >/dev/null
   tasks_in "$home" add sample-gated-work "Gated sample work" --kind ship --repo sample \
     --body 'Gated work plan.' >/dev/null
-  run_captain "$home" hold sample-gated-work --reason "captain go needed" >/dev/null
+  run_captain "$home" hold sample-gated-work --class business --reason "captain go needed" >/dev/null
   run_captain "$home" complete "$id" \
     sample-membership-call sample-headline-call sample-forged-call sample-invalid-close-call \
     sample-source-reconcile sample-bare-reconcile sample-old-shape sample-old-reconcile \
@@ -1821,9 +1830,9 @@ test_reconcile_never_closes_through_the_keyed_answer_intake() {
     || fail "could not create the reconcile call"
   tasks_in "$home" add sample-reconcile-gated "Gated work" --repo sample >/dev/null \
     || fail "could not create the gated work item"
-  run_captain "$home" hold sample-reconcile-call --reason "is this still current?" >/dev/null \
+  run_captain "$home" hold sample-reconcile-call --class business --reason "is this still current?" >/dev/null \
     || fail "could not hold the reconcile call"
-  run_captain "$home" hold sample-reconcile-gated --reason "waiting on the captain" >/dev/null \
+  run_captain "$home" hold sample-reconcile-gated --class business --reason "waiting on the captain" >/dev/null \
     || fail "could not hold the gated work item"
 
   set +e
@@ -1875,7 +1884,7 @@ test_normal_answers_retire_pending_reconcile_requests() {
   home=$(make_home reconcile-normal-answer)
   for id in sample-direct-close sample-direct-release sample-keyed-close; do
     tasks_in "$home" add "$id" "Captain call $id" --repo sample >/dev/null
-    run_captain "$home" hold "$id" --reason "waiting for the captain" >/dev/null
+    run_captain "$home" hold "$id" --class business --reason "waiting for the captain" >/dev/null
   done
   request_reconciles "$home" board-src sample-direct-close sample-direct-release sample-keyed-close \
     || fail "could not create reconcile requests before normal answers"
@@ -1913,9 +1922,9 @@ test_reconcile_closes_with_evidence_or_keeps_the_call_open() {
   tasks_in "$home" add sample-moot-call "Captain call: ship 0.1.37?" --repo sample >/dev/null
   tasks_in "$home" add sample-active-call "Captain call: which admission order?" --repo sample >/dev/null
   tasks_in "$home" add sample-mode-call "Captain call: verify replay mode?" --repo sample >/dev/null
-  run_captain "$home" hold sample-moot-call --reason "ship 0.1.37?" >/dev/null
-  run_captain "$home" hold sample-active-call --reason "which admission order?" >/dev/null
-  run_captain "$home" hold sample-mode-call --reason "verify replay mode?" >/dev/null
+  run_captain "$home" hold sample-moot-call --class business --reason "ship 0.1.37?" >/dev/null
+  run_captain "$home" hold sample-active-call --class business --reason "which admission order?" >/dev/null
+  run_captain "$home" hold sample-mode-call --class business --reason "verify replay mode?" >/dev/null
   printf '0.1.38 was published on 2026-09-05, so the 0.1.37 question is moot.\n' > "$home/evidence.txt"
   printf 'Still open: nothing has shipped and the choice is unchanged.\n' > "$home/note.txt"
 
@@ -2020,11 +2029,11 @@ test_reconcile_outcomes_retry_partial_failures_once() {
   tasks_in "$home" add sample-reconcile-retire-retry "Retire retry" --repo sample >/dev/null
   tasks_in "$home" add sample-reconcile-close-retire "Close retire" --repo sample >/dev/null
   tasks_in "$home" add sample-answer-retire "Answer retire" --repo sample >/dev/null
-  run_captain "$home" hold sample-reconcile-close-retry --reason "verify close" >/dev/null
-  run_captain "$home" hold sample-reconcile-note-retry --reason "verify note" >/dev/null
-  run_captain "$home" hold sample-reconcile-retire-retry --reason "verify retire" >/dev/null
-  run_captain "$home" hold sample-reconcile-close-retire --reason "verify close retirement" >/dev/null
-  run_captain "$home" hold sample-answer-retire --reason "verify answer retirement" >/dev/null
+  run_captain "$home" hold sample-reconcile-close-retry --class business --reason "verify close" >/dev/null
+  run_captain "$home" hold sample-reconcile-note-retry --class business --reason "verify note" >/dev/null
+  run_captain "$home" hold sample-reconcile-retire-retry --class business --reason "verify retire" >/dev/null
+  run_captain "$home" hold sample-reconcile-close-retire --class business --reason "verify close retirement" >/dev/null
+  run_captain "$home" hold sample-answer-retire --class business --reason "verify answer retirement" >/dev/null
   request_reconciles "$home" board-src sample-reconcile-close-retry sample-reconcile-note-retry \
     sample-reconcile-retire-retry sample-reconcile-close-retire sample-answer-retire \
     || fail "could not create partial-retry requests"
@@ -2145,7 +2154,7 @@ test_unbound_source_closes_no_hold() {
   write_origin_meta "$home" "$id"
   printf 'done: deck ready\n' > "$home/state/$id.status"
   printf '# Unbound review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold sample-only-call --title "Captain call: only choice" \
+  run_captain "$home" hold sample-only-call --class business --title "Captain call: only choice" \
     --reason "captain only choice pending" --repo sample --origin "$id" >/dev/null \
     || fail "could not register the unbound call"
 
@@ -2191,11 +2200,11 @@ test_legacy_identities_keep_working() {
 
   hold=$(run_shim "$home" id "$id" pick-one)
   [ "$hold" = "$id-decision-pick-one" ] || fail "the shim identity was not deterministic: $hold"
-  out=$(run_shim "$home" hold "$id" pick-one \
+  out=$(run_shim "$home" hold "$id" pick-one --class business \
     --title "Pick one" --reason "captain choice pending" --repo sample) \
     || fail "the shim hold path failed"
   [ "$out" = "$hold" ] || fail "the shim hold did not print the composed identity: $out"
-  run_shim "$home" hold "$id" keep-two \
+  run_shim "$home" hold "$id" keep-two --class business \
     --title "Keep two" --reason "captain second choice pending" --repo sample >/dev/null \
     || fail "the shim second hold failed"
   show=$(tasks_in "$home" show "$hold" --full)
@@ -2235,7 +2244,7 @@ test_legacy_identities_keep_working() {
   show=$(tasks_in "$home" show sample-legacy-work --full)
   assert_contains "$show" "blocked: no" "the shim resolve did not release the routed work"
 
-  old_hold=$(run_shim "$home" hold "$id" old-route \
+  old_hold=$(run_shim "$home" hold "$id" old-route --class business \
     --title "Old routed choice" --reason "captain old route pending" --repo sample)
   tasks_in "$home" add sample-old-routed-work "Apply the old routed choice" \
     --kind ship --repo sample --blocked-by "$old_hold" >/dev/null
@@ -2266,7 +2275,7 @@ test_legacy_identities_keep_working() {
 
   # A concrete-origin binding (a pre-collapse record) makes short channel keys
   # resolve through the composed identity.
-  run_shim "$home" hold "$id" third-choice \
+  run_shim "$home" hold "$id" third-choice --class business \
     --title "Third choice" --reason "captain third choice pending" --repo sample >/dev/null
   run_shim "$home" bind legacy-src "$id" >/dev/null || fail "the shim bind path failed"
   [ "$(run_captain "$home" binding legacy-src)" = "$id" ] \
@@ -2278,7 +2287,7 @@ test_legacy_identities_keep_working() {
   show=$(tasks_in "$home" show "$id-decision-third-choice" --full)
   assert_contains "$show" "state: done" "the legacy-keyed answer did not close its row"
 
-  run_shim "$home" hold "$id" fourth-choice \
+  run_shim "$home" hold "$id" fourth-choice --class business \
     --title "Fourth choice" --reason "captain fourth choice pending" --repo sample >/dev/null
   legacy_text=$(printf 'Captain answered this decision through legacy replay.\nDecision key: fourth-choice\nAnswer: option c\n')
   if command -v shasum >/dev/null 2>&1; then
@@ -2317,7 +2326,7 @@ test_board_answer_reaches_the_keyed_answer_intake() {
   sid=lavish-b0a4d0000000f1e2
   fm_test_track_procevent_home "$home" "$home/procevent-claims"
 
-  run_captain "$home" hold sample-board-call --title "Choose the sample board route" \
+  run_captain "$home" hold sample-board-call --class business --title "Choose the sample board route" \
     --reason "captain board route choice pending" --repo sample >/dev/null \
     || fail "could not register the board call"
 
@@ -2372,13 +2381,13 @@ test_chat_channel_feeds_the_same_keyed_answer_intake() {
   write_origin_meta "$home" "$id" ship
   printf 'needs-decision [key=chat-choice]: pick option A or option B\n' > "$home/state/$id.status"
   printf '# Chat review\n\nTwo captain choices remain.\n' > "$home/data/$id/report.md"
-  run_shim "$home" hold "$id" chat-choice \
+  run_shim "$home" hold "$id" chat-choice --class business \
     --title "Choose the sample chat option" --reason "captain chat choice pending" --repo sample >/dev/null \
     || fail "could not register the legacy chat row"
-  run_captain "$home" hold sample-chat-followup --title "Choose the chat follow-up" \
+  run_captain "$home" hold sample-chat-followup --class business --title "Choose the chat follow-up" \
     --reason "captain follow-up choice pending" --repo sample >/dev/null \
     || fail "could not register the task-id chat call"
-  run_captain "$home" hold sample-chat-reconcile --title "Reconcile from chat" \
+  run_captain "$home" hold sample-chat-reconcile --class business --title "Reconcile from chat" \
     --reason "captain chat reconcile pending" --repo sample >/dev/null \
     || fail "could not register the chat reconcile call"
   run_captain "$home" complete "$id" "$id-decision-chat-choice" sample-chat-followup \
@@ -2483,7 +2492,7 @@ test_origin_slug_validation_precedes_path_construction() {
   if run_captain "$home" verify "../escape" > "$home/escape-verify.out" 2> "$home/escape-verify.err"; then
     fail "verify accepted a path-escaping origin id"
   fi
-  if run_captain "$home" hold "bad id" --title "x" --reason "y" > "$home/bad-hold.out" 2> "$home/bad-hold.err"; then
+  if run_captain "$home" hold "bad id" --class business --title "x" --reason "y" > "$home/bad-hold.out" 2> "$home/bad-hold.err"; then
     fail "hold accepted an invalid task id"
   fi
   pass "completion and verification validate origins before constructing paths"
@@ -2513,11 +2522,11 @@ test_status_resolution_over_an_open_hold_is_signalled() {
   tasks_in "$home" add "$id" "Investigate sample routing" --kind scout --repo sample --start >/dev/null \
     || fail "could not create the investigation fixture"
   write_origin_meta "$home" "$id"
-  run_captain "$home" hold sample-route-call \
+  run_captain "$home" hold sample-route-call --class business \
     --title "Choose route: north or south" --reason "captain route choice pending" \
     --repo sample --origin "$id" >/dev/null \
     || fail "could not register the collapsed-identity captain call"
-  run_captain "$home" hold "$id-decision-access" \
+  run_captain "$home" hold "$id-decision-access" --class business \
     --title "Open or restricted sample access" --reason "captain access choice pending" \
     --repo sample --origin "$id" >/dev/null \
     || fail "could not register the legacy-identity captain call"
@@ -2578,16 +2587,16 @@ test_legitimate_holds_produce_no_divergence_signal() {
 
   # (1) The decision IS the deliverable: held for the captain, nothing routed,
   # no status line anywhere naming it.
-  run_captain "$home" hold sample-standalone-call \
+  run_captain "$home" hold sample-standalone-call --class business \
     --title "Adopt the sample naming convention" --reason "captain call with no routed work" \
     --repo sample >/dev/null || fail "could not register the deliverable-is-the-decision call"
   # (2) The verified transfer: still open structurally, closed on the status side
   # by the captain-held verb command_complete writes.
-  run_captain "$home" hold sample-transfer-call \
+  run_captain "$home" hold sample-transfer-call --class business \
     --title "Choose the sample retention window" --reason "captain retention choice pending" \
     --repo sample >/dev/null || fail "could not register the transferred call"
   # (4) An already answered call whose status line reads resolved.
-  run_captain "$home" hold sample-answered-call \
+  run_captain "$home" hold sample-answered-call --class business \
     --title "Choose the sample export format" --reason "captain export choice pending" \
     --repo sample >/dev/null || fail "could not register the answered call"
   answer="$home/answer.txt"
@@ -2609,7 +2618,7 @@ needs-decision [key=sample-plain-work]: worker question about the sample fixture
 resolved [key=sample-plain-work]: answered: go ahead
 EOF
   # (3) A still-open status decision whose structured twin is also still open.
-  run_captain "$home" hold sample-open-call \
+  run_captain "$home" hold sample-open-call --class business \
     --title "Choose the sample refresh cadence" --reason "captain cadence choice pending" \
     --repo sample >/dev/null || fail "could not register the still-open call"
 
@@ -2643,7 +2652,7 @@ test_teardown_never_closes_a_captain_held_task() {
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Sample attachment evidence\n\nThe captain must choose inline or by-reference attachments.\n' \
     > "$home/data/$id/report.md"
-  run_captain "$home" hold "$id" \
+  run_captain "$home" hold "$id" --class business \
     --reason "captain must choose inline or by-reference attachments" >/dev/null \
     || fail "could not hold the originating work item for the captain"
   complete_through_sibling "$home" "$id" >/dev/null \
@@ -2694,7 +2703,7 @@ test_teardown_never_closes_a_captain_held_task() {
   write_origin_meta "$home" "$forced"
   printf 'done: report complete\n' > "$home/state/$forced.status"
   printf '# Sample forced path\n\nOne captain choice remains.\n' > "$home/data/$forced/report.md"
-  run_captain "$home" hold "$forced" --reason "captain must choose the sample forced path" >/dev/null \
+  run_captain "$home" hold "$forced" --class business --reason "captain must choose the sample forced path" >/dev/null \
     || fail "could not hold the forced fixture for the captain"
   PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
@@ -2735,7 +2744,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   printf 'done: report complete\n' > "$home/state/$retained_id.status"
   printf '# Retained report\n\nThe captain must choose the follow-up.\n' \
     > "$home/data/$retained_id/report.md"
-  run_captain "$home" hold "$retained_id" --reason "captain must choose the report follow-up" \
+  run_captain "$home" hold "$retained_id" --class business --reason "captain must choose the report follow-up" \
     >/dev/null || fail "could not hold the retained report"
   complete_through_sibling "$home" "$retained_id" >/dev/null \
     || fail "completion gate failed for the retained report"
@@ -2755,7 +2764,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   printf 'done: report complete\n' > "$home/state/$precedence_id.status"
   printf '# Retained report with pull request context\n' \
     > "$home/data/$precedence_id/report.md"
-  run_captain "$home" hold "$precedence_id" \
+  run_captain "$home" hold "$precedence_id" --class business \
     --reason "captain must choose the report follow-up" >/dev/null \
     || fail "could not hold the report precedence fixture"
   complete_through_sibling "$home" "$precedence_id" >/dev/null \
@@ -2778,7 +2787,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   rejected_pr="https://github.com/sample/sample/pull/22"
   tasks_in "$home" add "$rejected_id" "Decide whether $rejected_pr may merge" --kind ship \
     --repo sample --start >/dev/null || fail "could not create the rejected merge fixture"
-  run_captain "$home" hold "$rejected_id" --reason "captain merge approval pending" \
+  run_captain "$home" hold "$rejected_id" --class business --reason "captain merge approval pending" \
     >/dev/null || fail "could not hold the rejected merge"
   printf 'Do not merge this pull request.\n' > "$home/rejected-answer.txt"
   run_captain "$home" answer "$rejected_id" --decision-file "$home/rejected-answer.txt" \
@@ -2790,7 +2799,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   rejected_local_id=sample-rejected-local
   tasks_in "$home" add "$rejected_local_id" "Decide whether to land local main" --kind ship \
     --repo sample --start >/dev/null || fail "could not create the rejected local fixture"
-  run_captain "$home" hold "$rejected_local_id" --reason "captain local merge approval pending" \
+  run_captain "$home" hold "$rejected_local_id" --class business --reason "captain local merge approval pending" \
     >/dev/null || fail "could not hold the rejected local merge"
   printf 'Do not land this change locally.\n' > "$home/rejected-local-answer.txt"
   run_captain "$home" answer "$rejected_local_id" \
@@ -2806,7 +2815,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   tasks_in "$home" add "$report_question_id" \
     "Decide whether data/$report_question_id/report.md should be published" --kind ship \
     --repo sample --start >/dev/null || fail "could not create the report-path question fixture"
-  run_captain "$home" hold "$report_question_id" \
+  run_captain "$home" hold "$report_question_id" --class business \
     --reason "captain report publication decision pending" >/dev/null \
     || fail "could not hold the report-path question"
   printf 'Do not publish this report.\n' > "$home/report-question-answer.txt"
@@ -2831,7 +2840,7 @@ test_retained_row_artifacts_survive_captain_answers() {
     "project=$repo" "harness=codex" "kind=ship" "mode=no-mistakes" \
     "pr=$approved_pr" "spawn_gen=fixture-$approved_id"
   printf 'done: PR %s merged\n' "$approved_pr" > "$home/state/$approved_id.status"
-  run_captain "$home" hold "$approved_id" --reason "captain merge approval pending" \
+  run_captain "$home" hold "$approved_id" --class business --reason "captain merge approval pending" \
     >/dev/null || fail "could not hold the approved merge"
   printf 'Merge the approved pull request.\n' > "$home/approved-answer.txt"
   run_captain "$home" answer "$approved_id" --release \
@@ -2859,7 +2868,7 @@ test_retained_row_artifacts_survive_captain_answers() {
     "spawn_gen=fixture-$local_id"
   printf 'done: local merge ready\n' > "$home/state/$local_id.status"
   printf 'local_done_head=%s\n' "$(git -C "$local_wt" rev-parse HEAD)" >> "$home/state/$local_id.meta"
-  run_captain "$home" hold "$local_id" --reason "captain local merge approval pending" \
+  run_captain "$home" hold "$local_id" --class business --reason "captain local merge approval pending" \
     >/dev/null || fail "could not hold the released local merge"
   printf 'Land the approved change locally.\n' > "$home/local-answer.txt"
   run_captain "$home" answer "$local_id" --release \
@@ -2885,7 +2894,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   write_origin_meta "$home" "$released_id"
   printf 'done: report complete\n' > "$home/state/$released_id.status"
   printf '# Released report\n' > "$home/data/$released_id/report.md"
-  run_captain "$home" hold "$released_id" --reason "captain report release pending" \
+  run_captain "$home" hold "$released_id" --class business --reason "captain report release pending" \
     >/dev/null || fail "could not hold the released report"
   complete_through_sibling "$home" "$released_id" >/dev/null \
     || fail "completion gate failed for the released report"
@@ -2900,7 +2909,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   answered_id=sample-artifactless-captain-answer
   tasks_in "$home" add "$answered_id" "Choose the artifactless route" --kind captain \
     --repo sample --start >/dev/null || fail "could not create the artifactless captain call"
-  run_captain "$home" hold "$answered_id" --reason "captain route choice pending" \
+  run_captain "$home" hold "$answered_id" --class business --reason "captain route choice pending" \
     >/dev/null || fail "could not hold the artifactless captain call"
   printf 'Continue without a delivery artifact.\n' > "$home/artifactless-answer.txt"
   run_captain "$home" answer "$answered_id" --release \
@@ -2913,7 +2922,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   tasks_in "$home" add "$decision_local_id" "Land the reviewed change" --kind ship \
     --repo sample --start >/dev/null \
     || fail "could not create the local-worded decision fixture"
-  run_captain "$home" hold "$decision_local_id" --reason "captain landing route pending" \
+  run_captain "$home" hold "$decision_local_id" --class business --reason "captain landing route pending" \
     >/dev/null || fail "could not hold the local-worded decision fixture"
   printf 'local main\n' > "$home/local-worded-answer.txt"
   run_captain "$home" answer "$decision_local_id" --release \
@@ -2990,7 +2999,7 @@ test_interrupted_cleanup_keeps_the_captain_call_recoverable() {
     "harness=codex" "kind=scout" "mode=scout" "spawn_gen=fixture-$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Failed cleanup\n\nThe captain call remains open.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold "$id" --reason "captain must choose after cleanup retry" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain must choose after cleanup retry" >/dev/null \
     || fail "could not hold the cleanup-failure fixture"
   complete_through_sibling "$home" "$id" >/dev/null \
     || fail "completion gate failed for the cleanup-failure fixture"
@@ -3049,7 +3058,7 @@ test_answer_before_cleanup_replay_preserves_the_retained_report() {
     "harness=codex" "kind=scout" "mode=scout" "spawn_gen=fixture-$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Interrupted cleanup\n\nThe captain call remains open.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold "$id" --reason "captain must choose after interrupted cleanup" \
+  run_captain "$home" hold "$id" --class business --reason "captain must choose after interrupted cleanup" \
     >/dev/null || fail "could not hold the answer-before-replay fixture"
   complete_through_sibling "$home" "$id" >/dev/null \
     || fail "completion gate failed for the answer-before-replay fixture"
@@ -3103,7 +3112,7 @@ test_answer_before_cleanup_replay_notes_a_retained_gerrit_change() {
     "project=$repo" "harness=codex" "kind=ship" "mode=no-mistakes" \
     "pr=$gerrit_url" "spawn_gen=fixture-$id"
   printf 'done: change landed\n' > "$home/state/$id.status"
-  run_captain "$home" hold "$id" --reason "captain must choose the follow-up" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain must choose the follow-up" >/dev/null \
     || fail "could not hold the landed Gerrit task for the captain"
   real_tasks_axi=$(command -v tasks-axi)
   cat > "$home/fakebin/tasks-axi" <<SH
@@ -3160,7 +3169,7 @@ test_unusable_pending_close_record_names_its_reason() {
     "harness=codex" "kind=scout" "mode=scout" "spawn_gen=fixture-$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Unusable pending close\n\nThe captain call remains open.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold "$id" --reason "captain must choose after interrupted cleanup" \
+  run_captain "$home" hold "$id" --class business --reason "captain must choose after interrupted cleanup" \
     >/dev/null || fail "could not hold the unusable pending-close fixture"
   complete_through_sibling "$home" "$id" >/dev/null \
     || fail "completion gate failed for the unusable pending-close fixture"
@@ -3221,12 +3230,12 @@ EOF
   printf '# Relocated interrupted cleanup\n\nThe captain call remains open.\n' > "$data/$id/report.md"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
-    "$ROOT/bin/fm-captain-hold.sh" hold "$id" \
+    "$ROOT/bin/fm-captain-hold.sh" hold "$id" --class business \
     --reason "captain must choose after relocated interrupted cleanup" >/dev/null \
     || fail "could not hold the relocated answer-before-replay fixture"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
-    "$ROOT/bin/fm-captain-hold.sh" hold "$id-call" --title "Sibling captain call" \
+    "$ROOT/bin/fm-captain-hold.sh" hold "$id-call" --class business --title "Sibling captain call" \
     --reason "captain must decide the sibling call" --repo sample --origin "$id" >/dev/null \
     || fail "could not hold the sibling captain call"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
@@ -3303,12 +3312,12 @@ EOF
   printf '# Relocated hold\n\nThe captain call remains open.\n' > "$data/$id/report.md"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
-    "$ROOT/bin/fm-captain-hold.sh" hold "$id" \
+    "$ROOT/bin/fm-captain-hold.sh" hold "$id" --class business \
     --reason "captain must choose the relocated sample outcome" >/dev/null \
     || fail "could not hold the relocated work item"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
-    "$ROOT/bin/fm-captain-hold.sh" hold "$id-call" --title "Sibling captain call" \
+    "$ROOT/bin/fm-captain-hold.sh" hold "$id-call" --class business --title "Sibling captain call" \
     --reason "captain must decide the sibling call" --repo sample --origin "$id" >/dev/null \
     || fail "could not hold the sibling captain call"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
@@ -3348,7 +3357,7 @@ test_teardown_retains_a_gerrit_captain_call_with_its_change_url() {
     "project=$repo" "harness=codex" "kind=ship" "mode=no-mistakes" \
     "pr=$gerrit_url" "spawn_gen=fixture-$id"
   printf 'done: change landed\n' > "$home/state/$id.status"
-  run_captain "$home" hold "$id" --reason "captain must choose the follow-up" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain must choose the follow-up" >/dev/null \
     || fail "could not hold the landed Gerrit task for the captain"
   # Pin the refusal tasks-axi applies to a --pr link that is not a canonical
   # GitHub pull request, so this case keeps reproducing whatever the installed
@@ -3399,7 +3408,7 @@ test_merge_approval_releases_before_zero_done_retention() {
     "project=$repo" "harness=codex" "kind=ship" "mode=no-mistakes" \
     "pr=$pr" "spawn_gen=fixture-$id"
   printf 'done: merge ready\n' > "$home/state/$id.status"
-  run_captain "$home" hold "$id" --reason "captain merge approval pending" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain merge approval pending" >/dev/null \
     || fail "could not hold the zero-retention merge"
   printf 'Merge the approved change.\n' > "$home/merge-answer.txt"
   run_captain "$home" answer "$id" --release \
@@ -3440,7 +3449,7 @@ test_pr_merge_entrypoint_refuses_a_captain_held_task() {
     "window=firstmate:fm-$pr_id" "endpoint_task_id=$pr_id" "worktree=$wt" \
     "project=$repo" "harness=codex" "kind=ship" "mode=no-mistakes" \
     "pr=$pr" "spawn_gen=fixture-$pr_id"
-  run_captain "$home" hold "$pr_id" --reason "captain merge approval pending" >/dev/null \
+  run_captain "$home" hold "$pr_id" --class business --reason "captain merge approval pending" >/dev/null \
     || fail "could not hold the PR entrypoint fixture"
 
   # Without the entrypoint guard, this run reaches gh and returns success even
@@ -3477,7 +3486,7 @@ test_local_merge_entrypoint_refuses_a_captain_held_task() {
     "project=$local_repo" "harness=codex" "kind=ship" "mode=local-only" \
     "spawn_gen=fixture-$local_id"
   printf 'local_done_head=%s\n' "$(git -C "$local_wt" rev-parse HEAD)" >> "$home/state/$local_id.meta"
-  run_captain "$home" hold "$local_id" --reason "captain local merge approval pending" \
+  run_captain "$home" hold "$local_id" --class business --reason "captain local merge approval pending" \
     >/dev/null || fail "could not hold the local entrypoint fixture"
   before=$(git -C "$local_repo" rev-parse main)
 
@@ -3857,7 +3866,7 @@ test_merge_entrypoints_serialize_forced_teardown_before_task_reads() {
     "project=$repo" "harness=codex" "kind=ship" "mode=no-mistakes" \
     "spawn_gen=fixture-$id"
   printf 'done: merge ready\n' > "$home/state/$id.status"
-  run_captain "$home" hold "$id" --reason "captain merge approval pending" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain merge approval pending" >/dev/null \
     || fail "could not hold the PR teardown-race fixture"
   printf 'Merge the released pull request.\n' > "$home/race-answer.txt"
   run_captain "$home" answer "$id" --release --decision-file "$home/race-answer.txt" \
@@ -3935,7 +3944,7 @@ SH
     "spawn_gen=fixture-$local_id"
   printf 'local_done_head=%s\n' "$(git -C "$local_wt" rev-parse HEAD)" >> "$local_home/state/$local_id.meta"
   printf 'done: local merge ready\n' > "$local_home/state/$local_id.status"
-  run_captain "$local_home" hold "$local_id" \
+  run_captain "$local_home" hold "$local_id" --class business \
     --reason "captain local merge approval pending" >/dev/null \
     || fail "could not hold the local teardown-race fixture"
   printf 'Land the released local change.\n' > "$local_home/race-answer.txt"
@@ -4026,7 +4035,7 @@ test_released_merge_passes_the_entrypoint_and_lands() {
     "project=$repo" "harness=codex" "kind=ship" "mode=no-mistakes" \
     "pr=$pr" "spawn_gen=fixture-$id"
   printf 'done: merge ready\n' > "$home/state/$id.status"
-  run_captain "$home" hold "$id" --reason "captain merge approval pending" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain merge approval pending" >/dev/null \
     || fail "could not hold the released merge fixture"
   printf 'Merge the approved pull request.\n' > "$home/merge-answer.txt"
   run_captain "$home" answer "$id" --release \
@@ -4063,7 +4072,7 @@ test_teardown_refuses_a_ship_when_the_captain_hold_cannot_be_read() {
     "project=$home/projects/sample" "harness=codex" "kind=ship" "mode=direct-PR" \
     "spawn_gen=fixture-$id"
   printf 'done: PR https://github.com/sample/sample/pull/7\n' > "$home/state/$id.status"
-  run_captain "$home" hold "$id" --reason "captain must approve the sample change" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain must approve the sample change" >/dev/null \
     || fail "could not hold the ship fixture for the captain"
   cat > "$home/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
@@ -4130,7 +4139,7 @@ PM
     --body 'First line of the plan.' >/dev/null \
     || fail "could not create the task carrying a body"
   PERL5LIB="$shim" PERL5OPT=-MFmNoNonrefDefault \
-    run_captain "$home" hold "$id" --reason "captain go needed" >/dev/null \
+    run_captain "$home" hold "$id" --class business --reason "captain go needed" >/dev/null \
     || fail "a captain hold failed where allow_nonref is not on by default"
   show=$(tasks_in "$home" show "$id" --full) || fail "the held row disappeared"
   assert_contains "$show" "hold_kind: captain" "the hold lost its captain kind"
@@ -4146,7 +4155,7 @@ PM
   printf 'done: report complete\n' > "$home/state/$scout.status"
   printf '# Sample body decode\n\nOne captain choice remains.\n' \
     > "$home/data/$scout/report.md"
-  run_captain "$home" hold "$scout" --reason "captain must choose" >/dev/null \
+  run_captain "$home" hold "$scout" --class business --reason "captain must choose" >/dev/null \
     || fail "could not hold the investigation for the captain"
   complete_through_sibling "$home" "$scout" >/dev/null \
     || fail "the completion gate failed with the origin as its own captain call"
@@ -4184,7 +4193,7 @@ retain_row_with_body() {  # <home> <id> <body>
   printf '# Sample body bytes\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
   tasks_in "$home" update "$id" --body "$body" >/dev/null \
     || fail "could not give $id a body carrying non-ASCII characters"
-  run_captain "$home" hold "$id" --reason "captain must choose" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain must choose" >/dev/null \
     || fail "could not hold $id for the captain"
   complete_through_sibling "$home" "$id" >/dev/null \
     || fail "the completion gate failed for $id"
@@ -4237,7 +4246,7 @@ test_origin_is_never_its_own_inventory_entry() {
     || fail "could not create the investigation fixture"
   write_origin_meta "$home" "$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
-  if run_captain "$home" hold "$id" --reason "" >/dev/null 2> "$home/hold.err"; then
+  if run_captain "$home" hold "$id" --class business --reason "" >/dev/null 2> "$home/hold.err"; then
     fail "hold accepted an empty reason"
   fi
   if run_captain "$home" complete "$id" "$id" > "$home/self.out" 2> "$home/self.err"; then
@@ -4249,7 +4258,7 @@ test_origin_is_never_its_own_inventory_entry() {
     "the refused completion recorded an inventory attestation"
 
   # Holding the origin row itself must not let it vouch for itself either.
-  run_captain "$home" hold "$id" --reason "captain must choose" >/dev/null \
+  run_captain "$home" hold "$id" --class business --reason "captain must choose" >/dev/null \
     || fail "could not hold the origin row"
   if run_captain "$home" complete "$id" "$id" > "$home/held.out" 2> "$home/held.err"; then
     fail "complete accepted a held origin row as its own inventory"
@@ -4272,7 +4281,7 @@ test_complete_refuses_an_entry_held_for_another_origin() {
     write_origin_meta "$home" "$o"
     printf 'done: report complete\n' > "$home/state/$o.status"
   done
-  run_captain "$home" hold sample-other-call --title "Call for the second review" \
+  run_captain "$home" hold sample-other-call --class business --title "Call for the second review" \
     --reason "captain must decide" --repo sample --origin "$other" >/dev/null \
     || fail "could not hold the call recorded for the second review"
   if run_captain "$home" complete "$id" sample-other-call > "$home/mismatch.out" 2> "$home/mismatch.err"; then
@@ -4283,7 +4292,7 @@ test_complete_refuses_an_entry_held_for_another_origin() {
   assert_no_grep "decisions_reviewed=1" "$home/state/$id.meta" \
     "the refused completion recorded an inventory attestation"
 
-  run_captain "$home" hold sample-own-call --title "Call for the first review" \
+  run_captain "$home" hold sample-own-call --class business --title "Call for the first review" \
     --reason "captain must decide" --repo sample --origin "$id" >/dev/null \
     || fail "could not hold the call recorded for the first review"
   out=$(run_captain "$home" complete "$id" sample-own-call) \
@@ -4318,7 +4327,7 @@ test_hold_origins_follow_backend_holds() {
         write_origin_meta "$home" "$origin"
       done
       if [ "$phase" != new ]; then
-        run_captain "$home" hold "$id" --title "Separate call" --reason "Choose for A" \
+        run_captain "$home" hold "$id" --class business --title "Separate call" --reason "Choose for A" \
           --origin origin-a >/dev/null || fail "could not establish the original association"
       fi
       if [ "$phase" = released ]; then
@@ -4371,7 +4380,7 @@ SH
           printf 'origin-mate\n' > "$home/.fm-secondmate-home"
         fi
         : > "$home/fail-$failure"
-        if run_captain "$home" hold "$id" --title "Separate call" --reason "Choose for B" \
+        if run_captain "$home" hold "$id" --class business --title "Separate call" --reason "Choose for B" \
           --origin origin-b ${until_args[@]+"${until_args[@]}"} > "$home/hold.out" 2> "$home/hold.err"; then
           fail "$phase $timing hold succeeded despite an origin $failure failure"
         fi
@@ -4434,7 +4443,7 @@ SH
             || fail "$phase $timing origin $failure failure invalidated verification for A"
         fi
       done
-      run_captain "$home" hold "$id" --reason "Choose for B" --origin origin-b \
+      run_captain "$home" hold "$id" --class business --reason "Choose for B" --origin origin-b \
         ${until_args[@]+"${until_args[@]}"} >/dev/null || fail "$phase $timing successful retry failed"
       assert_present "$home/before-backend-hold" "the successful retry did not reach the backend hold"
       shown=$(cat "$home/before-backend-hold")
@@ -4470,7 +4479,7 @@ test_interrupted_origin_move_does_not_inherit_the_previous_answer() {
           || fail "could not create $o"
         write_origin_meta "$home" "$o"
       done
-      run_captain "$home" hold "$id" --title "Separate call" --reason "Choose for A" \
+      run_captain "$home" hold "$id" --class business --title "Separate call" --reason "Choose for A" \
         --origin origin-a >/dev/null || fail "could not hold the call for A"
       printf 'Release this work.\n' > "$home/answer.txt"
       run_captain "$home" answer "$id" --release --decision-file "$home/answer.txt" >/dev/null \
@@ -4479,7 +4488,7 @@ test_interrupted_origin_move_does_not_inherit_the_previous_answer() {
       [ "$phase" != expired ] || until_args=(--until 2000-01-01)
       case "$phase" in
         active|expired)
-          run_captain "$home" hold "$id" --reason "Choose again for A" --origin origin-a \
+          run_captain "$home" hold "$id" --class business --reason "Choose again for A" --origin origin-a \
             ${until_args[@]+"${until_args[@]}"} >/dev/null || fail "could not re-hold the call for A"
           ;;
       esac
@@ -4510,12 +4519,12 @@ SH
           FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
           FM_CONFIG_OVERRIDE="$home/config" bash -c \
           'printf "%s\n" "$$" > "$FM_HOME/hold-pid"; exec "$@"' _ \
-          "$ROOT/bin/fm-captain-hold.sh" hold "$id" --reason "Choose for B" --origin origin-b \
+          "$ROOT/bin/fm-captain-hold.sh" hold "$id" --class business --reason "Choose for B" --origin origin-b \
           > "$home/hold.out" 2> "$home/hold.err" || rc=$?
         [ "$rc" -eq 143 ] || fail "the hold was not interrupted by TERM: $rc"
         assert_absent "$home/restore-refused" "an interrupted hold attempted restoration"
       else
-        run_captain "$home" hold "$id" --reason "Choose for B" --origin origin-b \
+        run_captain "$home" hold "$id" --class business --reason "Choose for B" --origin origin-b \
           > "$home/hold.out" 2> "$home/hold.err" || rc=$?
         [ "$rc" -ne 0 ] || fail "the hold succeeded although the backend refused it"
         assert_present "$home/restore-refused" "the refused hold did not attempt restoration"
@@ -4578,7 +4587,7 @@ SH
       run_captain "$home" verify origin-a >/dev/null || fail "the surviving call could not verify A"
       [ "$phase" != released-done ] || continue
 
-      run_captain "$home" hold "$id" --reason "Choose for B" --origin origin-b >/dev/null \
+      run_captain "$home" hold "$id" --class business --reason "Choose for B" --origin origin-b >/dev/null \
         || fail "the interrupted move could not be completed"
       run_captain "$home" complete origin-b "$id" >/dev/null \
         || fail "a held call for B did not complete B"
@@ -4597,11 +4606,11 @@ SH
 test_historical_self_inventory_has_workable_repair() {
   local home origin=sample-review keep=retained-call replacement=repair-call meta before out
   home=$(make_home historical-self-inventory)
-  run_captain "$home" hold "$origin" --title "Old review call" --reason "Choose" >/dev/null \
+  run_captain "$home" hold "$origin" --class business --title "Old review call" --reason "Choose" >/dev/null \
     || fail "could not create the historical origin"
   write_origin_meta "$home" "$origin"
   for out in "$keep" "$replacement"; do
-    run_captain "$home" hold "$out" --title "Call $out" --reason "Choose" --origin "$origin" >/dev/null \
+    run_captain "$home" hold "$out" --class business --title "Call $out" --reason "Choose" --origin "$origin" >/dev/null \
       || fail "could not create $out"
   done
   meta="$home/state/$origin.meta"
@@ -4637,7 +4646,7 @@ test_historical_self_inventory_has_workable_repair() {
 test_inventory_compares_backend_identities() {
   local home origin entry shown before
   home=$(make_home backend-identities)
-  run_captain "$home" hold fm-o --title "Origin" --reason "Choose" >/dev/null \
+  run_captain "$home" hold fm-o --class business --title "Origin" --reason "Choose" >/dev/null \
     || fail "could not create the canonical origin"
   tasks_in "$home" add fm-other "Other origin" --kind scout --repo sample >/dev/null \
     || fail "could not create the other origin"
@@ -4671,7 +4680,7 @@ SH
     done
     write_origin_meta "$home" "$origin"
   done
-  run_captain "$home" hold fm-call --title "Separate call" --reason "Choose" --origin o >/dev/null \
+  run_captain "$home" hold fm-call --class business --title "Separate call" --reason "Choose" --origin o >/dev/null \
     || fail "could not hold a call using the origin alias"
   shown=$(tasks_in "$home" show fm-call --full)
   assert_contains "$shown" 'Captain hold origin: fm-o' "hold did not store the backend origin identity"
@@ -4707,7 +4716,7 @@ SH
   assert_equals "$before" "$(cat "$home/state/o.meta")" "a failed identity read changed the inventory"
   rm "$home/fail-identity"
   write_origin_meta "$home" report-only
-  run_captain "$home" hold report-call --title "Report call" --reason "Choose" --origin report-only >/dev/null \
+  run_captain "$home" hold report-call --class business --title "Report call" --reason "Choose" --origin report-only >/dev/null \
     || fail "an origin with metadata but no backlog row could not record a call"
   run_captain "$home" complete report-only report-call >/dev/null \
     || fail "an origin with metadata but no backlog row could not complete"
@@ -4763,7 +4772,7 @@ test_hold_reason_round_trips_awkward_characters() {
       reason='fm-hold-v1:bm9ydGg='
     fi
     quoted_reason=$(jq -cn --arg value "$reason" '$value')
-    run_captain "$home" hold "$id" --title "$title" --reason "$reason" \
+    run_captain "$home" hold "$id" --class business --title "$title" --reason "$reason" \
       --repo sample ${until_args[@]+"${until_args[@]}"} >/dev/null \
       || fail "hold refused the reason for $id"
     stored=$(grep "^- \[ \] $id " "$home/data/backlog.md") \
@@ -4888,7 +4897,7 @@ test_archived_answered_hold_still_satisfies_the_gate() {
   write_origin_meta "$home" "$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Archived sample review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
-  run_captain "$home" hold sample-archived-call --title "Choose the archived option" \
+  run_captain "$home" hold sample-archived-call --class business --title "Choose the archived option" \
     --reason "captain archived choice pending" --repo sample --origin "$id" >/dev/null \
     || fail "could not register the captain-held task"
   run_captain "$home" complete "$id" sample-archived-call >/dev/null \
@@ -4920,7 +4929,7 @@ test_archived_answered_hold_still_satisfies_the_gate() {
   tasks_in "$home" add "$id" "Investigate the unanswered sample" --kind scout --repo sample --start >/dev/null
   write_origin_meta "$home" "$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
-  run_captain "$home" hold sample-archived-unanswered-call --title "Choose the unanswered option" \
+  run_captain "$home" hold sample-archived-unanswered-call --class business --title "Choose the unanswered option" \
     --reason "captain unanswered choice pending" --repo sample --origin "$id" >/dev/null \
     || fail "could not register the unanswered captain-held task"
   run_captain "$home" complete "$id" sample-archived-unanswered-call >/dev/null \
@@ -4976,7 +4985,7 @@ EOF
   write_origin_meta "$home" "$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# User-config sample review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
-  HOME="$axi_home" run_captain "$home" hold sample-userconfig-call --title "Choose the relocated option" \
+  HOME="$axi_home" run_captain "$home" hold sample-userconfig-call --class business --title "Choose the relocated option" \
     --reason "captain relocated choice pending" --repo sample --origin "$id" >/dev/null \
     || fail "could not register the captain-held task"
   HOME="$axi_home" run_captain "$home" complete "$id" sample-userconfig-call >/dev/null \
@@ -5003,6 +5012,150 @@ EOF
   HOME="$axi_home" run_teardown "$home" "$id" >/dev/null 2> "$home/userconfig-teardown.err" \
     || fail "teardown refused a scout whose answered call was archived to the user-configured location: $(cat "$home/userconfig-teardown.err")"
   pass "an answered captain call archived to a user-configured location still satisfies the completion gate"
+}
+
+test_hold_requires_a_business_or_action_class() {
+  local home rc
+  home=$(make_home question-class)
+  rc=0
+  run_captain "$home" hold class-missing --title "Pick a plan" --reason "plan pending" \
+    >/dev/null 2> "$home/missing.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a hold without a class was accepted"
+  assert_grep "--class is required" "$home/missing.err" "the missing-class refusal did not name --class"
+  rc=0
+  run_captain "$home" hold class-technical --class technical --title "Pick a linter" \
+    --reason "which linter" >/dev/null 2> "$home/technical.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a technical question was held for the captain"
+  assert_grep "decide it by your own recommendation, record one line with the choice and the reason" \
+    "$home/technical.err" "the technical refusal did not say to decide by the recommendation and record one line"
+  assert_no_grep "class-missing" "$home/data/backlog.md" "a refused hold without a class still created its task"
+  assert_no_grep "class-technical" "$home/data/backlog.md" "a refused technical question still created its task"
+
+  run_captain "$home" hold class-business --class business --title "Pick a price" \
+    --reason "price pending" >/dev/null || fail "a business question could not be held"
+  run_captain "$home" hold class-action --class action --title "Log in to the bank" \
+    --reason "login pending" >/dev/null || fail "an action for the captain could not be held"
+  tasks_in "$home" show class-business --full | grep -F 'Captain hold class: business' >/dev/null \
+    || fail "the held business question did not record its class"
+  tasks_in "$home" show class-action --full | grep -F 'Captain hold class: action' >/dev/null \
+    || fail "the held action did not record its class"
+  pass "a hold needs the business or action class and refuses a technical question"
+}
+
+test_hold_refuses_a_decision_number_another_question_used() {
+  local home rc
+  home=$(make_home question-number)
+  run_captain "$home" hold number-first --class business --title "Order the fixes" \
+    --reason "240: which fixes go first" >/dev/null || fail "could not hold the first numbered question"
+  rc=0
+  run_captain "$home" hold number-second --class business --title "Startup credits" \
+    --reason "240: apply for the credits" >/dev/null 2> "$home/reused.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a second question reused decision number 240"
+  assert_grep "number-first" "$home/reused.err" "the reused-number refusal did not name the question that holds 240"
+  assert_grep "next unused number, 241" "$home/reused.err" "the reused-number refusal did not offer the next number"
+  assert_no_grep "number-second" "$home/data/backlog.md" "a refused reused number still created its task"
+  run_captain "$home" hold number-first --class business --reason "240: which fixes go first" --until 2099-01-01 \
+    >/dev/null || fail "re-holding the same question with its own number was refused"
+
+  printf 'Captain: 240 a\n' > "$home/first.txt"
+  run_captain "$home" answer number-first --decision-file "$home/first.txt" --release >/dev/null \
+    || fail "could not release the first numbered question"
+  rc=0
+  run_captain "$home" hold number-second --class business --title "Startup credits" \
+    --reason "240: apply for the credits" >/dev/null 2> "$home/released.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "decision number 240 became free again once its question was released"
+
+  run_captain "$home" hold number-old --class business --title "Old commission" \
+    --reason "250: the commission" >/dev/null || fail "could not hold the question to archive"
+  printf 'Captain: 250 b\n' > "$home/old.txt"
+  run_captain "$home" answer number-old --decision-file "$home/old.txt" >/dev/null \
+    || fail "could not answer the question to archive"
+  perl -0pi -e 's/done_keep = 10/done_keep = 0/' "$home/.tasks.toml"
+  tasks_in "$home" add number-trigger "Trigger Done retention" --kind ship --repo sample >/dev/null
+  tasks_in "$home" "done" number-trigger >/dev/null || fail "could not trigger Done retention"
+  assert_grep "number-old" "$home/data/done-archive.md" "Done retention did not archive the answered question"
+  rc=0
+  run_captain "$home" hold number-third --class business --title "Site merge" \
+    --reason "250: merge the site" >/dev/null 2> "$home/archived.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a question reused decision number 250 from the Done archive"
+  assert_grep "number-old" "$home/archived.err" "the archived-number refusal did not name the archived question"
+
+  run_captain "$home" hold number-third --class business --title "Site merge" \
+    --reason "251: merge the site" >/dev/null || fail "an unused decision number was refused"
+  run_captain "$home" hold number-free --class action --title "Press the button" \
+    --reason "press the button" >/dev/null || fail "a question with no decision number was refused"
+  pass "a hold refuses a decision number another question in the backlog or Done archive already used"
+}
+
+test_hold_shows_recorded_answers_on_the_same_task_or_origin() {
+  local home
+  home=$(make_home question-answers)
+  run_captain "$home" hold answers-first --class business --title "Plan for work A" \
+    --reason "plan for work A" --origin work-a >/dev/null || fail "could not hold the first question on work A"
+  printf 'Captain: keep the old plan for work A.\n' > "$home/first.txt"
+  run_captain "$home" answer answers-first --decision-file "$home/first.txt" >/dev/null \
+    || fail "could not answer the first question on work A"
+
+  run_captain "$home" hold answers-second --class business --title "Plan for work A again" \
+    --reason "plan for work A" --origin work-a > "$home/second.out" 2> "$home/second.err" \
+    || fail "could not hold the second question on work A"
+  assert_grep "answers-second" "$home/second.out" "the hold no longer prints the held task on stdout"
+  assert_grep "answers-first" "$home/second.err" "the hold did not show the earlier question on the same origin"
+  assert_grep "keep the old plan for work A." "$home/second.err" "the hold did not show the earlier answer on the same origin"
+
+  run_captain "$home" hold answers-other --class business --title "Plan for work B" \
+    --reason "plan for work B" --origin work-b >/dev/null 2> "$home/other.err" \
+    || fail "could not hold the question on work B"
+  assert_no_grep "keep the old plan" "$home/other.err" "the hold showed an answer from another origin"
+
+  printf 'Captain: wait for the customer.\n' > "$home/released.txt"
+  run_captain "$home" answer answers-other --decision-file "$home/released.txt" --release >/dev/null \
+    || fail "could not release the question on work B"
+  run_captain "$home" hold answers-other --class business --reason "plan for work B" \
+    >/dev/null 2> "$home/rehold.err" || fail "could not re-hold the question on work B"
+  assert_grep "wait for the customer." "$home/rehold.err" "re-holding a task did not show its own earlier answer"
+  pass "a hold shows the recorded answers to questions on the same task or origin"
+}
+
+test_hold_rereads_a_cut_row_on_a_non_markdown_backend() {
+  local home fb log rc=0
+  home="$TMP_ROOT/question-cut-beads/home"
+  mkdir -p "$home/data" "$home/config" "$home/projects" "$home/state"
+  printf 'backend = "beads"\n\n[beads]\npath = "graph/.beads"\nbinary = "bd"\nprefix = "fm"\n' > "$home/.tasks.toml"
+  fb=$(fm_fakebin "$home")
+  log="$home/tasks-axi-calls"
+  cat > "$fb/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "@LOG@"
+case "${1:-} ${2:-}" in
+  "--version "*) printf '%s\n' '0.2.6' ;;
+  "hold --help") printf '%s\n' '  --kind captain' ;;
+  "update --help") printf '%s\n' '--archive-body' ;;
+  "mv --help") printf '%s\n' 'usage: tasks-axi mv [<id>...]' ;;
+  "list "*)
+    printf '%s\n' 'count: 1' 'tasks[1]{id,state,kind,repo,title,hold_kind,hold_reason,body}:' \
+      '  old-question,done,captain,sample,Old question,"-","-","Resolution recorded by fm-captain-hold.\n... (truncated, 900 chars total - use show old-question --full to see complete text)"'
+    ;;
+  "show old-question")
+    printf '%s\n' 'task:' '  id: old-question' '  state: done' '  title: Old question' '  hold_kind: "-"' \
+      '  hold_reason: "-"' '  body: "Captain hold class: business\nCaptain hold decision: 777"'
+    ;;
+  "show "*) printf '%s\n' 'code: NOT_FOUND'; exit 1 ;;
+  *) exit 1 ;;
+esac
+SH
+  sed -i.bak "s|@LOG@|$log|g" "$fb/tasks-axi"
+  rm -f "$fb/tasks-axi.bak"
+  chmod +x "$fb/tasks-axi"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-captain-hold.sh" hold new-question --class business --title "New question" \
+    --reason "777: reuse the number" >/dev/null 2> "$home/cut.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a number carried only past the cut of a listed row was reused"
+  assert_grep "old-question" "$home/cut.err" "the refusal did not name the row whose full body carries the number"
+  assert_grep "show old-question --full" "$log" "the cut row was never re-read in full"
+  assert_no_grep "add new-question" "$log" "a refused reused number still created its task"
+  pass "a hold re-reads a cut row in full on a non-markdown backend before checking its number"
 }
 
 test_hold_reason_round_trips_awkward_characters
@@ -5071,3 +5224,7 @@ test_captain_hold_mutations_address_the_beads_backend
 test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
 test_archived_answered_hold_still_satisfies_the_gate
 test_archived_answer_in_a_user_configured_archive_satisfies_the_gate
+test_hold_requires_a_business_or_action_class
+test_hold_refuses_a_decision_number_another_question_used
+test_hold_shows_recorded_answers_on_the_same_task_or_origin
+test_hold_rereads_a_cut_row_on_a_non_markdown_backend

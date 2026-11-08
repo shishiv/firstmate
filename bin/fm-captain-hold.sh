@@ -20,7 +20,7 @@
 # and secondmate-home ownership aligned with the work that discovered the call.
 #
 # Usage:
-#   fm-captain-hold.sh hold <task-id> --reason <reason> \
+#   fm-captain-hold.sh hold <task-id> --reason <reason> --class <business|action> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
@@ -57,6 +57,21 @@
 # `--until` records the captain's own deferral date through `tasks-axi hold
 # --until`, so a "revisit later" answer is stored as a date instead of a live
 # card.
+#
+# Every hold checks the question before it changes anything. `--class` is
+# required: `business` is a call that is the captain's to make (money, legal or
+# public text, customers and partners, what to sell), `action` is a step only
+# the captain can take (a login, a button in their own account), and
+# `technical` is refused with the instruction to decide by the recommendation
+# and record one line, because a technical choice is never the captain's call.
+# The class is recorded on a `Captain hold class:` body line. A reason that
+# opens with a decision number ("240: ...") is refused when another task in
+# this home's backlog or Done archive already carried that number, and the
+# refusal names the next unused number; the hold records its number on an
+# accumulating `Captain hold decision:` body line, so releasing the hold does
+# not free it. After a successful hold, the answers already recorded on this
+# task, on its origin, or on other questions held for that origin are printed
+# on stderr, so an answered question is not asked again.
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
@@ -834,9 +849,11 @@ write_hold_set_stamp() {  # <task-id> <shown-body> <timestamp> <preserve-existin
   rm -f -- "$tmp"
 }
 
-# The origin a hold was recorded for lives in the held task's own body, on a
-# line of its own, so `complete` can tell a call held for this origin from one
-# held for another. Omitting --origin leaves any existing association intact.
+# A hold's annotations live in the held task's own body, on lines of their own
+# right under the stamp: the origin it was recorded for, so `complete` can tell
+# a call held for this origin from one held for another, then the class and the
+# decision numbers the header describes. Omitting --origin keeps any existing
+# origin.
 body_hold_origin() {  # <decoded-task-body>
   printf '%s\n' "$1" | sed -n 's/^Captain hold origin: \(.*\)$/\1/p' | head -1
 }
@@ -852,28 +869,38 @@ task_identity() {
   printf '%s' "$id"
 }
 
-write_hold_origin() {  # <task-id> <shown-body> <origin>
-  local id=$1 body=$2 origin=$3 stamp rest new_body tmp
+write_hold_annotations() {  # <task-id> <shown-body> <origin-or-empty> <class> <decision-number-or-empty>
+  local id=$1 body=$2 origin=$3 class=$4 number=$5 stamp rest numbers n new_body tmp
   body=$(decode_shown_value "$body") \
     || fail "could not decode the existing body for $id"
   stamp=$(printf '%s\n' "$body" | sed -n 1p)
   [ -n "$(body_hold_set_timestamp "$body")" ] \
-    || fail "task $id lost its hold-set stamp before its origin was recorded"
-  rest=$(printf '%s\n' "$body" | sed 1d | awk '!/^Captain hold origin: /' \
+    || fail "task $id lost its hold-set stamp before its annotations were recorded"
+  [ -n "$origin" ] || origin=$(body_hold_origin "$body")
+  numbers=$({
+    printf '%s\n' "$body" | sed -n 's/^Captain hold decision: \([0-9][0-9]*\)$/\1/p'
+    [ -z "$number" ] || printf '%s\n' "$number"
+  } | awk '!seen[$0]++')
+  rest=$(printf '%s\n' "$body" | sed 1d | awk '!/^Captain hold (origin|class|decision): /' \
     | awk 'NF || started { started = 1; print }')
-  new_body=$(printf '%s\nCaptain hold origin: %s' "$stamp" "$origin")
+  new_body=$stamp
+  [ -z "$origin" ] || new_body=$(printf '%s\nCaptain hold origin: %s' "$new_body" "$origin")
+  new_body=$(printf '%s\nCaptain hold class: %s' "$new_body" "$class")
+  for n in $numbers; do
+    new_body=$(printf '%s\nCaptain hold decision: %s' "$new_body" "$n")
+  done
   if [ -n "$rest" ]; then
     new_body=$(printf '%s\n\n%s' "$new_body" "$rest")
   fi
-  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-captain-hold-origin.XXXXXX") \
-    || fail "cannot stage the hold origin"
+  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-captain-hold-annotations.XXXXXX") \
+    || fail "cannot stage the hold annotations"
   if ! printf '%s\n' "$new_body" > "$tmp"; then
     rm -f -- "$tmp"
-    fail "cannot stage the hold origin for $id"
+    fail "cannot stage the hold annotations for $id"
   fi
   if ! tasks_axi update "$id" --body-file "$tmp" >/dev/null; then
     rm -f -- "$tmp"
-    printf 'fm-captain-hold: could not record the hold origin on %s\n' "$id" >&2
+    printf 'fm-captain-hold: could not record the hold annotations on %s\n' "$id" >&2
     return 1
   fi
   rm -f -- "$tmp"
@@ -1079,15 +1106,184 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
   printf '%s %s %s\n' "$id" "$how" "$origin_state"
 }
 
+# --- question checks at hold time -------------------------------------------
+#
+# The header's hold section owns what the checks are. They read every question
+# in this home once, before the hold changes anything, as one JSON object per
+# row carrying the full title, hold kind, decoded hold reason, and body.
+# `tasks-axi list` cuts long fields, so the markdown backend reads the backlog
+# file and the Done archive directly, the way bin/fm-session-start.sh reads the
+# backlog, and any other backend re-reads a cut row with `show --full`.
+
+# Markdown rows on stdin, reasons already decoded; one JSON row per line out.
+captain_markdown_rows() {
+  perl -MJSON::PP -e '
+    use strict;
+    use warnings;
+    binmode STDIN, ":encoding(UTF-8)";
+    binmode STDOUT, ":encoding(UTF-8)";
+    my $json = JSON::PP->new->canonical->allow_nonref;
+    my $row;
+    sub emit {
+      return unless $row;
+      $row->{body} =~ s/\n+\z//;
+      print $json->encode($row), "\n";
+      undef $row;
+    }
+    while (my $line = <STDIN>) {
+      chomp $line;
+      if ($line =~ /^[-*] \[.\] (\S+)(?: - (.*))?$/) {
+        emit();
+        my ($id, $rest) = ($1, $2 // "");
+        my ($title) = $rest =~ /^(.*?)(?: \((?:repo|kind|since|done|priority|hold|hold-kind|hold-until)\b.*)?$/;
+        my $reason = "";
+        if ($rest =~ /\(hold: ("(?:[^"\\]|\\.)*")\)/) { $reason = $json->decode($1); }
+        elsif ($rest =~ /\(hold: ([^)]*)\)/) { $reason = $1; }
+        my ($kind) = $rest =~ /\(hold-kind: ([^)\s]+)\)/;
+        $row = { id => $id, title => $title // "", hold_kind => $kind // "", hold_reason => $reason, body => "" };
+        next;
+      }
+      if ($line =~ /^#/ || $line =~ /^\S/) { emit(); next; }
+      next unless $row;
+      $line =~ s/^  //;
+      $row->{body} .= "$line\n" if length $row->{body} || length $line;
+    }
+    emit();
+  '
+}
+
+# A `tasks-axi list` or `show --full` TOON on stdin, reasons already decoded;
+# one JSON row per line out, with "cut" set on a row whose fields were cut.
+captain_toon_rows() {
+  perl -MJSON::PP -e '
+    use strict;
+    use warnings;
+    binmode STDIN, ":encoding(UTF-8)";
+    binmode STDOUT, ":encoding(UTF-8)";
+    my $json = JSON::PP->new->canonical->allow_nonref;
+    my (@names, %task);
+    sub value { my ($raw) = @_; my $v = $raw =~ /^"/ ? $json->decode($raw) : $raw; return $v eq "-" ? "" : $v; }
+    sub emit {
+      my ($row) = @_;
+      my %out = map { $_ => $row->{$_} // "" } qw(id title hold_kind hold_reason body);
+      $out{cut} = 1 if grep { /\n\.\.\. \(truncated, \d+ chars total/ } values %out;
+      print $json->encode(\%out), "\n";
+    }
+    while (my $line = <STDIN>) {
+      chomp $line;
+      if ($line =~ /^tasks\[\d+\]\{([^}]*)\}:$/) { @names = split /,/, $1; next; }
+      if ($line eq "task:") { %task = (); @names = (); next; }
+      if (@names && $line =~ /^  (.*)$/) {
+        my @fields = $1 =~ /("(?:[^"\\]|\\.)*"|[^,]+)/g;
+        emit({ map { $names[$_] => value($fields[$_] // "-") } 0 .. $#names });
+        next;
+      }
+      if (!@names && $line =~ /^  ([a-z_]+): (.*)$/) { $task{$1} = value($2); next; }
+      @names = ();
+    }
+    emit(\%task) if exists $task{id};
+  '
+}
+
+CAPTAIN_QUESTIONS=
+load_captain_questions() {  # sets CAPTAIN_QUESTIONS to one JSON row per line
+  local data root backend file archive listing id
+  data=$(fm_backlog_data_absolute "$DATA") || fail "data directory cannot be resolved: $DATA"
+  root=$(fm_backlog_root "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
+  backend=$(fm_tasks_axi_backend "$root") || fail "could not read this home's backlog backend"
+  if [ "$backend" = markdown ]; then
+    file=$(fm_backlog_file "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
+    archive=$(captain_markdown_archive_path) || archive=
+    [ -f "$archive" ] || archive=
+    CAPTAIN_QUESTIONS=$(cat -- "$file" ${archive:+"$archive"} | fm_hold_reason_decode_stream markdown \
+      | captain_markdown_rows) || fail "could not read this home's backlog to check the question"
+    return 0
+  fi
+  listing=$(tasks_axi list --limit 1000000 --fields hold_kind,hold_reason,body \
+    | fm_hold_reason_decode_stream toon | captain_toon_rows) \
+    || fail "could not read this home's backlog to check the question"
+  CAPTAIN_QUESTIONS=$(printf '%s\n' "$listing" | grep -v '"cut":1' || true)
+  for id in $(printf '%s\n' "$listing" | jq -r 'select(.cut == 1) | .id'); do
+    task_show_or_fail "$id" "could not re-read $id to check the question"
+    CAPTAIN_QUESTIONS=$(printf '%s\n%s' "$CAPTAIN_QUESTIONS" \
+      "$(printf '%s\n' "$show" | fm_hold_reason_decode_stream toon | captain_toon_rows)")
+  done
+}
+
+# Reads the rows on stdin. `numbers` prints "<number>\t<task-id>" for every
+# decision number a task carried; `answers <task-id> <origin>` prints the
+# recorded answers to questions on that task or origin.
+captain_question_report() {  # numbers | answers <task-id> <origin-or-empty>
+  perl -MJSON::PP -e '
+    use strict;
+    use warnings;
+    binmode STDIN, ":encoding(UTF-8)";
+    binmode STDOUT, ":encoding(UTF-8)";
+    my ($mode, $self, $origin) = @ARGV;
+    my $json = JSON::PP->new->allow_nonref;
+    my @rows = map { $json->decode($_) } grep { /\S/ } <STDIN>;
+    sub row_origin {
+      my ($row) = @_;
+      my ($found) = $row->{body} =~ /^(?:Captain hold origin|Origin): (\S+)$/m;
+      return $found;
+    }
+    if ($mode eq "numbers") {
+      for my $row (@rows) {
+        my %numbers;
+        $numbers{$1 + 0} = 1
+          if $row->{hold_kind} eq "captain" && $row->{hold_reason} =~ /\A([0-9]{1,9}):/;
+        $numbers{$_ + 0} = 1 for $row->{body} =~ /^Captain hold decision: ([0-9]{1,9})$/mg;
+        print "$_\t$row->{id}\n" for sort { $a <=> $b } keys %numbers;
+      }
+      exit 0;
+    }
+    unless (length($origin // "")) {
+      for my $row (@rows) { next unless $row->{id} eq $self; $origin = row_origin($row) // ""; last; }
+    }
+    my %subject = map { $_ => 1 } grep { length } ($self, $origin);
+    my (%seen, @out);
+    for my $row (@rows) {
+      my $row_origin = row_origin($row);
+      next unless $subject{$row->{id}} || (defined $row_origin && $subject{$row_origin});
+      my @lines = split /\n/, $row->{body};
+      for (my $i = 0; $i < @lines; $i++) {
+        next unless $lines[$i] =~ /^Resolution recorded by fm-(?:captain|decision)-hold\.$/;
+        my ($digest, $how, @text) = ("", "answered");
+        my $j = $i + 1;
+        for (; $j < @lines; $j++) {
+          last if $lines[$j] =~ /^(?:Captain decision|Reconciliation evidence):$/;
+          $digest = $1 if $lines[$j] =~ /^Decision digest: (\S+)/;
+          $how = $1 if $lines[$j] =~ /^Resolution mode: (\S+)/;
+        }
+        for ($j++; $j < @lines; $j++) {
+          last if $lines[$j] =~ /^(?:Resolution recorded by fm-|Captain hold (?:set|origin|class|decision): |Origin: )/;
+          push @text, $lines[$j];
+        }
+        pop @text while @text && $text[-1] !~ /\S/;
+        next if $seen{"$row->{id}\t$digest"}++;
+        my $cut = @text > 8;
+        splice @text, 8 if $cut;
+        push @out, "- $row->{id} ($how): $row->{title}", map({ "    $_" } @text);
+        push @out, "    ..." if $cut;
+      }
+    }
+    exit 0 unless @out;
+    print "fm-captain-hold: questions on this task or its origin already have answers; when one still applies, answer this hold with it instead of asking again:\n";
+    print "$_\n" for @out;
+  ' "$@"
+}
+
 command_hold() {
-  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
+  local id=${1:-} title='' reason='' class='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
   local existing_hold_kind='' existing_held='' preserve_hold_set=0 stored_reason original_body='' hold_status=0
+  local number='' used_numbers holders next_number
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --title) shift; title=${1:-} ;;
       --reason) shift; reason=${1:-} ;;
+      --class) shift; class=${1:-} ;;
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
@@ -1097,6 +1293,16 @@ command_hold() {
   done
   validate_slug task-id "$id"
   [ -n "$reason" ] || fail "reason must not be empty"
+  case "$class" in
+    business|action) : ;;
+    technical)
+      fail "task $id is a technical question, which is not the captain's call; decide it by your own recommendation, record one line with the choice and the reason, and go on without holding it"
+      ;;
+    '') fail "--class is required: business (a call that is the captain's to make, such as money, legal or public text, customers, or what to sell) or action (a step only the captain can take, such as a login); technical questions are refused" ;;
+    *) fail "--class must be business, action, or technical: $class" ;;
+  esac
+  number=$(printf '%s\n' "$reason" | sed -n '1s/^\([0-9]\{1,9\}\):.*/\1/p')
+  [ -z "$number" ] || number=$((10#$number))
   # bin/fm-hold-reason-lib.sh owns the storage constraint and reversible encoding.
   stored_reason=$(fm_hold_reason_encode "$reason") || fail "could not encode the hold reason"
   if [ -n "$origin" ]; then
@@ -1115,6 +1321,19 @@ command_hold() {
   esac
   acquire_task_control_lock "$id"
   require_tasks_axi
+  load_captain_questions
+  if [ -n "$number" ]; then
+    used_numbers=$(printf '%s\n' "$CAPTAIN_QUESTIONS" | captain_question_report numbers) \
+      || fail "could not read the decision numbers in this home's backlog"
+    holders=$(printf '%s\n' "$used_numbers" \
+      | awk -F '\t' -v n="$number" -v self="$id" '$1 == n && $2 != self { print $2 }' \
+      | LC_ALL=C sort -u | paste -sd, -)
+    if [ -n "$holders" ]; then
+      next_number=$(printf '%s\n' "$used_numbers" \
+        | awk -F '\t' 'BEGIN { m = 0 } $1 + 0 > m { m = $1 + 0 } END { print m + 1 }')
+      fail "decision number $number already belongs to another question ($holders); open this question with the next unused number, $next_number"
+    fi
+  fi
   if task_show "$id"; then
     show=$TASK_SHOW_OUTPUT
     state=$(show_field "$show" state)
@@ -1186,9 +1405,8 @@ command_hold() {
     || fail "task $id lost its hold-set stamp while being held"
   occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
-  if [ -n "$origin" ]; then
-    write_hold_origin "$id" "$(show_field "$show" body)" "$origin" || exit $?
-  fi
+  write_hold_annotations "$id" "$(show_field "$show" body)" "$origin" "$class" "$number" || exit $?
+  printf '%s\n' "$CAPTAIN_QUESTIONS" | captain_question_report answers "$id" "$origin" >&2 || true
   printf '%s\n' "$id"
 }
 

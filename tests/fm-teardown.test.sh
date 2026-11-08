@@ -782,7 +782,7 @@ test_local_only_fork_remote_allows() {
 hold_task_for_captain() {  # <case-dir>
   FM_HOME="$1" FM_STATE_OVERRIDE="$1/state" \
     FM_DATA_OVERRIDE="$1/data" FM_CONFIG_OVERRIDE="$1/config" \
-    "$ROOT/bin/fm-captain-hold.sh" hold task-x1 --reason "captain must decide" >/dev/null \
+    "$ROOT/bin/fm-captain-hold.sh" hold task-x1 --class business --reason "captain must decide" >/dev/null \
     || fail "could not hold task-x1 for the captain"
 }
 

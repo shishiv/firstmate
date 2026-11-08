@@ -50,12 +50,14 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 The `hold` subcommand is the mandatory captain-hold creation path.
 It works in this order:
 
-1. It uses an existing task, or creates one when nothing exists to hold.
-2. It records the task's UTC hold-set timestamp as the leading line of the task body.
-3. It invokes the underlying tasks-axi hold operation.
-4. It verifies the captain-hold annotations and timestamp.
-5. In a secondmate home, it publishes the verified hold to the parent channel.
-6. When `--origin` is supplied, it records the origin on the task, replacing any previous association only after the backend hold succeeds.
+1. It checks the question before changing anything: `--class` must be `business` or `action`, a reason that opens with a decision number another task in this home's backlog or Done archive already carried is refused, and the backlog and archive it read are kept for step 8.
+2. It uses an existing task, or creates one when nothing exists to hold.
+3. It records the task's UTC hold-set timestamp as the leading line of the task body.
+4. It invokes the underlying tasks-axi hold operation.
+5. It verifies the captain-hold annotations and timestamp.
+6. In a secondmate home, it publishes the verified hold to the parent channel.
+7. It records the class, the decision number, and the origin when `--origin` is supplied on body lines under the stamp, replacing any previous origin only after the backend hold succeeds.
+8. It prints on stderr the answers already recorded on the task, on its origin, or on other questions held for that origin.
 
 Publishing the stamp first ensures a snapshot cannot observe a newly captain-held task without the timestamp that defines its age.
 
@@ -64,6 +66,8 @@ Repeat and edge cases:
 - Retries of an active hold preserve its hold-set timestamp.
 - Re-holding released work starts a new timestamped lifecycle.
 - A closed task is refused rather than reopened.
+- Decision numbers accumulate on `Captain hold decision:` body lines, so a released hold, which drops its reason, still keeps its number taken.
+  A re-hold of the same task may repeat its own number.
 - `--until` stores the captain's own deferral date through tasks-axi's date gate.
 - `--origin` resolves the backend origin identity before writing the hold-set stamp.
   The association lives on its own `Captain hold origin:` body line; [completion inventory checks](#recording-a-reviewed-inventory-complete) own how it is verified.
