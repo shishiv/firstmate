@@ -125,14 +125,6 @@ cmd_source_id() {
   printf 'when-%s\n' "$name"
 }
 
-positive_int() { case "${1-}" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac }
-
-positive_number() {
-  local n=${1-}
-  local LC_ALL=C
-  [[ "$n" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
-  [ "$n" != 0 ] && [[ ! "$n" =~ ^0+(\.0+)?$ ]]
-}
 
 action_executable() {  # <argv-zero>: print the executable's absolute path
   local command=$1 found dir base
@@ -161,12 +153,12 @@ cmd_arm() {
   sid="when-$name"
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --interval)          positive_number "${2-}" || die "--interval needs a positive number of seconds"; interval=$2; shift 2 ;;
-      --stable)            positive_int "${2-}" || die "--stable needs a positive integer"; stable=$2; shift 2 ;;
-      --deadline)          positive_int "${2-}" || die "--deadline needs a positive integer of seconds"; deadline=$2; shift 2 ;;
-      --condition-timeout) positive_int "${2-}" || die "--condition-timeout needs a positive integer of seconds"; condition_timeout=$2; shift 2 ;;
-      --action-timeout)    positive_int "${2-}" || die "--action-timeout needs a positive integer of seconds"; action_timeout=$2; shift 2 ;;
-      --error-budget)      positive_int "${2-}" || die "--error-budget needs a positive integer"; error_budget=$2; shift 2 ;;
+      --interval)          fm_procevent_positive_number "${2-}" || die "--interval needs a positive number of seconds"; interval=$2; shift 2 ;;
+      --stable)            fm_procevent_positive_int "${2-}" || die "--stable needs a positive integer"; stable=$2; shift 2 ;;
+      --deadline)          fm_procevent_positive_int "${2-}" || die "--deadline needs a positive integer of seconds"; deadline=$2; shift 2 ;;
+      --condition-timeout) fm_procevent_positive_int "${2-}" || die "--condition-timeout needs a positive integer of seconds"; condition_timeout=$2; shift 2 ;;
+      --action-timeout)    fm_procevent_positive_int "${2-}" || die "--action-timeout needs a positive integer of seconds"; action_timeout=$2; shift 2 ;;
+      --error-budget)      fm_procevent_positive_int "${2-}" || die "--error-budget needs a positive integer"; error_budget=$2; shift 2 ;;
       --condition)
         shift
         while [ "$#" -gt 0 ] && [ "$1" != --action ]; do cond+=("$1"); shift; done
@@ -312,16 +304,16 @@ spec_load() {
   } < "$spec"
   [ -z "$SPEC_ERROR" ] || return 1
   case "$SPEC_ARMED" in ''|*[!0-9]*) SPEC_ERROR="spec armed epoch is malformed"; return 1 ;; esac
-  positive_number "$SPEC_INTERVAL" || { SPEC_ERROR="spec interval is malformed"; return 1; }
-  positive_int "$SPEC_STABLE" || { SPEC_ERROR="spec stable count is malformed"; return 1; }
-  positive_int "$SPEC_DEADLINE" || { SPEC_ERROR="spec deadline is malformed"; return 1; }
-  positive_int "$SPEC_CONDITION_TIMEOUT" || { SPEC_ERROR="spec condition timeout is malformed"; return 1; }
-  positive_int "$SPEC_ACTION_TIMEOUT" || { SPEC_ERROR="spec action timeout is malformed"; return 1; }
-  positive_int "$SPEC_ERROR_BUDGET" || { SPEC_ERROR="spec error budget is malformed"; return 1; }
+  fm_procevent_positive_number "$SPEC_INTERVAL" || { SPEC_ERROR="spec interval is malformed"; return 1; }
+  fm_procevent_positive_int "$SPEC_STABLE" || { SPEC_ERROR="spec stable count is malformed"; return 1; }
+  fm_procevent_positive_int "$SPEC_DEADLINE" || { SPEC_ERROR="spec deadline is malformed"; return 1; }
+  fm_procevent_positive_int "$SPEC_CONDITION_TIMEOUT" || { SPEC_ERROR="spec condition timeout is malformed"; return 1; }
+  fm_procevent_positive_int "$SPEC_ACTION_TIMEOUT" || { SPEC_ERROR="spec action timeout is malformed"; return 1; }
+  fm_procevent_positive_int "$SPEC_ERROR_BUDGET" || { SPEC_ERROR="spec error budget is malformed"; return 1; }
   [[ "$SPEC_ACTION_SHA256" =~ ^[0-9a-f]{64}$ ]] \
     || { SPEC_ERROR="spec action hash is malformed"; return 1; }
-  positive_int "${cond_argc:-}" || { SPEC_ERROR="spec condition argc is malformed"; return 1; }
-  positive_int "${act_argc:-}" || { SPEC_ERROR="spec action argc is malformed"; return 1; }
+  fm_procevent_positive_int "${cond_argc:-}" || { SPEC_ERROR="spec condition argc is malformed"; return 1; }
+  fm_procevent_positive_int "${act_argc:-}" || { SPEC_ERROR="spec action argc is malformed"; return 1; }
   [ "$read_cond" -eq "$cond_argc" ] && [ "$read_act" -eq "$act_argc" ] \
     || { SPEC_ERROR="spec argv is incomplete"; return 1; }
 }
@@ -359,7 +351,7 @@ cmd_run() {
   fm_procevent_source_id_valid "$sid" || die "source id must be path-safe: $sid"
   fired=$(fired_file "$sid")
 
-  if ! positive_int "$OUTPUT_TAIL_BYTES"; then
+  if ! fm_procevent_positive_int "$OUTPUT_TAIL_BYTES"; then
     emit_doc "$sid" rejected "FM_WHEN_OUTPUT_TAIL_BYTES must be a positive integer; nothing was executed" 0 '' ''
     exit 0
   fi
@@ -476,18 +468,11 @@ cmd_run() {
 
 # Read the status field from the document's leading block. The read stops at
 # the output: marker, so captured command output can never forge the status.
-result_status() {  # <result-file>
-  awk '
-    $0 == "output:" { exit }
-    /^status: / { sub(/^status: /, ""); print; exit }
-  ' "$1"
-}
-
 cmd_classify() {
   local file=${1-} status
   [ -n "$file" ] || usage
   [ -f "$file" ] || die "result file does not exist: $file"
-  status=$(result_status "$file")
+  status=$(fm_procevent_result_status "$file")
   case "$status" in
     fired|action-failed|condition-error|never-true|ambiguous|rejected)
       printf '%s\n' "$status" ;;
