@@ -67,6 +67,8 @@
 # sibling library performs).
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-shell-quote-lib.sh"
 
 # The worker facet name firstmate generates into the task worktree. A facet
 # is the complete system-prompt framing, so this is the worker role contract
@@ -139,11 +141,6 @@ fm_polytoken_json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-# fm_polytoken_shell_quote: quote <text> for a generated bash script body.
-fm_polytoken_shell_quote() {
-  printf "'%s'" "${1//\'/\'\\\'\'}"
-}
-
 # fm_polytoken_write_config: mirror the operator's global config.yaml into
 # the per-task config dir and enforce the unattended permission posture.
 # Polytoken's only launch-time autonomy control is the config key
@@ -205,7 +202,7 @@ polytoken:
 
 You are a crewmate: an autonomous worker agent managed by Firstmate, your supervising orchestrator for the same human operator. Do the assigned work yourself and work on your own. Report only to Firstmate through your task's status record; do not adopt a supervisor identity, do not delegate the task, and do not wait for a human. The launch brief named by the initial user message is your task contract.
 
-Your Firstmate instruction inbox is at $(fm_polytoken_shell_quote "$inbox"): when a message says an instruction is waiting there, list the inbox's *.msg files, read and act on each message in numeric order, then acknowledge each handled message by moving it into the inbox's handled/ directory.
+Your Firstmate instruction inbox is at $(fm_shell_quote "$inbox"): when a message says an instruction is waiting there, list the inbox's *.msg files, read and act on each message in numeric order, then acknowledge each handled message by moving it into the inbox's handled/ directory.
 
 The tool_flow tool cannot read the Firstmate task directory your brief names for proof and scratch output, because it is outside this worktree; for paths there, call file_read and file_write directly or use the shell.
 
@@ -238,11 +235,11 @@ FM_BUSY_EVENT=\${POLYTOKEN_HOOK_EVENT:-}
 FM_BUSY_EVENT=\${FM_BUSY_EVENT//_/-}
 case "\$FM_BUSY_EVENT" in
   pre-user-prompt|pre-model-turn)
-    $(fm_polytoken_shell_quote "$fm_root/bin/fm-busy-event.sh") apply $(fm_polytoken_shell_quote "$state_real") $(fm_polytoken_shell_quote "$id") busy --gen $(fm_polytoken_shell_quote "$gen") --source polytoken-hook --event "\$FM_BUSY_EVENT" >/dev/null 2>&1 || true
+    $(fm_shell_quote "$fm_root/bin/fm-busy-event.sh") apply $(fm_shell_quote "$state_real") $(fm_shell_quote "$id") busy --gen $(fm_shell_quote "$gen") --source polytoken-hook --event "\$FM_BUSY_EVENT" >/dev/null 2>&1 || true
     ;;
   stop)
-    touch $(fm_polytoken_shell_quote "$turnend") 2>/dev/null || true
-    $(fm_polytoken_shell_quote "$fm_root/bin/fm-busy-event.sh") apply $(fm_polytoken_shell_quote "$state_real") $(fm_polytoken_shell_quote "$id") idle --gen $(fm_polytoken_shell_quote "$gen") --source polytoken-hook --event stop >/dev/null 2>&1 || true
+    touch $(fm_shell_quote "$turnend") 2>/dev/null || true
+    $(fm_shell_quote "$fm_root/bin/fm-busy-event.sh") apply $(fm_shell_quote "$state_real") $(fm_shell_quote "$id") idle --gen $(fm_shell_quote "$gen") --source polytoken-hook --event stop >/dev/null 2>&1 || true
     ;;
 esac
 exit 0

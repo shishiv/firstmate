@@ -35,11 +35,12 @@ KEEP=${FM_KEEP_AI_TRAILERS:-0}
 case "$ID" in ''|*[!A-Za-z0-9._-]*) echo 'error: invalid task id' >&2; exit 1 ;; esac
 [ -d "$STATE" ] || { echo 'error: state directory missing' >&2; exit 1; }
 STATE=$(cd "$STATE" && pwd -P)
-quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-prefix="$(quote "$SCRIPT_DIR/fm-busy-event.sh") apply $(quote "$STATE") $(quote "$ID")"
-suffix="--gen $(quote "$GEN") --source devin-hook"
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$SCRIPT_DIR/fm-shell-quote-lib.sh"
+prefix="$(fm_shell_quote "$SCRIPT_DIR/fm-busy-event.sh") apply $(fm_shell_quote "$STATE") $(fm_shell_quote "$ID")"
+suffix="--gen $(fm_shell_quote "$GEN") --source devin-hook"
 submit="$prefix busy $suffix --event user-prompt-submit >/dev/null 2>&1 || true"
-stop="$prefix idle $suffix --event stop >/dev/null 2>&1 && touch $(quote "$STATE/$ID.turn-ended"); true"
+stop="$prefix idle $suffix --event stop >/dev/null 2>&1 && touch $(fm_shell_quote "$STATE/$ID.turn-ended"); true"
 end="$prefix idle $suffix --event session-end >/dev/null 2>&1 || true"
 if [ ! -e "$SOURCE" ] && [ ! -L "$SOURCE" ]; then SOURCE=/dev/null; fi
 umask 077

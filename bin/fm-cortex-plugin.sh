@@ -37,9 +37,10 @@ GEN=${3:?busy generation required}
 case "$ID" in ''|*[!A-Za-z0-9._-]*) echo 'error: invalid task id' >&2; exit 1 ;; esac
 [ -d "$STATE" ] || { echo 'error: state directory missing' >&2; exit 1; }
 STATE=$(cd "$STATE" && pwd -P)
-quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-prefix="$(quote "$SCRIPT_DIR/fm-busy-event.sh") apply $(quote "$STATE") $(quote "$ID")"
-suffix="--gen $(quote "$GEN") --source cortex-hook"
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$SCRIPT_DIR/fm-shell-quote-lib.sh"
+prefix="$(fm_shell_quote "$SCRIPT_DIR/fm-busy-event.sh") apply $(fm_shell_quote "$STATE") $(fm_shell_quote "$ID")"
+suffix="--gen $(fm_shell_quote "$GEN") --source cortex-hook"
 report() {  # <working|idle|release>
   local verb=report-agent tail="--state $1"
   if [ "$1" = release ]; then verb=release-agent; tail=; fi

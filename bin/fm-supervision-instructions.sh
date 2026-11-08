@@ -145,13 +145,10 @@ else
   omp_restart_short='restart omp inside this home'
 fi
 
-shell_quote() {
-  printf "'"
-  printf '%s' "$1" | sed "s/'/'\\\\''/g"
-  printf "'"
-}
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$SCRIPT_DIR/fm-shell-quote-lib.sh"
 
-x_mode_env_sh=$(shell_quote "$x_mode_env")
+x_mode_env_sh=$(fm_shell_quote "$x_mode_env")
 
 if [ "$X_MODE" -eq 0 ] && [ -f "$x_mode_env" ]; then
   X_MODE=1

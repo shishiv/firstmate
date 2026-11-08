@@ -2625,11 +2625,8 @@ else
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
-shell_quote() {
-  printf "'"
-  printf '%s' "$1" | sed "s/'/'\\\\''/g"
-  printf "'"
-}
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$SCRIPT_DIR/fm-shell-quote-lib.sh"
 
 resolve_pi_executable() {
   local candidate dir
@@ -3271,7 +3268,7 @@ pi | pi-signed)
   fi
   LAUNCH=${LAUNCH//__PIAPPROVE__/$PI_APPROVE}
   PI_EXCLUDE=
-  [ -z "$EXCLUDE_TOOLS" ] || PI_EXCLUDE=" --exclude-tools $(shell_quote "$EXCLUDE_TOOLS")"
+  [ -z "$EXCLUDE_TOOLS" ] || PI_EXCLUDE=" --exclude-tools $(fm_shell_quote "$EXCLUDE_TOOLS")"
   LAUNCH=${LAUNCH//__PIEXCLUDE__/$PI_EXCLUDE}
   LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
   ;;
@@ -3674,7 +3671,7 @@ relaunch_resume_args() {  # <harness> <backend> <target>
   ref=${identity#*$'\t'}
   flag=$(fm_control_relaunch_resume_flag "$harness" "$agent") || return 0
   [ -n "$flag" ] && [ -n "$ref" ] || return 0
-  printf -- ' %s %s' "$flag" "$(shell_quote "$ref")"
+  printf -- ' %s %s' "$flag" "$(fm_shell_quote "$ref")"
 }
 
 model_flag_for_harness() {
@@ -3687,17 +3684,17 @@ model_flag_for_harness() {
     # effort_flag_for_harness instead. The caller normalizes an undetected
     # (empty/unparseable) major to 1, so only a parsed major >= 2 omits --model.
     [ "$oc_major" = 1 ] || return 0
-    printf -- '--model %s ' "$(shell_quote "$model")"
+    printf -- '--model %s ' "$(fm_shell_quote "$model")"
     ;;
   claude | codex | pi | pi-signed | grok | kimi | cursor | gemini | muse | rovo | omp | agy | devin | commandcode | cortex | kiro-cli | kirocrew)
-    printf -- '--model %s ' "$(shell_quote "$model")"
+    printf -- '--model %s ' "$(fm_shell_quote "$model")"
     ;;
   # polytoken encodes reasoning effort inside the model reference, so the
   # flag carries the composed reference fm_polytoken_model_ref validated
   # above, including the model-scoped reasoning level, never an unpinned
   # fallback to the bare model axis.
   polytoken)
-    printf -- '--model %s ' "$(shell_quote "${POLYTOKEN_MODEL_REF:-$model}")"
+    printf -- '--model %s ' "$(fm_shell_quote "${POLYTOKEN_MODEL_REF:-$model}")"
     ;;
   esac
 }
@@ -3710,7 +3707,7 @@ effort_flag_for_harness() {
   case "$harness" in
   claude)
     case "$effort" in
-    low | medium | high | xhigh | max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high | xhigh | max) printf -- '--effort %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   codex)
@@ -3718,10 +3715,10 @@ effort_flag_for_harness() {
     # installed model catalog supports max for gpt-5.6-luna; keep that level
     # scoped to the model whose catalog entry advertises it.
     case "$effort" in
-    low | medium | high | xhigh) printf -- '-c %s ' "$(shell_quote "model_reasoning_effort=\"$effort\"")" ;;
+    low | medium | high | xhigh) printf -- '-c %s ' "$(fm_shell_quote "model_reasoning_effort=\"$effort\"")" ;;
     max)
       [ "$model" = gpt-5.6-luna ] || return 0
-      printf -- '-c %s ' "$(shell_quote 'model_reasoning_effort="max"')"
+      printf -- '-c %s ' "$(fm_shell_quote 'model_reasoning_effort="max"')"
       ;;
     esac
     ;;
@@ -3731,7 +3728,7 @@ effort_flag_for_harness() {
     # only low|medium|high and rejects both xhigh and max, so omit those rather
     # than passing a known-bad value.
     case "$effort" in
-    low | medium | high) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high) printf -- '--reasoning-effort %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   cortex)
@@ -3739,14 +3736,14 @@ effort_flag_for_harness() {
     # from --help), so xhigh is omitted rather than passed as a known-bad
     # value (record-and-omit).
     case "$effort" in
-    low | medium | high | max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high | max) printf -- '--effort %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   agy)
     # agy 1.2.0 --effort accepts exactly low|medium|high, so xhigh and max are
     # omitted rather than passed as known-bad values (record-and-omit).
     case "$effort" in
-    low | medium | high) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high) printf -- '--effort %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   kiro-cli)
@@ -3756,14 +3753,14 @@ effort_flag_for_harness() {
     # across. max is only ever reached through an explicit captain choice
     # (AGENTS.md section 4); the fallback never selects it.
     case "$effort" in
-    low | medium | high | xhigh | max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high | xhigh | max) printf -- '--effort %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   kirocrew)
     # Kiro Crew sets a chat's reasoning effort from the five standard levels and
     # refuses any other value (effort_rejected), so only those pass.
     case "$effort" in
-    low | medium | high | xhigh | max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high | xhigh | max) printf -- '--effort %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   commandcode)
@@ -3773,7 +3770,7 @@ effort_flag_for_harness() {
     # model, whose set is unverified, keeps its own default (record-and-omit).
     case "$model:$effort" in
     deepseek/deepseek-v4.1-flash:low | deepseek/deepseek-v4.1-flash:high | deepseek/deepseek-v4.1-flash:max)
-      printf -- '--effort %s ' "$(shell_quote "$effort")"
+      printf -- '--effort %s ' "$(fm_shell_quote "$effort")"
       ;;
     esac
     ;;
@@ -3783,16 +3780,16 @@ effort_flag_for_harness() {
     case "$effort" in
     ultra)
       "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$harness" "$model" "$effort" || return 1
-      printf -- '--codex-effort %s ' "$(shell_quote ultra)"
+      printf -- '--codex-effort %s ' "$(fm_shell_quote ultra)"
       ;;
-    low | medium | high | xhigh | max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high | xhigh | max) printf -- '--thinking %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   omp)
     # omp 18.1.11 --thinking accepts off|minimal|low|medium|high|xhigh|max|auto,
     # a superset of the shared vocabulary, so every level maps straight across.
     case "$effort" in
-    low | medium | high | xhigh | max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high | xhigh | max) printf -- '--thinking %s ' "$(fm_shell_quote "$effort")" ;;
     esac
     ;;
   opencode)
@@ -3840,8 +3837,8 @@ effort_flag_for_harness() {
     # none/minimal levels sit below firstmate's shared vocabulary and are
     # deliberately unreachable rather than remapped onto low.
     case "$effort" in
-    low | medium | high | xhigh) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
-    max) printf -- '--reasoning-effort %s ' "$(shell_quote ultra)" ;;
+    low | medium | high | xhigh) printf -- '--reasoning-effort %s ' "$(fm_shell_quote "$effort")" ;;
+    max) printf -- '--reasoning-effort %s ' "$(fm_shell_quote ultra)" ;;
     esac
     ;;
     # rovo has no --effort flag on `run`; its effort mapping rides
@@ -3870,16 +3867,16 @@ case "$LAUNCH" in
     fi
     exit 1
   fi
-  LAUNCH=${LAUNCH//__MUSEBIN__/$(shell_quote "$MUSE_BIN")}
-  LAUNCH=${LAUNCH//__MUSECONFIG__/$(shell_quote "$MUSE_CONFIG_HOME")}
-  LAUNCH=${LAUNCH//__MUSEDATA__/$(shell_quote "$MUSE_DATA_HOME")}
+  LAUNCH=${LAUNCH//__MUSEBIN__/$(fm_shell_quote "$MUSE_BIN")}
+  LAUNCH=${LAUNCH//__MUSECONFIG__/$(fm_shell_quote "$MUSE_CONFIG_HOME")}
+  LAUNCH=${LAUNCH//__MUSEDATA__/$(fm_shell_quote "$MUSE_DATA_HOME")}
   ;;
 esac
 
 case "$LAUNCH" in
 *__KIMIBIN__*)
   KIMI_BIN=$(resolve_kimi_binary) || exit 1
-  LAUNCH=${LAUNCH//__KIMIBIN__/$(shell_quote "$KIMI_BIN")}
+  LAUNCH=${LAUNCH//__KIMIBIN__/$(fm_shell_quote "$KIMI_BIN")}
   fm_backend_visible_capture_supported "$BACKEND" || {
     echo "error: refusing Kimi spawn because backend '$BACKEND' has no verified viewport-bounded capture; Kimi 2.0.0 gates a fresh worktree on a trust dialog that can only be answered and confirmed cleared from a scrollback-free read of the live pane" >&2
     exit 1
@@ -3896,7 +3893,7 @@ esac
 case "$LAUNCH" in
 *__ROVOBIN__*)
   ROVO_BIN=$(resolve_rovo_binary) || exit 1
-  LAUNCH=${LAUNCH//__ROVOBIN__/$(shell_quote "$ROVO_BIN")}
+  LAUNCH=${LAUNCH//__ROVOBIN__/$(fm_shell_quote "$ROVO_BIN")}
   ;;
 esac
 
@@ -3914,7 +3911,7 @@ esac
 case "$LAUNCH" in
 *__KIROBIN__*)
   KIRO_BIN=$(resolve_kiro_binary) || exit 1
-  LAUNCH=${LAUNCH//__KIROBIN__/$(shell_quote "$KIRO_BIN")}
+  LAUNCH=${LAUNCH//__KIROBIN__/$(fm_shell_quote "$KIRO_BIN")}
   fm_backend_visible_capture_supported "$BACKEND" || {
     echo "error: refusing kiro-cli spawn because backend '$BACKEND' has no verified viewport-bounded capture; Kiro startup and trust state cannot be ruled out from a scrollback-free read of the live pane" >&2
     exit 1
@@ -3939,7 +3936,7 @@ case "$LAUNCH" in
   LAUNCH=${LAUNCH//__KIROENGINEFLAG__/$KIRO_ENGINE_FLAG}
   LAUNCH=${LAUNCH//__KIROTRUSTFLAG__/$KIRO_TRUST_FLAG}
   if [ -n "$KIRO_AGENT_NAME" ]; then
-    LAUNCH=${LAUNCH//__KIROAGENTFLAG__/--agent $(shell_quote "$KIRO_AGENT_NAME") }
+    LAUNCH=${LAUNCH//__KIROAGENTFLAG__/--agent $(fm_shell_quote "$KIRO_AGENT_NAME") }
   else
     LAUNCH=${LAUNCH//__KIROAGENTFLAG__/}
   fi
@@ -3976,7 +3973,7 @@ rovo_config_override_flag() {
     "$(fm_json_escape "$state_real/$id.inbox")" \
     "$(fm_json_escape "$state_real/$id.status")")
   config_json="{${agent_json}\"toolPermissions\":{\"allowedExternalPaths\":[$paths_json]}}"
-  printf -- '--config-override %s ' "$(shell_quote "$config_json")"
+  printf -- '--config-override %s ' "$(fm_shell_quote "$config_json")"
 }
 
 # Claude Code path-checks the Read/Glob/Grep file tools (and an Edit's
@@ -4019,7 +4016,7 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
     ;;
   esac
   for d in "${dirs[@]}"; do
-    out="$out--add-dir $(shell_quote "$d") "
+    out="$out--add-dir $(fm_shell_quote "$d") "
   done
   printf '%s' "$out"
 }
@@ -5519,7 +5516,7 @@ spawn_enter_recorded_worktree() {
   # T3 starts the agent in the leased worktree its thread launch bound;
   # there is no shell endpoint to receive a cd command.
   [ "$BACKEND" = t3code ] && return 0
-  spawn_send_text_line "$WT_TARGET" "cd -- $(shell_quote "$WT")" || {
+  spawn_send_text_line "$WT_TARGET" "cd -- $(fm_shell_quote "$WT")" || {
     echo "error: task $ID's endpoint could not be moved into its recorded worktree '$WT'; refusing to launch outside the copy holding its work" >&2
     exit 1
   }
@@ -6607,8 +6604,8 @@ BUSY_GEN=
     # (https://code.claude.com/docs/en/hooks) and keeps any key
     # the flag omits (https://code.claude.com/docs/en/cli-reference), so the
     # home's tracked Stop guard and its settings.local.json both stay.
-    busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
-    busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
+    busy_cmd_prefix="$(fm_shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(fm_shell_quote "$STATE_REAL") $(fm_shell_quote "$ID")"
+    busy_suffix="--gen $(fm_shell_quote "$BUSY_GEN") --source claude-hook"
     j_submit=$(fm_json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
     j_stopfail=$(fm_json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(fm_json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
@@ -6624,7 +6621,7 @@ BUSY_GEN=
     else
       stop_turnend=
       if [ "$busy_notify_turnend" = true ]; then
-        stop_turnend="touch $(shell_quote "$TURNEND"); "
+        stop_turnend="touch $(fm_shell_quote "$TURNEND"); "
       fi
       j_stop=$(fm_json_escape "${stop_turnend}$busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
       stop_entry="\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stop\"}]}],"
@@ -6683,10 +6680,10 @@ BUSY_GEN=
       # Every hook command tolerates a refused event (|| true) so a stale-gen
       # writer can never break gemini's own lifecycle, and each prints the
       # empty JSON object gemini's hook contract requires on stdout.
-      busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
-      busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source gemini-hook"
+      busy_cmd_prefix="$(fm_shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(fm_shell_quote "$STATE_REAL") $(fm_shell_quote "$ID")"
+      busy_suffix="--gen $(fm_shell_quote "$BUSY_GEN") --source gemini-hook"
       g_before=$(fm_json_escape "$busy_cmd_prefix busy $busy_suffix --event before-agent >/dev/null 2>&1 || true; printf '{}'")
-      g_after=$(fm_json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event after-agent >/dev/null 2>&1 || true; printf '{}'")
+      g_after=$(fm_json_escape "touch $(fm_shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event after-agent >/dev/null 2>&1 || true; printf '{}'")
       g_sessionend=$(fm_json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end >/dev/null 2>&1 || true; printf '{}'")
       cat >"$STATE_REAL/$ID.gemini-settings.json" <<EOF
 {"hooks":{"BeforeAgent":[{"hooks":[{"type":"command","command":"$g_before"}]}],"AfterAgent":[{"hooks":[{"type":"command","command":"$g_after"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$g_sessionend"}]}]}}
@@ -7065,7 +7062,7 @@ EOF
     umask "$old_umask"
     printf '%s\n' "$TURNEND" >"$auth_file"
     printf '%s\n' "${auth_file##*/}" >"$STATE/$ID.grok-turnend-token"
-    sq_grok_auth_dir=$(shell_quote "$GROK_AUTH_DIR")
+    sq_grok_auth_dir=$(fm_shell_quote "$GROK_AUTH_DIR")
     cat >"$GROK_HOOKS_DIR/fm-turn-end.sh" <<EOF
 #!/usr/bin/env bash
 set -u
@@ -7085,7 +7082,7 @@ touch "\$t" 2>/dev/null || true
 exit 0
 EOF
     chmod +x "$GROK_HOOKS_DIR/fm-turn-end.sh"
-    hook_command=$(fm_json_escape "bash $(shell_quote "$GROK_HOOKS_DIR/fm-turn-end.sh")")
+    hook_command=$(fm_json_escape "bash $(fm_shell_quote "$GROK_HOOKS_DIR/fm-turn-end.sh")")
     printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s"}]}]}}\n' "$hook_command" >"$GROK_HOOKS_DIR/fm-turn-end.json"
     printf 'token=%s\n' "${auth_file##*/}" >"$WT/.fm-grok-turnend"
     exclude_path '.fm-grok-turnend'
@@ -7485,18 +7482,18 @@ fi
 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
-sq_brief=$(shell_quote "$BRIEF")
-sq_turnend=$(shell_quote "$TURNEND")
-sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
-sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
-sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
-sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
-sq_ompcfg=$(shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}")
-sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
-sq_worktree=$(shell_quote "$WT")
+sq_brief=$(fm_shell_quote "$BRIEF")
+sq_turnend=$(fm_shell_quote "$TURNEND")
+sq_piext=$(fm_shell_quote "$STATE/$ID.pi-ext.ts")
+sq_piturnend=$(fm_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
+sq_piwatch=$(fm_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
+sq_ompext=$(fm_shell_quote "$STATE/$ID.omp-ext.ts")
+sq_ompcfg=$(fm_shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}")
+sq_opinput=$(fm_shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
+sq_worktree=$(fm_shell_quote "$WT")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL" "$OPENCODE_MAJOR")
 # A pinned Pi launch confines Pi's model lookup to the declared provider.
-[ -z "$WORKER_ACCOUNT_PROVIDER" ] || MODELFLAG="--provider $(shell_quote "$WORKER_ACCOUNT_PROVIDER") $MODELFLAG"
+[ -z "$WORKER_ACCOUNT_PROVIDER" ] || MODELFLAG="--provider $(fm_shell_quote "$WORKER_ACCOUNT_PROVIDER") $MODELFLAG"
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL" "$OPENCODE_MAJOR") || exit 1
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
@@ -7512,7 +7509,7 @@ LAUNCH=${LAUNCH//__CLAUDEPERMFLAG__/$CLAUDE_PERM_FLAG}
 case "$LAUNCH" in
 *__CLAUDESETTINGS__*)
   if [ "$KIND" = secondmate ]; then
-    LAUNCH=${LAUNCH//__CLAUDESETTINGS__/$(shell_quote "$STATE_REAL/$ID.claude-settings.json")}
+    LAUNCH=${LAUNCH//__CLAUDESETTINGS__/$(fm_shell_quote "$STATE_REAL/$ID.claude-settings.json")}
   else
     claude_settings="'{\"feedbackDrafts\":\"off\"__CLAUDEATTRIBUTION__}'"
     LAUNCH=${LAUNCH//__CLAUDESETTINGS__/$claude_settings}
@@ -7541,48 +7538,48 @@ LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
 LAUNCH=${LAUNCH//__OMPWORKERCFG__/$sq_ompcfg}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 case "$HARNESS" in
-pi | pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
-cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
-gemini) LAUNCH=${LAUNCH//__GEMINISETTINGS__/"$(shell_quote "$STATE_REAL/$ID.gemini-settings.json")"} ;;
+pi | pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(fm_shell_quote "$PI_BIN")"} ;;
+cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(fm_shell_quote "$CURSOR_BIN")"} ;;
+gemini) LAUNCH=${LAUNCH//__GEMINISETTINGS__/"$(fm_shell_quote "$STATE_REAL/$ID.gemini-settings.json")"} ;;
 omp)
-  LAUNCH=${LAUNCH//__OMPBIN__/"$(shell_quote "$OMP_BIN")"}
+  LAUNCH=${LAUNCH//__OMPBIN__/"$(fm_shell_quote "$OMP_BIN")"}
   OMPPROFILE=
-  [ -z "$OMP_PROFILE_PIN" ] || OMPPROFILE=" --profile $(shell_quote "$OMP_PROFILE_PIN")"
+  [ -z "$OMP_PROFILE_PIN" ] || OMPPROFILE=" --profile $(fm_shell_quote "$OMP_PROFILE_PIN")"
   LAUNCH=${LAUNCH//__OMPPROFILE__/$OMPPROFILE}
   ;;
 devin)
-  LAUNCH=${LAUNCH//__DEVINBIN__/"$(shell_quote "$DEVIN_BIN")"}
-  LAUNCH=${LAUNCH//__DEVINCONFIG__/"$(shell_quote "$STATE_REAL/$ID.devin-config.json")"}
+  LAUNCH=${LAUNCH//__DEVINBIN__/"$(fm_shell_quote "$DEVIN_BIN")"}
+  LAUNCH=${LAUNCH//__DEVINCONFIG__/"$(fm_shell_quote "$STATE_REAL/$ID.devin-config.json")"}
   ;;
 commandcode)
-  LAUNCH=${LAUNCH//__COMMANDCODEBIN__/"$(shell_quote "$COMMANDCODE_BIN")"}
+  LAUNCH=${LAUNCH//__COMMANDCODEBIN__/"$(fm_shell_quote "$COMMANDCODE_BIN")"}
   COMMANDCODEMOD=
   if [ -n "${BUSY_GEN:-}" ]; then
-    COMMANDCODEMOD="--mod $(shell_quote "$FM_ROOT/bin/fm-commandcode-mod.ts")"
-    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(shell_quote "fmWriter=$FM_ROOT/bin/fm-busy-event.sh")"
-    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(shell_quote "fmState=$STATE_REAL")"
-    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(shell_quote "fmId=$ID")"
-    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(shell_quote "fmGen=$BUSY_GEN") "
+    COMMANDCODEMOD="--mod $(fm_shell_quote "$FM_ROOT/bin/fm-commandcode-mod.ts")"
+    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(fm_shell_quote "fmWriter=$FM_ROOT/bin/fm-busy-event.sh")"
+    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(fm_shell_quote "fmState=$STATE_REAL")"
+    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(fm_shell_quote "fmId=$ID")"
+    COMMANDCODEMOD="$COMMANDCODEMOD --mod-option $(fm_shell_quote "fmGen=$BUSY_GEN") "
   fi
   LAUNCH=${LAUNCH//__COMMANDCODEMOD__/$COMMANDCODEMOD}
   ;;
 cortex)
-  LAUNCH=${LAUNCH//__CORTEXBIN__/"$(shell_quote "$CORTEX_BIN")"}
-  LAUNCH=${LAUNCH//__CORTEXPLUGIN__/"$(shell_quote "$STATE_REAL/$ID.cortex-plugin")"}
+  LAUNCH=${LAUNCH//__CORTEXBIN__/"$(fm_shell_quote "$CORTEX_BIN")"}
+  LAUNCH=${LAUNCH//__CORTEXPLUGIN__/"$(fm_shell_quote "$STATE_REAL/$ID.cortex-plugin")"}
   ;;
 kirocrew)
   # shellcheck source=bin/fm-backend-hometag-lib.sh
   . "$SCRIPT_DIR/fm-backend-hometag-lib.sh"
-  LAUNCH=${LAUNCH//__KIROCREWNODE__/"$(shell_quote "$KIROCREW_NODE")"}
-  LAUNCH=${LAUNCH//__KIROCREWRUN__/"$(shell_quote "$FM_ROOT/bin/fm-kirocrew-run.mjs")"}
-  LAUNCH=${LAUNCH//__KIROCREWHOME__/"$(shell_quote "$FM_HOME")"}
-  LAUNCH=${LAUNCH//__KIROCREWCONFIG__/"$(shell_quote "$CONFIG")"}
-  LAUNCH=${LAUNCH//__KIROCREWTASK__/"$(shell_quote "$ID")"}
-  LAUNCH=${LAUNCH//__KIROCREWSTATE__/"$(shell_quote "$STATE_REAL")"}
-  LAUNCH=${LAUNCH//__KIROCREWLABEL__/"$(shell_quote "$(fm_backend_hometag)")"}
+  LAUNCH=${LAUNCH//__KIROCREWNODE__/"$(fm_shell_quote "$KIROCREW_NODE")"}
+  LAUNCH=${LAUNCH//__KIROCREWRUN__/"$(fm_shell_quote "$FM_ROOT/bin/fm-kirocrew-run.mjs")"}
+  LAUNCH=${LAUNCH//__KIROCREWHOME__/"$(fm_shell_quote "$FM_HOME")"}
+  LAUNCH=${LAUNCH//__KIROCREWCONFIG__/"$(fm_shell_quote "$CONFIG")"}
+  LAUNCH=${LAUNCH//__KIROCREWTASK__/"$(fm_shell_quote "$ID")"}
+  LAUNCH=${LAUNCH//__KIROCREWSTATE__/"$(fm_shell_quote "$STATE_REAL")"}
+  LAUNCH=${LAUNCH//__KIROCREWLABEL__/"$(fm_shell_quote "$(fm_backend_hometag)")"}
   KIROCREWBUSY=
   if [ -n "${BUSY_GEN:-}" ]; then
-    KIROCREWBUSY="--busy-writer $(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") --busy-gen $(shell_quote "$BUSY_GEN") "
+    KIROCREWBUSY="--busy-writer $(fm_shell_quote "$FM_ROOT/bin/fm-busy-event.sh") --busy-gen $(fm_shell_quote "$BUSY_GEN") "
   fi
   LAUNCH=${LAUNCH//__KIROCREWBUSY__/$KIROCREWBUSY}
   KIROCREWRESUME=
@@ -7592,11 +7589,11 @@ kirocrew)
   # the exact pane and session here rather than reading inherited variables.
   KIROCREWHERDR=
   if [ "$BACKEND" = herdr ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SES:-}" ]; then
-    KIROCREWHERDR="--herdr-pane $(shell_quote "$HERDR_PANE_ID") --herdr-session $(shell_quote "$HERDR_SES") "
+    KIROCREWHERDR="--herdr-pane $(fm_shell_quote "$HERDR_PANE_ID") --herdr-session $(fm_shell_quote "$HERDR_SES") "
   fi
   LAUNCH=${LAUNCH//__KIROCREWHERDR__/$KIROCREWHERDR}
   ;;
-agy) LAUNCH=${LAUNCH//__AGYBIN__/"$(shell_quote "$AGY_BIN")"} ;;
+agy) LAUNCH=${LAUNCH//__AGYBIN__/"$(fm_shell_quote "$AGY_BIN")"} ;;
 opencode)
   # The resolved absolute path probed for the version gate above, so the pane
   # runs exactly the binary whose major was recorded. An unresolved executable
@@ -7606,7 +7603,7 @@ opencode)
   # environment and ignores this pane's OPENCODE_CONFIG_CONTENT, so per-worker
   # model, permissions, FM_HOME, and lock ancestry would be wrong.
   if [ -n "$OPENCODE_BIN" ]; then
-    oc_launch_bin=$(shell_quote "$OPENCODE_BIN")
+    oc_launch_bin=$(fm_shell_quote "$OPENCODE_BIN")
   else
     oc_launch_bin=opencode
   fi
@@ -7651,23 +7648,23 @@ kiro-cli)
   fi
   printf '%s\n' "$KIRO_TURNEND_TOKEN" >"$STATE_REAL/$ID.kiro-turnend-token"
   exclude_path '.fm-kiro-turnend'
-  LAUNCH=${LAUNCH//__KIROTASK__/"$(shell_quote "$ID")"}
-  LAUNCH=${LAUNCH//__KIROSTATE__/"$(shell_quote "$STATE_REAL")"}
-  LAUNCH=${LAUNCH//__KIROBUSYGEN__/"$(shell_quote "${BUSY_GEN:-}")"}
-  LAUNCH=${LAUNCH//__KIROHOME__/"$(shell_quote "$KIRO_HOME_DIR")"}
-  LAUNCH=${LAUNCH//__KIRODATADIR__/"$(shell_quote "$KIRO_HOME_DIR/data")"}
-  LAUNCH=${LAUNCH//__KIROCHATLOG__/"$(shell_quote "$KIRO_HOME_DIR/chat.log")"}
+  LAUNCH=${LAUNCH//__KIROTASK__/"$(fm_shell_quote "$ID")"}
+  LAUNCH=${LAUNCH//__KIROSTATE__/"$(fm_shell_quote "$STATE_REAL")"}
+  LAUNCH=${LAUNCH//__KIROBUSYGEN__/"$(fm_shell_quote "${BUSY_GEN:-}")"}
+  LAUNCH=${LAUNCH//__KIROHOME__/"$(fm_shell_quote "$KIRO_HOME_DIR")"}
+  LAUNCH=${LAUNCH//__KIRODATADIR__/"$(fm_shell_quote "$KIRO_HOME_DIR/data")"}
+  LAUNCH=${LAUNCH//__KIROCHATLOG__/"$(fm_shell_quote "$KIRO_HOME_DIR/chat.log")"}
   KIRO_DUMP_ENV=
   if [ "$KIRO_ENGINE" = v3 ] && fm_kiro_kind_checks_tools "$KIND"; then
-    KIRO_DUMP_ENV="KIRO_DUMP_REQUESTS=1 KIRO_DUMP_REQUESTS_DIR=$(shell_quote "$(fm_kiro_request_record_dir "$KIRO_HOME_DIR")") "
+    KIRO_DUMP_ENV="KIRO_DUMP_REQUESTS=1 KIRO_DUMP_REQUESTS_DIR=$(fm_shell_quote "$(fm_kiro_request_record_dir "$KIRO_HOME_DIR")") "
   fi
   LAUNCH=${LAUNCH//__KIRODUMPENV__/$KIRO_DUMP_ENV}
   ;;
 polytoken)
-  LAUNCH=${LAUNCH//__POLYTOKENBIN__/"$(shell_quote "$POLYTOKEN_BIN")"}
-  LAUNCH=${LAUNCH//__POLYTOKENCONFIG__/"$(shell_quote "$(fm_polytoken_config_dir "$STATE_REAL" "$ID")")"}
-  LAUNCH=${LAUNCH//__POLYTOKENSESSIONS__/"$(shell_quote "$(fm_polytoken_sessions_root "$STATE_REAL" "$ID")")"}
-  LAUNCH=${LAUNCH//__POLYTOKENFACETS__/"$(shell_quote "$WT/.polytoken/facets")"}
+  LAUNCH=${LAUNCH//__POLYTOKENBIN__/"$(fm_shell_quote "$POLYTOKEN_BIN")"}
+  LAUNCH=${LAUNCH//__POLYTOKENCONFIG__/"$(fm_shell_quote "$(fm_polytoken_config_dir "$STATE_REAL" "$ID")")"}
+  LAUNCH=${LAUNCH//__POLYTOKENSESSIONS__/"$(fm_shell_quote "$(fm_polytoken_sessions_root "$STATE_REAL" "$ID")")"}
+  LAUNCH=${LAUNCH//__POLYTOKENFACETS__/"$(fm_shell_quote "$WT/.polytoken/facets")"}
   ;;
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
@@ -7687,7 +7684,7 @@ case "$LAUNCH" in
     echo "error: could not publish the launch brief for $ID as an operational-inbox record under $brief_opstate; $HARNESS strips the typed operational marker, so the worker was not launched" >&2
     exit 1
   }
-  LAUNCH=${LAUNCH//__BRIEFDOORBELL__/"$(shell_quote "$brief_doorbell")"}
+  LAUNCH=${LAUNCH//__BRIEFDOORBELL__/"$(fm_shell_quote "$brief_doorbell")"}
   ;;
 esac
 case "$LAUNCH" in
@@ -7718,24 +7715,24 @@ if [ -n "$WORKER_ACCOUNT" ]; then
   case "$HARNESS" in
   claude)
     if [ -n "$WORKER_ACCOUNT_ROOT" ]; then
-      LAUNCH="$(fm_worker_account_claude_shed) CLAUDE_CONFIG_DIR=$(shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
+      LAUNCH="$(fm_worker_account_claude_shed) CLAUDE_CONFIG_DIR=$(fm_shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
     else
       LAUNCH="$(fm_worker_account_claude_shed) -u CLAUDE_CONFIG_DIR $LAUNCH"
     fi
     ;;
   pi | pi-signed)
-    LAUNCH="PI_CODING_AGENT_DIR=$(shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
+    LAUNCH="PI_CODING_AGENT_DIR=$(fm_shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
     ;;
   kiro-cli)
-    [ -z "$WORKER_ACCOUNT_ROOT" ] || LAUNCH="XDG_DATA_HOME=$(shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
+    [ -z "$WORKER_ACCOUNT_ROOT" ] || LAUNCH="XDG_DATA_HOME=$(fm_shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
     ;;
   esac
 elif [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-  LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+  LAUNCH="CLAUDE_CONFIG_DIR=$(fm_shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
-  sq_home=$(shell_quote "$PROJ_ABS")
-  sq_primary_home=$(shell_quote "$FM_HOME")
+  sq_home=$(fm_shell_quote "$PROJ_ABS")
+  sq_primary_home=$(fm_shell_quote "$FM_HOME")
   # Keep this in step with fm_supervision_model (bin/fm-wake-lib.sh): Claude's
   # Stop auto-arm and Cursor's stop-hook park both run the watcher only BETWEEN
   # turns, so a fresh beacon with no live watcher is their healthy mid-turn state.
@@ -7797,8 +7794,8 @@ LAUNCH_DIR="/tmp/fm-$ID+$LAUNCH_HOME_TOKEN"
 # sourced launch file before the worker runs, preserving the interactive pane
 # and its visible error for inspection.
 if [ "$GIT_HOOKS_INSTALLED" = 1 ]; then
-  GIT_CONFIG_ENV_FILE=$(shell_quote "$LAUNCH_DIR/git-config.$SPAWN_GEN.sh")
-  LAUNCH="$(shell_quote "$FM_ROOT/bin/fm-git-strip-ai-trailers.sh") env-file $(shell_quote "$GIT_HOOKS_DIR") $GIT_CONFIG_ENV_FILE && . $GIT_CONFIG_ENV_FILE || return 1 2>/dev/null || exit 1; $LAUNCH"
+  GIT_CONFIG_ENV_FILE=$(fm_shell_quote "$LAUNCH_DIR/git-config.$SPAWN_GEN.sh")
+  LAUNCH="$(fm_shell_quote "$FM_ROOT/bin/fm-git-strip-ai-trailers.sh") env-file $(fm_shell_quote "$GIT_HOOKS_DIR") $GIT_CONFIG_ENV_FILE && . $GIT_CONFIG_ENV_FILE || return 1 2>/dev/null || exit 1; $LAUNCH"
 fi
 # Every agent this fleet launches - crewmate, scout, and secondmate, on a fresh
 # spawn and on a relaunch alike - runs with the compact-adviser kill switch on.
@@ -7813,17 +7810,17 @@ fi
 # so under an enabled allowlist the switch is established before the wrapping
 # `/bin/sh` starts rather than only inside the command that shell runs.
 if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
-  LAUNCH="export LAVISH_AXI_HOST=$(shell_quote "$LAVISH_AXI_HOST"); $LAUNCH"
+  LAUNCH="export LAVISH_AXI_HOST=$(fm_shell_quote "$LAVISH_AXI_HOST"); $LAUNCH"
 fi
 # Every launch also exports the absolute path of this task's steering inbox, so
 # the constant doorbell line (bin/fm-task-inbox-lib.sh) can name
 # "$FM_TASK_INBOX" instead of a path that grows with the home's depth. Like the
 # kill switch below it is an export statement, so it survives a compound raw
 # launch and the launch-env-allowlist `env -i` wrapper.
-LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
+LAUNCH="export FM_TASK_INBOX=$(fm_shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
 if [ "$KIND" != secondmate ] && [ "$WORKER_PIPEFAIL_SETTING" != off ]; then
-  WORKER_BASH_ENV_Q=$(shell_quote "$SCRIPT_DIR/fm-worker-bash-env.sh")
+  WORKER_BASH_ENV_Q=$(fm_shell_quote "$SCRIPT_DIR/fm-worker-bash-env.sh")
   LAUNCH="case \"\${BASH_ENV-}\" in $WORKER_BASH_ENV_Q) ;; *) export FM_PRIOR_BASH_ENV=\"\${BASH_ENV-}\" ;; esac; export BASH_ENV=$WORKER_BASH_ENV_Q; $LAUNCH"
 fi
 # When the live-harness gate has exported DISABLE_AUTOUPDATER into this spawn's
@@ -7834,7 +7831,7 @@ fi
 # constructs the pane command without the gate's environment. It is gated on the
 # value being set here so ordinary spawns are unchanged.
 if [ -n "${DISABLE_AUTOUPDATER:-}" ]; then
-  LAUNCH="export DISABLE_AUTOUPDATER=$(shell_quote "$DISABLE_AUTOUPDATER"); $LAUNCH"
+  LAUNCH="export DISABLE_AUTOUPDATER=$(fm_shell_quote "$DISABLE_AUTOUPDATER"); $LAUNCH"
 fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
@@ -7912,7 +7909,7 @@ spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # command independently establishes the value for the agent process itself.
 spawn_send_text_line "$T" "export COMPACT_ADVISER_DISABLE=1"
 if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
-  spawn_send_text_line "$T" "export LAVISH_AXI_HOST=$(shell_quote "$LAVISH_AXI_HOST")"
+  spawn_send_text_line "$T" "export LAVISH_AXI_HOST=$(fm_shell_quote "$LAVISH_AXI_HOST")"
 fi
 # Mark the pane as a task worker so bin/fm-test-run.sh can refuse to run the
 # suite in the repository's primary checkout. Ship and scout workers are the
@@ -7986,7 +7983,7 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     # shellcheck disable=SC2016
     LAUNCH_ENV_PREFIX="$LAUNCH_ENV_PREFIX "'${TRACEPARENT+"TRACEPARENT=$TRACEPARENT"}'
   fi
-  LAUNCH="$LAUNCH_ENV_PREFIX /bin/sh -c $(shell_quote "$LAUNCH")"
+  LAUNCH="$LAUNCH_ENV_PREFIX /bin/sh -c $(fm_shell_quote "$LAUNCH")"
 fi
 # Worker memory scope (header section of that name): the pane runs the whole
 # launch as one command inside the worker's own MemoryHigh scope. The
@@ -8030,7 +8027,7 @@ else
   if [ "$ORCA_LAUNCH_ENV_ENABLED" = 1 ]; then
     # The sourcing shell already holds the open file; unlink the credentials
     # before launching the worker, including on a later command failure.
-    LAUNCH="command rm -- $(shell_quote "$LAUNCH_FILE") || { echo 'error: cannot remove private launch file; refusing worker launch' >&2; return 1 2>/dev/null || exit 1; }; $LAUNCH"
+    LAUNCH="command rm -- $(fm_shell_quote "$LAUNCH_FILE") || { echo 'error: cannot remove private launch file; refusing worker launch' >&2; return 1 2>/dev/null || exit 1; }; $LAUNCH"
   fi
   if [ -e "$LAUNCH_FILE" ] || [ -L "$LAUNCH_FILE" ]; then
     echo "error: task launch file $LAUNCH_FILE already exists; refusing to replace it" >&2
@@ -8079,12 +8076,12 @@ else
   SPAWN_LAUNCH_SENT=1
   # errexit is on here: a failed send still exits, and Orca source mode first
   # removes the credential-bearing file the pane never received.
-  LAUNCH_SOURCE_TEXT=". $(shell_quote "$LAUNCH_FILE")"
+  LAUNCH_SOURCE_TEXT=". $(fm_shell_quote "$LAUNCH_FILE")"
   if [ "$ORCA_LAUNCH_ENV_ENABLED" = 1 ]; then
     # A refused source-mode launch fails the source command, and some shells exit
     # under errexit on sourcing a file spawn already reclaimed even inside ||, so
     # keep an errexit pane shell open in both cases.
-    LAUNCH_SOURCE_TEXT="if [ -e $(shell_quote "$LAUNCH_FILE") ]; then $LAUNCH_SOURCE_TEXT || true; else echo 'error: private launch file was already removed; refusing worker launch' >&2; fi"
+    LAUNCH_SOURCE_TEXT="if [ -e $(fm_shell_quote "$LAUNCH_FILE") ]; then $LAUNCH_SOURCE_TEXT || true; else echo 'error: private launch file was already removed; refusing worker launch' >&2; fi"
   fi
   if ! spawn_send_literal "$T" "$LAUNCH_SOURCE_TEXT"; then
     [ "$ORCA_LAUNCH_ENV_ENABLED" != 1 ] || spawn_orca_launch_send_fail
