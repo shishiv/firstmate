@@ -2117,8 +2117,6 @@ if ! retry_wait_secs_is_valid "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"; then
   echo "teardown: invalid treehouse return lock retry wait '$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS'; using 1s" >&2
   TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1
 fi
-# Compatibility alias used by the safety-check wait path and older call sites.
-STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS
 TEARDOWN_TREEHOUSE_LOCK_REFUSED=2
 TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED=3
 TEARDOWN_PROCEVENT_RESTORE_FAILED=4
@@ -2164,8 +2162,8 @@ cleanup_stale_lock_for_safety_check() {
   lock=$(worktree_git_lock_path "$dir") || lock=""
   [ -n "$lock" ] && [ -e "$lock" ] || return 0
 
-  echo "teardown: worktree safety check blocked by git lock $lock; waiting ${STALE_WORKTREE_LOCK_RETRY_WAIT_SECS}s and retrying (owning process may be exiting)" >&2
-  sleep "$STALE_WORKTREE_LOCK_RETRY_WAIT_SECS"
+  echo "teardown: worktree safety check blocked by git lock $lock; waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying (owning process may be exiting)" >&2
+  sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
   if [ ! -e "$lock" ]; then
     echo "teardown: worktree safety check lock cleared on its own; retrying safety checks" >&2
