@@ -36,7 +36,7 @@ bin/fm-test-run.sh --list --changed
 ```
 
 The default Herdr session must be `running`; the run refuses to start otherwise because `bin/fm-herdr-lab.sh` records it as a tripwire.
-`--list --changed` prints the tests the run will select without running them; a `no changed-test mapping` refusal there fails the test step too (see Drive step 5).
+`--list --changed` prints the tests the run will select without running them; a `no changed-test mapping` refusal there fails the test step too (see Drive step 7).
 The first lines of the output name the worktree sha, the hc version, the private hc session, the lab home, and the Herdr lab session, so a proof states what it ran against.
 
 ## Drive
@@ -44,10 +44,12 @@ The first lines of the output name the worktree sha, the hc version, the private
 `scripts/verify.sh` is the recipe; each step prints a `PASS:` or `FAIL:` line.
 
 1. Spawn: `bin/fm-brief.sh vf1 demo --scout`, then `bin/fm-spawn.sh vf1 <demo> --scout --backend hc --harness "<stand-in> --fake"`. Asserts `backend=hc` in `state/vf1.meta` and a live terminal in the private core.
-2. Notification: the stand-in's status lines land in `state/vf1.status`; `FM_POLL=1 bin/fm-watch.sh` must print `signal: .../vf1.status`, and `bin/fm-wake-drain.sh` must present the `done` line.
-3. Steer: `bin/fm-send.sh vf1 '<text>'` exits 0, writes an inbox `.msg` record, and the stand-in receives the doorbell line.
-4. Cleanup: `bin/fm-captain-hold.sh complete vf1 --none`, then `bin/fm-teardown.sh vf1`; the private core must list no terminal afterwards.
-5. Tests: `bin/fm-test-run.sh --changed` (or the selection after `--`), run with the caller's own XDG directories and no hc session, must exit 0.
+2. Memory scope: the stand-in runs in `firstmate.slice/fm-worker-vf1-<spawn_gen>.scope` with `MemoryHigh=3221225472`, its harness ancestry names `claude`, and `bin/fm-crew-state.sh` reads it as working.
+3. Notification: the stand-in's status lines land in `state/vf1.status`; `FM_POLL=1 bin/fm-watch.sh` must print `signal: .../vf1.status`, and `bin/fm-wake-drain.sh` must present the `done` line.
+4. Steer: `bin/fm-send.sh vf1 '<text>'` exits 0, writes an inbox `.msg` record, and the stand-in receives the doorbell line.
+5. Cleanup: `bin/fm-captain-hold.sh complete vf1 --none`, then `bin/fm-teardown.sh vf1`; the private core must list no terminal afterwards, and systemd must have collected the worker's scope.
+6. Relaunch and off switch: scout `vf2` on a private tmux server (hc has no relaunch) gets its own scope; a relaunch records a new `spawn_gen` and a new scope, and systemd collects the old one; after `off` in `config/worker-memory-high`, the next relaunch runs in no worker scope. Teardown retires `vf2`.
+7. Tests: `bin/fm-test-run.sh --changed` (or the selection after `--`), run with the caller's own XDG directories and no hc session, must exit 0.
    The step prints the runner's summary line and every failed script.
    When the runner refuses with `no changed-test mapping for source path: <path>`, the map in `bin/fm-test-run.sh` has no owner for that path.
    Name the selection yourself after `--` and report the missing mapping; the refusal is never a pass.
@@ -57,7 +59,7 @@ Mapped features (what each one proves and what this run leaves unproved) are in 
 
 ## Evidence
 
-Written to `--out`: `spawn.txt`, `terminal.json`, `watch.out`, `drain.txt`, `received.txt` (what the stand-in was typed), `peek.txt`, `teardown.txt`, `suite.txt` (full runner output).
+Written to `--out`: `spawn.txt`, `terminal.json`, `watch.out`, `drain.txt`, `received.txt` (what the stand-in was typed), `peek.txt`, `teardown.txt`, `scope.txt` (each worker's scope, cgroup, ancestry and crew state), `spawn-vf2.txt`, `relaunch.txt` (which relaunch path ran), `teardown-vf2.txt`, `suite.txt` (full runner output).
 Put the full run output in the PR.
 Proof standards: every step goes through the real `bin/` entrypoint, the hc core is real, and only the agent is a stand-in.
 Anything that depends on what a real harness renders or emits (composer state, native status, liveness of a named harness) is not proved here; use the live guards in `docs/verification/runtime-backends.md`.

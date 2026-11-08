@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
+| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), [worker memory scope](#worker-memory-scope-configworker-memory-high), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [record export](#record-export-configrecord-export-root), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [warm-cache compaction](#warm-cache-compaction-configwarm-compact), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1786,6 +1786,39 @@ An absent file, or any other content, keeps pipefail on.
 `fm-spawn.sh` reads the file on every spawn and relaunch, so a change applies to the next launch and leaves running workers unchanged.
 The setting is local to each home and is not inherited into secondmate homes.
 [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, [`tests/fm-spawn-compact-adviser-disable.test.sh`](../tests/fm-spawn-compact-adviser-disable.test.sh) pins the launch environment, and [the runtime verification record](verification/runtime-backends.md) owns the live Kiro and Pi evidence.
+
+## Worker memory scope (config/worker-memory-high)
+
+Every worker runs in its own systemd user scope with a `MemoryHigh` soft cap, so the kernel throttles one runaway worker before it pushes the desktop into swap.
+The kernel reclaims and slows a worker above the cap; it does not kill it.
+Normal workers use 0.3 to 0.5 GB, and the default cap is 3G.
+The cap covers every pane launch: ship, scout, secondmate, and relaunch.
+T3 Code workers are excluded, because T3 Code owns their process.
+
+The local, gitignored `config/worker-memory-high` selects the cap.
+`fm-spawn.sh` removes all whitespace from the file's content.
+`off` gives today's uncapped launch, with no wrapper.
+Any other value is a size: a positive whole number with an optional `K`, `M`, `G` or `T` suffix, such as `2G` or `4096M`.
+An absent file means `3G`.
+Any other content, or an unreadable file, refuses the spawn before any task record, worktree or pane exists.
+`fm-spawn.sh` reads the file on every spawn and relaunch, so a change applies to the next launch and leaves running workers unchanged.
+The setting is local to each home and is not inherited into secondmate homes.
+
+The scope is `firstmate.slice/fm-worker-<id>-<spawn_gen>.scope` under the user manager, and `spawn_gen` is the value in `state/<id>.meta`.
+A relaunch gets a new scope, and systemd removes the old scope when its last process exits.
+To check a running worker, run `systemctl --user show fm-worker-<id>-<spawn_gen>.scope -p MemoryHigh`; a 3G cap reads `MemoryHigh=3221225472`.
+The scopes sit outside `app.slice` on purpose.
+systemd-oomd watches `app.slice` for memory pressure and kills inside it, and a worker held at its cap creates that pressure.
+The [Herdr server under systemd](herdr-backend.md#running-the-server-under-systemd) uses its own slice for the same reason.
+
+Where no systemd user scope is reachable, the worker launches uncapped.
+On a host without `systemd-run`, such as macOS, that is silent.
+On a host with `systemd-run` but no reachable user manager, the pane shows one note naming the skipped cap.
+A remote secondmate's host decides with its own `config/worker-memory-high`.
+
+With the cap on, the launch runs under `/bin/sh -c`, so a raw `--harness` command must be POSIX sh unless the home writes `off`.
+The scope keeps the worker's PID, process group and session, so busy, ownership and teardown checks read the same process tree.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns when the launch is wrapped, [`bin/fm-worker-memory-scope.sh`](../bin/fm-worker-memory-scope.sh) owns the fallback, and [`tests/fm-spawn-worker-memory-scope.test.sh`](../tests/fm-spawn-worker-memory-scope.test.sh) and [`tests/fm-worker-memory-scope.test.sh`](../tests/fm-worker-memory-scope.test.sh) pin both.
 
 ## Kiro worker oracle (config/kiro-oracle)
 

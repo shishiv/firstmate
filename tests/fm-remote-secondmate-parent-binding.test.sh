@@ -208,6 +208,12 @@ FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
   remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" alpha \
   >/dev/null || fail "real remote secondmate seeding failed"
+# The remote job worker runs fm-spawn.sh under env -i, so tests/lib.sh's
+# FM_SPAWN_WORKER_MEMORY_SCOPE seam cannot reach it; the remote home's own
+# config keeps the launch text this suite parses below.
+# tests/fm-spawn-worker-memory-scope.test.sh owns the wrapped launch.
+mkdir -p "$REMOTE_HOME/config"
+printf 'off\n' > "$REMOTE_HOME/config/worker-memory-high"
 
 # --- the durable record itself: the fundamental part of the fix -------------
 assert_present "$REMOTE_HOME/.fm-secondmate-parent" \
