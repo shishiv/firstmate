@@ -525,12 +525,10 @@ Because that acceptance rests on a name rather than on evidence, `complete` name
 
 A markdown home keeps its legacy rows verbatim, so its resolution is unchanged.
 
-### The `fm-decision-hold.sh` shim
+### The retired `fm-decision-hold.sh` shim
 
-`bin/fm-decision-hold.sh` itself remains for one release as a thin command-mapping shim over `bin/fm-captain-hold.sh`.
-In-flight work briefed before the collapse therefore keeps working, and the shim's header owns the exact mapping.
-The shim recognizes an exact replay of a pre-collapse routed resolution by its historical answer digest and routed ids.
-It then finishes any still-recorded dependency-edge cleanup without rewriting the old decision text.
+`bin/fm-decision-hold.sh` mapped the retired decision commands onto `bin/fm-captain-hold.sh` for in-flight work briefed before the collapse.
+That work has finished, so the shim is gone; create a legacy-shaped row with `fm-captain-hold.sh hold <origin>-decision-<key> --origin <origin>`.
 
 ## Verification record
 
