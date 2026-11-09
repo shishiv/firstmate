@@ -7972,11 +7972,11 @@ fi
 # launch as one command inside the worker's own MemoryHigh scope. The
 # allowlist launch is already one simple command, so it is prefixed directly.
 if [ "$BACKEND" != t3code ] && [ "$WORKER_MEMORY_HIGH" != off ]; then
-  WORKER_SCOPE_PREFIX="$(shell_quote "$SCRIPT_DIR/fm-worker-memory-scope.sh") $(shell_quote "$WORKER_MEMORY_HIGH") $(shell_quote "fm-worker-$ID-$SPAWN_GEN.scope") --"
+  WORKER_SCOPE_PREFIX="$(fm_shell_quote "$SCRIPT_DIR/fm-worker-memory-scope.sh") $(fm_shell_quote "$WORKER_MEMORY_HIGH") $(fm_shell_quote "fm-worker-$ID-$SPAWN_GEN.scope") --"
   if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     LAUNCH="$WORKER_SCOPE_PREFIX $LAUNCH"
   else
-    LAUNCH="$WORKER_SCOPE_PREFIX /bin/sh -c $(shell_quote "$LAUNCH")"
+    LAUNCH="$WORKER_SCOPE_PREFIX /bin/sh -c $(fm_shell_quote "$LAUNCH")"
   fi
 fi
 if [ "$BACKEND" = t3code ]; then
