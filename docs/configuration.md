@@ -1791,6 +1791,7 @@ The setting is local to each home and is not inherited into secondmate homes.
 
 Every worker runs in its own systemd user scope with a `MemoryHigh` soft cap, so the kernel throttles one runaway worker before it pushes the desktop into swap.
 The kernel reclaims and slows a worker above the cap; it does not kill it.
+Node is the exception to that slowdown: it sizes its heap from the cap, so the launch also sets Node's heap size (below).
 Normal workers use 0.3 to 0.5 GB, and the default cap is 3G.
 The cap covers every pane launch: ship, scout, secondmate, and relaunch.
 T3 Code workers are excluded, because T3 Code owns their process.
@@ -1815,6 +1816,11 @@ Where no systemd user scope is reachable, the worker launches uncapped.
 On a host without `systemd-run`, such as macOS, that is silent.
 On a host with `systemd-run` but no reachable user manager, the pane shows one note naming the skipped cap.
 A remote secondmate's host decides with its own `config/worker-memory-high`.
+
+Node reads the scope's cap as the machine's memory and shrinks its heap limit to fit: a 3G cap gave 1632 MB where an unscoped Node gets 4192 MB here.
+A typecheck that needs more then dies with `JavaScript heap out of memory` instead of being slowed.
+When the scope applies, the helper measures the heap limit Node has outside the scope and appends `--max-old-space-size=<MB>` to `NODE_OPTIONS`, so Node keeps the heap it would have without a cap and the cap throttles its memory use as it does for any other process.
+A `NODE_OPTIONS` that already holds `--max-old-space-size` or `--max-old-space-size-percentage` is left as it is.
 
 With the cap on, the launch runs under `/bin/sh -c`, so a raw `--harness` command must be POSIX sh unless the home writes `off`.
 The scope keeps the worker's PID, process group and session, so busy, ownership and teardown checks read the same process tree.
