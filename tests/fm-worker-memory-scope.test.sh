@@ -33,6 +33,18 @@ exec "$@"
 SH
 chmod +x "$FAKEBIN/systemd-run"
 
+FAKENODE="$TMP_ROOT/fakenode"
+mkdir -p "$FAKENODE"
+cat > "$FAKENODE/node" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${NODE_OPTIONS:-}" ]; then echo "fake node measured under NODE_OPTIONS=$NODE_OPTIONS" >&2; exit 9; fi
+echo 4192
+SH
+chmod +x "$FAKENODE/node"
+
+# shellcheck disable=SC2016
+PRINT_NODE_OPTIONS='echo "NODE_OPTIONS=${NODE_OPTIONS-unset}"'
+
 UNIT=fm-worker-t1-s1.2.3.scope
 SCOPE_FLAGS='--user --scope --quiet --collect --slice=firstmate.slice -p MemoryHigh=3G'
 
@@ -121,6 +133,70 @@ test_bad_usage_refuses() {
   pass "bad usage exits 2 without running the command"
 }
 
+# run_node_env <node-options|unset> <probe-user> <probe-machine>: prints the
+# NODE_OPTIONS the launched command sees, with the fake node on PATH.
+run_node_env() {
+  local opts=$1 user=$2 machine=$3
+  : > "$ARGV_LOG"
+  if [ "$opts" = unset ]; then unset NODE_OPTIONS; else export NODE_OPTIONS="$opts"; fi
+  PATH="$FAKEBIN:$FAKENODE:$PATH" FM_FAKE_SYSTEMD_ARGV_LOG="$ARGV_LOG" \
+    FM_FAKE_SYSTEMD_PROBE_USER="$user" FM_FAKE_SYSTEMD_PROBE_MACHINE="$machine" \
+    "$HELPER" 3G "$UNIT" -- sh -c "$PRINT_NODE_OPTIONS"
+}
+
+test_node_heap_size_is_appended() {
+  local out
+  out=$(run_node_env unset 0 1 2>&1)
+  assert_equals 'NODE_OPTIONS=--max-old-space-size=4192' "$out" "a scoped launch should hand Node its unscoped heap size"
+  out=$(run_node_env --trace-warnings 0 1 2>&1)
+  assert_equals 'NODE_OPTIONS=--trace-warnings --max-old-space-size=4192' "$out" "existing NODE_OPTIONS should be kept and extended"
+  out=$(run_node_env unset 1 0 2>&1)
+  assert_equals 'NODE_OPTIONS=--max-old-space-size=4192' "$out" "the machine transport branch should hand Node its heap size too"
+  out=$(run_node_env unset 1 1 2>/dev/null)
+  assert_equals 'NODE_OPTIONS=unset' "$out" "an uncapped launch should leave NODE_OPTIONS alone"
+  pass "a capped launch appends Node's unscoped heap size to NODE_OPTIONS, an uncapped one does not"
+}
+
+test_node_options_with_size_are_intact() {
+  local out opts
+  for opts in '--max-old-space-size=1024' '--trace-warnings --max-old-space-size-percentage=50'; do
+    out=$(run_node_env "$opts" 0 1 2>&1)
+    assert_equals "NODE_OPTIONS=$opts" "$out" "NODE_OPTIONS that already sets a heap size must stay intact"
+  done
+  pass "NODE_OPTIONS that already carries a heap size is left as it is"
+}
+
+test_no_node_leaves_environment() {
+  local bare out tool
+  bare="$TMP_ROOT/nonode"
+  mkdir -p "$bare"
+  for tool in bash sh cat id env; do ln -sf "$(command -v "$tool")" "$bare/$tool"; done
+  ln -sf "$FAKEBIN/systemd-run" "$bare/systemd-run"
+  out=$(unset NODE_OPTIONS; PATH="$bare" FM_FAKE_SYSTEMD_ARGV_LOG="$ARGV_LOG" \
+    "$bare/bash" "$HELPER" 3G "$UNIT" -- sh -c "$PRINT_NODE_OPTIONS" 2>&1)
+  assert_equals 'NODE_OPTIONS=unset' "$out" "without node on PATH the environment stays as it was"
+  pass "a pane with no node gets no NODE_OPTIONS"
+}
+
+test_real_node_heap_under_cap() {
+  local out
+  if ! command -v node >/dev/null 2>&1 || ! command -v systemd-run >/dev/null 2>&1 ||
+    ! systemd-run --user --scope --quiet --collect -p MemoryHigh=3G -- true >/dev/null 2>&1; then
+    pass "skip: no node or no systemd user scope on this host"
+    return 0
+  fi
+  unset NODE_OPTIONS
+  out=$(env -u NODE_OPTIONS node -p 'Math.floor(require("v8").getHeapStatistics().heap_size_limit/2**20)')
+  if [ "$out" -lt 4096 ]; then
+    pass "skip: this host's unscoped Node heap is only ${out} MB"
+    return 0
+  fi
+  out=$("$HELPER" 3G "fm-worker-test-$$-$RANDOM.scope" -- node -p 'Math.floor(require("v8").getHeapStatistics().heap_size_limit/2**20)' 2>&1)
+  expect_code 0 "$?" "the real scoped node should run: $out"
+  [ "$out" -ge 4096 ] || fail "a 3G scope left Node a ${out} MB heap, below 4096 MB"
+  pass "under a real 3G scope Node keeps a ${out} MB heap"
+}
+
 test_real_systemd_scope() {
   local unit out
   if ! command -v systemd-run >/dev/null 2>&1 ||
@@ -143,4 +219,8 @@ fm_test_run \
   test_no_scope_runs_once_uncapped \
   test_no_systemd_run_is_silent \
   test_bad_usage_refuses \
+  test_node_heap_size_is_appended \
+  test_node_options_with_size_are_intact \
+  test_no_node_leaves_environment \
+  test_real_node_heap_under_cap \
   test_real_systemd_scope
