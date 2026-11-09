@@ -23,9 +23,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
-file_link_count() {
-  if [ "$(uname)" = Darwin ]; then /usr/bin/stat -f %l "$1" 2>/dev/null; else stat -c %h "$1" 2>/dev/null; fi
-}
 # Writable set, derived from the ONE declared inherited-material owner
 # (FM_INHERITABLE_CONFIG in bin/fm-config-inherit-lib.sh), so this code root's
 # receiver and sender cannot drift silently. This runs under the remote
@@ -68,7 +65,7 @@ DEST="$PARENT_REAL/$(basename "$REL")"
 [ ! -L "$DEST" ] || die "inherited destination is a symlink"
 if [ -e "$DEST" ]; then
   [ -f "$DEST" ] || die "inherited destination is not a regular file"
-  [ "$(file_link_count "$DEST")" = 1 ] || die "inherited destination is hardlinked"
+  [ "$(fm_inherit_file_link_count "$DEST")" = 1 ] || die "inherited destination is hardlinked"
 fi
 
 if case "$REL" in config/*) fm_config_inherit_item_runtime_pinned "$HOME_REAL/config" "${REL#config/}" ;; *) false ;; esac; then

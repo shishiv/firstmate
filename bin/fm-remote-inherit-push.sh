@@ -28,9 +28,6 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-file_link_count() {
-  if [ "$(uname)" = Darwin ]; then /usr/bin/stat -f %l "$1" 2>/dev/null; else stat -c %h "$1" 2>/dev/null; fi
-}
 [ "$#" -eq 2 ] || { echo "usage: fm-remote-inherit-push.sh <secondmate-id> <generation>" >&2; exit 2; }
 ID=$1
 GENERATION=$2
@@ -77,7 +74,7 @@ while IFS= read -r rel; do
   source_present=$(fm_config_source_present "$source") || exit 1
   if [ "$source_present" = 1 ]; then
     [ -f "$source" ] && [ ! -L "$source" ] || die "inherited source is unsafe: $source"
-    [ "$(file_link_count "$source")" = 1 ] || die "inherited source is hardlinked: $source"
+    [ "$(fm_inherit_file_link_count "$source")" = 1 ] || die "inherited source is hardlinked: $source"
     if [ "$rel" = data/captain-shared.md ]; then
       if ! missing=$(shared_captain_header_valid "$source"); then
         reason="shared captain preferences have no valid primary-authoritative header"

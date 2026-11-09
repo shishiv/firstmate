@@ -148,9 +148,8 @@ fm_kiro_publish_project_copy() {  # <destination> <source>
 # directory. Every generated hook command names it by this absolute path.
 FM_KIRO_TURNEND_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-kiro-turnend-hook.sh"
 
-fm_kiro_shell_quote() {  # <value>
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
-}
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-shell-quote-lib.sh"
 
 # Print <value> as a JSON string body. Control characters refuse rather than
 # producing a hook document Kiro would reject or misread.
@@ -165,13 +164,13 @@ fm_kiro_json_string() {  # <value>
 # bin/fm-kiro-turnend-hook.sh recovers the busy generation.
 fm_kiro_task_hook_command() {  # <kiro-home>
   case "$1" in /*) ;; *) return 1 ;; esac
-  printf '%s --kiro-home %s' "$(fm_kiro_shell_quote "$FM_KIRO_TURNEND_HOOK")" "$(fm_kiro_shell_quote "${1%/}")"
+  printf '%s --kiro-home %s' "$(fm_shell_quote "$FM_KIRO_TURNEND_HOOK")" "$(fm_shell_quote "${1%/}")"
 }
 
 # Print the hook command for the explicit V2 primary agent, which lives in the
 # per-home isolated KIRO_HOME rather than in the tracked project hooks.
 fm_kiro_primary_hook_command() {
-  printf 'FM_KIRO_PRIMARY_HOOK=1 %s' "$(fm_kiro_shell_quote "$FM_KIRO_TURNEND_HOOK")"
+  printf 'FM_KIRO_PRIMARY_HOOK=1 %s' "$(fm_shell_quote "$FM_KIRO_TURNEND_HOOK")"
 }
 
 # kiro-cli reads user skills from <KIRO_HOME>/skills, and the isolated KIRO_HOME

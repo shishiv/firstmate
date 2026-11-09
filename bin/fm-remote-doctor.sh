@@ -67,6 +67,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd -P)}"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-remote-herdr-owner-lib.sh
 . "$SCRIPT_DIR/fm-remote-herdr-owner-lib.sh"
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$SCRIPT_DIR/fm-shell-quote-lib.sh"
 REQUIRED_TOOLS=(git jq herdr tasks-axi treehouse)
 HARNESS_TOOLS=(claude codex opencode pi pi-signed grok kimi omp)
 OPTIONAL_TOOLS=(tmux no-mistakes gh)
@@ -211,10 +213,6 @@ launch_agent_is_aqua() {
   return 1
 }
 
-launch_agent_shell_quote() { # <value>
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
-}
-
 launch_agent_xml_escape() { # <value>
   printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
 }
@@ -263,9 +261,9 @@ launch_agent_guard_path() {
 
 launch_agent_exec_command() { # <resolved-herdr-path>
   printf 'exec %s %s %s' \
-    "$(launch_agent_shell_quote "$(launch_agent_guard_path)")" \
-    "$(launch_agent_shell_quote "$1")" \
-    "$(launch_agent_shell_quote "$HERDR_SESSION_NAME")"
+    "$(fm_shell_quote "$(launch_agent_guard_path)")" \
+    "$(fm_shell_quote "$1")" \
+    "$(fm_shell_quote "$HERDR_SESSION_NAME")"
 }
 
 render_launch_agent() { # <resolved-herdr-path> <resolved-login-shell>

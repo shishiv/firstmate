@@ -29,6 +29,28 @@
 # runner as at-least-once, no-loss, or lossless, and never claim generic
 # exactly-once effects from the handled acknowledgement alone.
 
+# Argument validators the adapters share: a positive decimal number, and a
+# positive integer (digits only, not 0).
+fm_procevent_positive_number() {  # <value>
+  local n=${1-}
+  local LC_ALL=C
+  [[ "$n" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+  [ "$n" != 0 ] && [[ ! "$n" =~ ^0+(\.0+)?$ ]]
+}
+
+fm_procevent_positive_int() {  # <value>
+  case "${1-}" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac
+}
+
+# The status: value of a captured adapter result, read only from its header
+# (before the output: block).
+fm_procevent_result_status() {  # <result-file>
+  awk '
+    $0 == "output:" { exit }
+    /^status: / { sub(/^status: /, ""); print; exit }
+  ' "$1"
+}
+
 # Machine-wide claim root. Homes can share one underlying source store, so the
 # "one owner per canonical source" rule cannot live inside a single home.
 fm_procevent_claim_root() {

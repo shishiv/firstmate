@@ -91,6 +91,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-meta-lib.sh
+. "$SCRIPT_DIR/fm-meta-lib.sh"
 
 # One nudge per home per four hours.
 FM_RECONCILE_COOLDOWN_SECONDS=${FM_RECONCILE_COOLDOWN_SECONDS:-14400}
@@ -148,16 +150,13 @@ nudge_path() {  # <mate-id>
   printf '%s/%s.reconcile-nudged\n' "$STATE" "$1"
 }
 
-meta_field() {  # <meta-file> <key>
-  grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
-}
 
 meta_spawn_gen() {
-  meta_field "$1" spawn_gen
+  fm_meta_get "$1" spawn_gen
 }
 
 meta_remote_host() {
-  meta_field "$1" remote_host
+  fm_meta_get "$1" remote_host
 }
 
 # revalidate_identity <meta> <sampled_spawn_gen> <sampled_host>

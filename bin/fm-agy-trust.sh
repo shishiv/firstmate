@@ -72,27 +72,24 @@ esac
 
 refuse() { echo "error: refusing to pre-register agy trust: $1" >&2; exit 1; }
 
-real_dir() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
+# Builtins only: the no-node refusal must still run on a PATH without coreutils.
+FM_TRUST_LIB_DIR=${BASH_SOURCE[0]%/*}
+[ "$FM_TRUST_LIB_DIR" != "${BASH_SOURCE[0]}" ] || FM_TRUST_LIB_DIR=.
+# shellcheck source=bin/fm-path-lib.sh
+. "$FM_TRUST_LIB_DIR/fm-path-lib.sh"
 logical_dir() { (cd -- "$1" 2>/dev/null && pwd -L); }
-real_file() { node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$1" 2>/dev/null; }
 
-common_dir_of() {
-  local dir=$1 common
-  common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
-  (cd -P -- "$dir" && real_dir "$common")
-}
-
-WT_REAL=$(real_dir "$WT_ARG") || true
+WT_REAL=$(fm_real_dir "$WT_ARG") || true
 [ -n "$WT_REAL" ] || refuse "$SCOPE_NOUN '$WT_ARG' is not an accessible directory"
 WT_LOGICAL=$(logical_dir "$WT_ARG") || true
 [ -n "$WT_LOGICAL" ] || WT_LOGICAL=$WT_REAL
 if [ "$MODE" = worktree ]; then
-  PROJ_REAL=$(real_dir "$PROJ_ARG") || true
+  PROJ_REAL=$(fm_real_dir "$PROJ_ARG") || true
   [ -n "$PROJ_REAL" ] || refuse "project '$PROJ_ARG' is not an accessible directory"
 fi
 
 [ -n "${HOME:-}" ] || refuse "HOME is not set, so agy's settings store cannot be located"
-HOME_REAL=$(real_dir "$HOME") || true
+HOME_REAL=$(fm_real_dir "$HOME") || true
 [ -n "$HOME_REAL" ] || refuse "HOME '$HOME' is not an accessible directory"
 [ "$WT_REAL" != / ] || refuse "'/' is the filesystem root, not a $SCOPE_NOUN"
 [ "$WT_REAL" != "$HOME_REAL" ] || refuse "'$WT_REAL' is the home directory, not a $SCOPE_NOUN"
@@ -100,18 +97,18 @@ HOME_REAL=$(real_dir "$HOME") || true
 if [ "$MODE" = worktree ]; then
   WT_TOP=$(git -C "$WT_REAL" rev-parse --show-toplevel 2>/dev/null) || true
   [ -n "$WT_TOP" ] || refuse "'$WT_REAL' is not inside a git repository"
-  WT_TOP_REAL=$(real_dir "$WT_TOP") || true
+  WT_TOP_REAL=$(fm_real_dir "$WT_TOP") || true
   [ "$WT_TOP_REAL" = "$WT_REAL" ] || refuse "'$WT_REAL' is not a worktree root (its root is '${WT_TOP_REAL:-unresolvable}')"
 
   WT_GIT_DIR=$(git -C "$WT_REAL" rev-parse --absolute-git-dir 2>/dev/null) || true
   [ -n "$WT_GIT_DIR" ] || refuse "'$WT_REAL' has no resolvable git directory"
-  WT_GIT_DIR=$(real_dir "$WT_GIT_DIR") || true
+  WT_GIT_DIR=$(fm_real_dir "$WT_GIT_DIR") || true
   [ -n "$WT_GIT_DIR" ] || refuse "'$WT_REAL' has an unresolvable git directory"
-  WT_COMMON=$(common_dir_of "$WT_REAL") || true
+  WT_COMMON=$(fm_git_common_dir "$WT_REAL") || true
   [ -n "$WT_COMMON" ] || refuse "'$WT_REAL' has no resolvable git common directory"
   [ "$WT_GIT_DIR" != "$WT_COMMON" ] || refuse "'$WT_REAL' is a primary checkout, not an isolated worktree"
 
-  PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
+  PROJ_COMMON=$(fm_git_common_dir "$PROJ_REAL") || true
   [ -n "$PROJ_COMMON" ] || refuse "project '$PROJ_REAL' is not inside a git repository"
   [ "$WT_COMMON" = "$PROJ_COMMON" ] || refuse "'$WT_REAL' is not a worktree of project '$PROJ_REAL'"
 else
@@ -131,7 +128,7 @@ else
     fi
     [ -e "$sub_dir" ] || continue
     [ -d "$sub_dir" ] || refuse "'$sub_dir' is not a directory, so '$WT_REAL' is not a seeded secondmate home"
-    sub_dir_real=$(real_dir "$sub_dir") || true
+    sub_dir_real=$(fm_real_dir "$sub_dir") || true
     [ -n "$sub_dir_real" ] || refuse "'$sub_dir' cannot be resolved"
     case "$sub_dir_real" in
       "$WT_REAL"/*) ;;
@@ -144,11 +141,11 @@ command -v node >/dev/null 2>&1 || refuse "node is required to record workspace 
 
 STORE_DIR="$HOME_REAL/.gemini/antigravity-cli"
 mkdir -p "$STORE_DIR" 2>/dev/null || true
-STORE_DIR_REAL=$(real_dir "$STORE_DIR") || true
+STORE_DIR_REAL=$(fm_real_dir "$STORE_DIR") || true
 [ -n "$STORE_DIR_REAL" ] || refuse "agy settings directory '$STORE_DIR' does not exist and could not be created"
 STORE="$STORE_DIR_REAL/settings.json"
 if [ -L "$STORE" ]; then
-  STORE_REAL=$(real_file "$STORE") || true
+  STORE_REAL=$(fm_real_file "$STORE") || true
   [ -n "$STORE_REAL" ] || refuse "'$STORE' is a symlink whose target cannot be resolved"
   STORE=$STORE_REAL
 fi

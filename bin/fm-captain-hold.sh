@@ -12,7 +12,7 @@
 # There is no separate decision type. A captain call is an ordinary backlog
 # task held for the captain through this script's mandatory `hold` subcommand,
 # and its identity is simply the task id. Older installs created derived
-# `<origin>-decision-<key>` identities through bin/fm-decision-hold.sh; those
+# `<origin>-decision-<key>` identities through the retired fm-decision-hold.sh; those
 # rows are already plain task ids, so they keep working here unchanged, and
 # the legacy inputs noted below resolve them without a migration.
 # All backlog reads and mutations address the active home's configured data

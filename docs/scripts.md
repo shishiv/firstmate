@@ -32,7 +32,6 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | [`fm-backlog-handoff.sh`](../bin/fm-backlog-handoff.sh) | Move queued backlog items into a secondmate home; its header owns route-specific wake outcomes and retries |
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record the captain's answers, gate investigation completion, and report record divergence between the status log and the backlog |
-| `fm-decision-hold.sh`    | One-release compatibility shim mapping the retired decision commands onto fm-captain-hold.sh |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`, plus the project's registered `--forge` and `--pr`), scout, secondmate-charter, and Herdr-lab briefs, with Captain's intent and Firstmate spec subsections on ship/scout |
 | [`fm-dod-lib.sh`](../bin/fm-dod-lib.sh) | Own ship/scout worker role scope, ship definitions of done, the named-head reachability gate on ship `done:` acceptance, and the no-mistakes `--intent` contract |
 | `fm-brief-heading-lib.sh` | Single owner of reading a brief's sections, shared by the `--intent` contract, spawn and promotion validation, and `fm-dispatch-resolve.sh` |
@@ -133,6 +132,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-meta-lib.sh`         | The one side-effect-free reader of `key=value` task records (`fm_meta_get`) |
 | `fm-sha256-lib.sh`       | The one SHA-256 file digest helper (`fm_sha256_file`) |
 | `fm-json-lib.sh`         | The one JSON string-content encoder (`fm_json_escape`) for hand-built JSON |
+| `fm-shell-quote-lib.sh`  | The one single-quote shell encoder (`fm_shell_quote`) for generated shell text |
 | `fm-pretool-deny-lib.sh` | The one PreToolUse deny renderer (Claude, Grok, Cursor, Antigravity) shared by the seatbelt transports |
 | `fm-classify-lib.sh`     | Shared wake classification, durable keyed-decision folds and scans, unread status selection, home-owned status-append ranges, and bounded latest-event snapshots |
 | `fm-send.sh`             | Steer a task via a durable inbox record plus doorbell, or send a supported key or typed harness invocation through the recorded backend |

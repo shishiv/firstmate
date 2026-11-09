@@ -212,16 +212,6 @@ SH
   chmod +x "$home/fakebin/perl" "$home/fakebin/sleep"
 }
 
-# The retired command surface, kept for one release as a shim; in-flight
-# pre-collapse work still drives the lifecycle through these spellings.
-run_shim() {  # <home> <command args...>
-  local home=$1
-  shift
-  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-decision-hold.sh" "$@"
-}
-
 write_origin_meta() {  # <home> <id> [kind]
   local home=$1 id=$2 kind=${3:-scout}
   fm_write_meta "$home/state/$id.meta" \
@@ -2186,10 +2176,10 @@ EOF
 }
 
 # Everything a pre-collapse install already has keeps working: composed
-# identities through the shim, short decision keys in recorded metadata, a
+# identities, short decision keys in recorded metadata, a
 # concrete-origin binding, and the chat fallback for old rows.
 test_legacy_identities_keep_working() {
-  local home id hold out show legacy_text legacy_digest old_hold
+  local home id hold out show legacy_text legacy_digest
   home=$(make_home legacy-compat)
   id=sample-legacy-review
   mkdir -p "$home/data/$id"
@@ -2198,17 +2188,17 @@ test_legacy_identities_keep_working() {
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Legacy review\n\nTwo captain choices remain.\n' > "$home/data/$id/report.md"
 
-  hold=$(run_shim "$home" id "$id" pick-one)
-  [ "$hold" = "$id-decision-pick-one" ] || fail "the shim identity was not deterministic: $hold"
-  out=$(run_shim "$home" hold "$id" pick-one --class business \
-    --title "Pick one" --reason "captain choice pending" --repo sample) \
-    || fail "the shim hold path failed"
-  [ "$out" = "$hold" ] || fail "the shim hold did not print the composed identity: $out"
-  run_shim "$home" hold "$id" keep-two --class business \
+  # A pre-collapse row: the composed <origin>-decision-<key> identity held
+  # with a concrete origin, as older installs created it.
+  hold="$id-decision-pick-one"
+  run_captain "$home" hold "$hold" --origin "$id" --class business \
+    --title "Pick one" --reason "captain choice pending" --repo sample >/dev/null \
+    || fail "could not create the legacy-shaped hold"
+  run_captain "$home" hold "$id-decision-keep-two" --origin "$id" --class business \
     --title "Keep two" --reason "captain second choice pending" --repo sample >/dev/null \
-    || fail "the shim second hold failed"
+    || fail "could not create the second legacy-shaped hold"
   show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "hold_kind: captain" "the shim-created row is not a plain captain-held task"
+  assert_contains "$show" "hold_kind: captain" "the legacy-shaped row is not a plain captain-held task"
 
   # A pre-collapse metadata attestation records SHORT keys; verify must resolve
   # them through the legacy composed identity.
@@ -2216,68 +2206,20 @@ test_legacy_identities_keep_working() {
   run_captain "$home" verify "$id" >/dev/null \
     || fail "legacy short-key metadata did not verify against composed identities"
 
-  # The shim's routed close records the routed work inside the captain decision
-  # and clears the recorded edge.
-  tasks_in "$home" add sample-legacy-work "Apply the legacy choice" \
-    --kind ship --repo sample --blocked-by "$hold" >/dev/null
-  tasks_in "$home" add sample-unrouted-work "Unrouted legacy work" \
-    --kind ship --repo sample >/dev/null
   printf 'Use route north.\n' > "$home/route.txt"
-  if run_shim "$home" resolve "$id" pick-one --decision-file "$home/route.txt" \
-    --routed-to sample-missing-work > "$home/missing-route.out" 2> "$home/missing-route.err"; then
-    fail "the shim resolve accepted a missing routed task"
-  fi
-  if run_shim "$home" resolve "$id" pick-one --decision-file "$home/route.txt" \
-    --routed-to sample-unrouted-work > "$home/unrouted.out" 2> "$home/unrouted.err"; then
-    fail "the shim resolve accepted work not blocked by the legacy decision"
-  fi
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: queued" "invalid shim routing closed the legacy decision"
-  assert_not_contains "$show" "Resolution recorded" "invalid shim routing recorded an answer"
-  run_shim "$home" resolve "$id" pick-one --decision-file "$home/route.txt" \
-    --routed-to sample-legacy-work >/dev/null \
-    || fail "the shim resolve path failed"
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: done" "the shim resolve did not close the row"
-  assert_contains "$show" "Use route north." "the shim resolve lost the captain decision"
-  assert_contains "$show" "- sample-legacy-work" "the shim resolve lost the routed identities"
-  show=$(tasks_in "$home" show sample-legacy-work --full)
-  assert_contains "$show" "blocked: no" "the shim resolve did not release the routed work"
-
-  old_hold=$(run_shim "$home" hold "$id" old-route --class business \
-    --title "Old routed choice" --reason "captain old route pending" --repo sample)
-  tasks_in "$home" add sample-old-routed-work "Apply the old routed choice" \
-    --kind ship --repo sample --blocked-by "$old_hold" >/dev/null
-  printf 'Use the historical route.\n' > "$home/old-route.txt"
-  legacy_text=$(cat "$home/old-route.txt")
-  if command -v shasum >/dev/null 2>&1; then
-    legacy_digest=$(printf '%s' "$legacy_text" | shasum -a 256 | awk '{print $1}')
-  else
-    legacy_digest=$(printf '%s' "$legacy_text" | sha256sum | awk '{print $1}')
-  fi
-  printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: sample-old-routed-work\nResolution mode: routed\n\nCaptain decision:\n%s\n\nRouted work:\n- sample-old-routed-work\n' \
-    "$legacy_digest" "$legacy_text" > "$home/old-route-body.txt"
-  tasks_in "$home" update "$old_hold" --body-file "$home/old-route-body.txt" --archive-body >/dev/null
-  run_shim "$home" resolve "$id" old-route --decision-file "$home/old-route.txt" \
-    --routed-to sample-old-routed-work >/dev/null \
-    || fail "the shim did not replay a matching pre-collapse routed record"
-  show=$(tasks_in "$home" show "$old_hold" --full)
-  assert_contains "$show" "state: done" "the replayed legacy resolve did not close its hold"
-  show=$(tasks_in "$home" show sample-old-routed-work --full)
-  assert_contains "$show" "blocked_by: none" "the replayed legacy resolve did not clear its recorded edge"
-
-  # The shim decline path maps onto the same recorded answer.
+  run_captain "$home" answer "$hold" --decision-file "$home/route.txt" >/dev/null \
+    || fail "the legacy identity could not be answered"
   printf 'Declined: keep the current shape.\n' > "$home/decline.txt"
-  run_shim "$home" decline "$id" keep-two --decision-file "$home/decline.txt" >/dev/null \
-    || fail "the shim decline path failed"
+  run_captain "$home" answer "$id-decision-keep-two" --decision-file "$home/decline.txt" >/dev/null \
+    || fail "the second legacy identity could not be answered"
   run_captain "$home" verify "$id" >/dev/null \
-    || fail "shim-closed rows did not satisfy the completion gate"
+    || fail "answered legacy rows did not satisfy the completion gate"
 
   # A concrete-origin binding (a pre-collapse record) makes short channel keys
   # resolve through the composed identity.
-  run_shim "$home" hold "$id" third-choice --class business \
+  run_captain "$home" hold "$id-decision-third-choice" --origin "$id" --class business \
     --title "Third choice" --reason "captain third choice pending" --repo sample >/dev/null
-  run_shim "$home" bind legacy-src "$id" >/dev/null || fail "the shim bind path failed"
+  run_captain "$home" bind legacy-src "$id" >/dev/null || fail "the concrete-origin bind failed"
   [ "$(run_captain "$home" binding legacy-src)" = "$id" ] \
     || fail "the concrete-origin binding was not preserved"
   printf 'third-choice\toption b\t\n' \
@@ -2287,7 +2229,7 @@ test_legacy_identities_keep_working() {
   show=$(tasks_in "$home" show "$id-decision-third-choice" --full)
   assert_contains "$show" "state: done" "the legacy-keyed answer did not close its row"
 
-  run_shim "$home" hold "$id" fourth-choice --class business \
+  run_captain "$home" hold "$id-decision-fourth-choice" --origin "$id" --class business \
     --title "Fourth choice" --reason "captain fourth choice pending" --repo sample >/dev/null
   legacy_text=$(printf 'Captain answered this decision through legacy replay.\nDecision key: fourth-choice\nAnswer: option c\n')
   if command -v shasum >/dev/null 2>&1; then
@@ -2309,7 +2251,7 @@ test_legacy_identities_keep_working() {
     || fail "a full legacy task-id replay without an origin was not idempotent"
   assert_contains "$out" "closed: $id-decision-fourth-choice" \
     "the origin-free legacy replay digest was treated as drift"
-  pass "legacy identities, metadata, bindings, and the shim keep working"
+  pass "legacy identities, metadata, and bindings keep working"
 }
 
 # A board answer must reach the keyed-answer intake through the RUNNER, not just
@@ -2381,7 +2323,7 @@ test_chat_channel_feeds_the_same_keyed_answer_intake() {
   write_origin_meta "$home" "$id" ship
   printf 'needs-decision [key=chat-choice]: pick option A or option B\n' > "$home/state/$id.status"
   printf '# Chat review\n\nTwo captain choices remain.\n' > "$home/data/$id/report.md"
-  run_shim "$home" hold "$id" chat-choice --class business \
+  run_captain "$home" hold "$id-decision-chat-choice" --origin "$id" --class business \
     --title "Choose the sample chat option" --reason "captain chat choice pending" --repo sample >/dev/null \
     || fail "could not register the legacy chat row"
   run_captain "$home" hold sample-chat-followup --class business --title "Choose the chat follow-up" \

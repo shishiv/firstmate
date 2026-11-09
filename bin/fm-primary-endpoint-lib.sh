@@ -33,6 +33,8 @@
 FM_PRIMARY_ENDPOINT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-supervisor-target-lib.sh
 . "$FM_PRIMARY_ENDPOINT_LIB_DIR/fm-supervisor-target-lib.sh"
+# shellcheck source=bin/fm-shell-quote-lib.sh
+. "$FM_PRIMARY_ENDPOINT_LIB_DIR/fm-shell-quote-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$FM_PRIMARY_ENDPOINT_LIB_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -232,20 +234,16 @@ fm_primary_endpoint_load() {  # <state-dir> <expected-root> <expected-home>
   return 0
 }
 
-fm_primary_endpoint_shell_quote() {
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
-}
-
 fm_primary_endpoint_doorbell_line() {  # <root>
   local root=$1 drain
-  drain=$(fm_primary_endpoint_shell_quote "$root/bin/fm-wake-drain.sh") || return 1
+  drain=$(fm_shell_quote "$root/bin/fm-wake-drain.sh") || return 1
   printf ': Firstmate wake waiting: handle the durable wake context attached by the Kiro UserPromptSubmit hook; if none was attached, run %s now, then run the exact WAKE_ACK_REQUIRED command after handling.' "$drain"
 }
 
 fm_primary_endpoint_failure_line() {  # <root>
   local root=$1 drain owner
-  drain=$(fm_primary_endpoint_shell_quote "$root/bin/fm-wake-drain.sh") || return 1
-  owner=$(fm_primary_endpoint_shell_quote "$root/bin/fm-primary-doorbell.sh") || return 1
+  drain=$(fm_shell_quote "$root/bin/fm-wake-drain.sh") || return 1
+  owner=$(fm_shell_quote "$root/bin/fm-primary-doorbell.sh") || return 1
   printf ': Firstmate watcher continuity FAILED: the doorbell owner stopped after repeated failed watcher starts; run %s and handle it, read state/.primary-doorbell-failed and state/.watch-cycle-exits.log, then run %s ensure once.' "$drain" "$owner"
 }
 

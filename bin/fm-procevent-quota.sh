@@ -87,14 +87,6 @@ resolve_provider() {
   fm_procevent_source_id_valid "$CANONICAL_SOURCE_ID" || die "source id is not path-safe: $CANONICAL_SOURCE_ID"
 }
 
-positive_number() {
-  local n=${1-}
-  local LC_ALL=C
-  [[ "$n" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
-  [ "$n" != 0 ] && [[ ! "$n" =~ ^0+(\.0+)?$ ]]
-}
-
-positive_int() { case "${1-}" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac }
 
 valid_percent() {
   local n=${1-}
@@ -205,7 +197,7 @@ cmd_arm() {
   local interval=$DEFAULT_INTERVAL threshold=$DEFAULT_THRESHOLD
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --interval)  positive_number "${2-}" || die "--interval needs a positive number"; interval=$2; shift 2 ;;
+      --interval)  fm_procevent_positive_number "${2-}" || die "--interval needs a positive number"; interval=$2; shift 2 ;;
       --threshold) valid_percent "${2-}" || die "--threshold needs a percent 0-100"; threshold=$2; shift 2 ;;
       --provider)  [ -n "${2-}" ] || die "--provider needs a value"; resolve_provider "$2"; shift 2 ;;
       *) usage ;;
@@ -238,9 +230,9 @@ cmd_poll() {
       *) usage ;;
     esac
   done
-  positive_number "$interval" || die "--interval needs a positive number"
+  fm_procevent_positive_number "$interval" || die "--interval needs a positive number"
   valid_percent "$threshold" || die "--threshold needs a percent 0-100"
-  [ -z "$timeout" ] || positive_int "$timeout" || die "--timeout needs a positive integer"
+  [ -z "$timeout" ] || fm_procevent_positive_int "$timeout" || die "--timeout needs a positive integer"
   resolve_provider "$PROVIDER"
   local json detail status polls=0 consecutive_failures=0 read_rc detail_msg
   while :; do
@@ -285,10 +277,7 @@ cmd_classify() {
   local file=${1-} status
   [ -n "$file" ] || usage
   [ -f "$file" ] || die "result file does not exist: $file"
-  status=$(awk '
-    $0 == "output:" { exit }
-    /^status: / { sub(/^status: /, ""); print; exit }
-  ' "$file")
+  status=$(fm_procevent_result_status "$file")
   case "$status" in
     low|exhausted|error) printf '%s\n' "$status" ;;
     *) printf 'unknown\n' ;;

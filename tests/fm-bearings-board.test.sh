@@ -123,12 +123,12 @@ run_procevent() {  # <home> <command args...>
     "$ROOT/bin/fm-procevent.sh" "$@"
 }
 
-run_decisions() {  # <home> <command args...>
+run_captain_hold() {  # <home> <command args...>
   local home=$1
   shift
   PATH="$home/fakebin:$PATH" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    "$ROOT/bin/fm-decision-hold.sh" "$@"
+    "$ROOT/bin/fm-captain-hold.sh" "$@"
 }
 
 # A realistic payload: a cross-origin full-identity decision key past the old
@@ -344,7 +344,7 @@ test_build_injects_binds_then_arms() {
 
   sid=$(run_lavish_source_id "$home" "$board")
   assert_contains "$out" "bound: $sid" "the binding does not name the board source: $out"
-  [ "$(run_decisions "$home" binding "$sid")" = "(any)" ] \
+  [ "$(run_captain_hold "$home" binding "$sid")" = "(any)" ] \
     || fail "the board source is not bound any-origin"
   run_procevent "$home" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid" \
     || fail "the board source is not registered after build"
@@ -369,7 +369,7 @@ test_registration_cannot_consume_before_any_origin_binding() {
 ## Done
 EOF
   fm_write_meta "$home/state/$origin.meta" "project=$home/projects/sample" "kind=scout"
-  run_decisions "$home" hold "$origin" "$key" --class business \
+  run_captain_hold "$home" hold "$origin-decision-$key" --origin "$origin" --class business \
     --title "Choose the order proof" --reason "captain choice pending" --repo sample >/dev/null \
     || fail "could not create the order-proof captain hold"
 
@@ -421,7 +421,7 @@ SH
   assert_contains "$show" "Resolution mode: answered" \
     "the answer was not closed through the real keyed-answer intake"
   sid=$(run_lavish_source_id "$home" "$board")
-  [ "$(run_decisions "$home" binding "$sid")" = "(any)" ] \
+  [ "$(run_captain_hold "$home" binding "$sid")" = "(any)" ] \
     || fail "the order-proof source did not retain its any-origin binding"
   pass "registration can consume answers only after any-origin binding exists"
 }
@@ -443,7 +443,7 @@ SH
   set -e
   [ "$rc" -ne 0 ] || fail "build continued after Lavish session establishment failed"
   sid=$(run_lavish_source_id "$home" "$home/.lavish/bearings-board.html")
-  ! run_decisions "$home" binding "$sid" >/dev/null 2>&1 \
+  ! run_captain_hold "$home" binding "$sid" >/dev/null 2>&1 \
     || fail "build bound the board before its Lavish session existed"
   ! run_procevent "$home" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid" \
     || fail "build armed the board before its Lavish session existed"
@@ -586,7 +586,7 @@ test_build_refuses_to_arm_when_the_session_stays_ended() {
   [ "$rc" -ne 0 ] || fail "build armed a poll on a session that stayed ended: $out"
   assert_contains "$out" "ended session" "the refusal did not say why: $out"
   sid=$(run_lavish_source_id "$home" "$home/.lavish/bearings-board.html")
-  ! run_decisions "$home" binding "$sid" >/dev/null 2>&1 \
+  ! run_captain_hold "$home" binding "$sid" >/dev/null 2>&1 \
     || fail "build bound the board to a session that stayed ended"
   ! run_procevent "$home" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid" \
     || fail "build armed the board against a session that stayed ended"
