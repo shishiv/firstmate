@@ -486,7 +486,9 @@
 #   which puts the worker in its own systemd user scope,
 #   firstmate.slice/fm-worker-<id>-<spawn_gen>.scope, with MemoryHigh set. The
 #   kernel then throttles one runaway worker before it pushes the desktop into
-#   swap; it does not kill it. The default is 3G. The content of the local,
+#   swap; it does not kill it, except that Node sizes its heap from the cap, so
+#   the helper also appends Node's unscoped heap size to NODE_OPTIONS (its header
+#   owns that). The default is 3G. The content of the local,
 #   gitignored config/worker-memory-high, with all whitespace removed, selects
 #   `off` (no wrapper, today's uncapped launch text) or another size: a positive
 #   whole number with an optional K, M, G or T suffix. Any other value, or an
