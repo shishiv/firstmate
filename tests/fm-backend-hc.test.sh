@@ -24,6 +24,7 @@ set -u
 D="${FAKE_HC_DIR:?}"
 {
   printf 'HC_SESSION=%s HC_SOCKET=%s' "${HC_SESSION:-}" "${HC_SOCKET:-}"
+  printf '%s|%s|%s\n' "${HC_TERMINAL_ID-unset}" "${HC_TERMINAL_SOCKET-unset}" "${HC_SCOPE-unset}" >> "$D/ambient"
   for a in "$@"; do printf '\x1f%s' "$a"; done
   printf '\n'
 } >> "$D/log"
@@ -341,6 +342,16 @@ test_inherited_socket_never_overrides_the_session() {
   pass "hc: an inherited HC_SOCKET never overrides the session pin"
 }
 
+# hc 0.1.20 wraps `hc send` text in <hc from="tN"> when it sees the caller's
+# terminal markers, which broke a relaunch run from inside an hc terminal.
+test_ambient_terminal_markers_never_reach_hc() {
+  setup_case markers
+  HC_TERMINAL_ID=t7 HC_TERMINAL_SOCKET=/run/herdr-core/default.sock HC_SCOPE=scope7 \
+    hc_shell 'fm_backend_hc_cli fmtest ls' >/dev/null
+  assert_equals "unset|unset|unset" "$(cat "$D/ambient")" "hc must run without HC_TERMINAL_ID, HC_TERMINAL_SOCKET, HC_SCOPE"
+  pass "hc: ambient terminal markers never reach hc"
+}
+
 test_agent_state_classifies_foreground_and_absence() {
   local tag out
   setup_case state
@@ -581,6 +592,7 @@ test_control_interrupt_delivers_the_harness_keys
 test_foreign_or_unlabeled_terminal_gets_no_input_and_no_close
 test_invalid_session_never_reaches_hc
 test_inherited_socket_never_overrides_the_session
+test_ambient_terminal_markers_never_reach_hc
 test_agent_state_classifies_foreground_and_absence
 test_agent_state_reads_a_shell_wrappers_group
 test_kill_proves_the_terminal_is_gone
