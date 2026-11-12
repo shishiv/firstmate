@@ -92,6 +92,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # same rule (fm_backend_herdr_pane_process_state).
 # shellcheck source=bin/fm-agent-process-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-agent-process-lib.sh"
+# shellcheck source=bin/fm-oomd-slice-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-oomd-slice-lib.sh"
 
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
@@ -1819,12 +1821,8 @@ fm_backend_herdr_host_diagnostics() {
   if command -v "$ps_bin" >/dev/null 2>&1; then
     while read -r pid; do
       [ -n "$pid" ] || continue
-      cgroup=$(sed -n 's/^0:://p' "$proc/$pid/cgroup" 2>/dev/null | head -1)
-      case "$cgroup" in
-        */app.slice/*)
-          echo "HERDR_SERVER_CGROUP: the default Herdr server (pid $pid) runs in $cgroup, under app.slice, where a systemd-oomd memory-pressure kill takes the server and every agent pane with it; run it as the user service herdr.service in its own slice (docs/herdr-backend.md \"Running the server under systemd\")"
-          ;;
-      esac
+      cgroup=$(fm_oomd_app_slice_cgroup "$proc" "$pid") || continue
+      echo "HERDR_SERVER_CGROUP: the default Herdr server (pid $pid) runs in $cgroup, under app.slice, where a systemd-oomd memory-pressure kill takes the server and every agent pane with it; run it as the user service herdr.service in its own slice (docs/herdr-backend.md \"Running the server under systemd\")"
     done <<EOF
 $(LC_ALL=C "$ps_bin" -axo pid=,args= 2>/dev/null | awk '
   {

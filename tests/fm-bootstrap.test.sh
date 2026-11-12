@@ -814,6 +814,49 @@ test_herdr_host_diagnostics_warn_on_app_slice_and_agent_resume() {
   pass "bootstrap: a herdr home warns when the default server sits under app.slice and when agent resume is on, read-only"
 }
 
+# An hc home gets one read-only warning: the default session's holder under
+# app.slice. The fake process table holds the default holder, a named lab
+# session's holder, and a plain core, so only the default holder may be named.
+hc_diagnostics_case() {  # <case> <backend> <cgroup> -> output
+  local case_dir="$TMP_ROOT/hc-diag-$1" fakebin proc
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$2" > "$case_dir/home/config/backend"
+  fakebin=$(make_fake_toolchain_no_tmux "$case_dir" hc)
+  cat > "$fakebin/fake-ps" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '  5242 /home/u/.local/bin/herdr-core hold --socket /run/user/1000/herdr-core/default.holder.791aca82.sock' \
+  '  5243 herdr-core hold --socket /run/user/1000/herdr-core/fm-lab-x.holder.1a2b3c4d.sock' \
+  '  5244 /home/u/.local/bin/herdr-core serve'
+SH
+  chmod +x "$fakebin/fake-ps"
+  proc="$case_dir/proc"
+  mkdir -p "$proc/5242" "$proc/5243" "$proc/5244"
+  printf '0::%s\n' "$3" > "$proc/5242/cgroup"
+  printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/hc-hold-lab.service\n' \
+    | tee "$proc/5243/cgroup" > "$proc/5244/cgroup"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_HC_PS_BIN="$fakebin/fake-ps" FM_HC_PROC_ROOT="$proc" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh"
+}
+
+test_hc_host_diagnostics_warn_on_app_slice_holder() {
+  local out app=/user.slice/user-1000.slice/user@1000.service/app.slice/hc-hold-3fe340f2.service
+  local own=/user.slice/user-1000.slice/user@1000.service/herdr.slice/hc-hold-3fe340f2.service
+  out=$(hc_diagnostics_case exposed hc "$app")
+  assert_contains "$out" "HC_HOLDER_CGROUP: the default hc holder (pid 5242) runs in $app, under app.slice" \
+    "a default holder under app.slice was not reported"
+  assert_not_contains "$out" "pid 5243" "a named lab session's holder was reported as the default holder"
+  assert_not_contains "$out" "pid 5244" "the core process was reported as the holder"
+
+  out=$(hc_diagnostics_case protected hc "$own")
+  [ -z "$out" ] || fail "a holder in its own slice must be silent, got: $out"
+
+  out=$(hc_diagnostics_case tmux-home tmux "$app")
+  assert_not_contains "$out" "HC_HOLDER_CGROUP" "a tmux home must not report hc host diagnostics"
+  pass "bootstrap: an hc home warns when the default holder sits under app.slice, read-only"
+}
+
 test_herdr_install_requires_manual_action() {
   local out status
   out=$("$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
@@ -1634,6 +1677,7 @@ test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux
 test_herdr_install_requires_manual_action
 test_herdr_host_diagnostics_warn_on_app_slice_and_agent_resume
+test_hc_host_diagnostics_warn_on_app_slice_holder
 test_cmux_bundled_cli_satisfies_dependency
 test_unknown_backend_reports_invalid_configuration
 test_json_backends_require_jq_not_tmux

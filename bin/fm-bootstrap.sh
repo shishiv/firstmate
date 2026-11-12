@@ -25,6 +25,7 @@
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "HERDR_SERVER_CGROUP: the default Herdr server (pid <pid>) runs in <cgroup>, under app.slice, ...",
 #                 "HERDR_AGENT_RESUME: Herdr <version> resumes agents after a server restart because <config.toml> does not set [session] resume_agents_on_restore = false; ...",
+#                 "HC_HOLDER_CGROUP: the default hc holder (pid <pid>) runs in <cgroup>, under app.slice, ...",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...",
 #                 "TOOL_NEED: <project> needs <tool> <pin> (tools/<tool>.version): <gap> (fix: <command>)",
 #                 "TOOL_UPDATE: <tool> <installed> -> <latest> available (update: <command>)".
@@ -34,8 +35,11 @@
 #          only report and never install or update anything.
 #          The two HERDR_ lines print only on a herdr home, from read-only
 #          process-table and config reads (bin/backends/herdr.sh's
-#          fm_backend_herdr_host_diagnostics owns when); bootstrap never starts,
-#          stops, or reconfigures Herdr and never writes its config.
+#          fm_backend_herdr_host_diagnostics owns when). HC_HOLDER_CGROUP prints
+#          only on an hc home, from a process-table read (bin/backends/hc.sh's
+#          fm_backend_hc_host_diagnostics owns when). Both cgroup warnings share
+#          bin/fm-oomd-slice-lib.sh's exposure rule. Bootstrap never starts,
+#          stops, or reconfigures Herdr or hc and never writes Herdr's config.
 #          When a RUNNING secondmate home is fast-forwarded, its target is
 #          firstmate's own current default-branch commit. A local worktree uses
 #          a purely local fast-forward with no origin fetch; a remote route hands
@@ -1606,6 +1610,9 @@ detect_local_config() {
   detect_home_summary_publication
   if [ "$BACKEND" = herdr ] && fm_backend_source herdr 2>/dev/null; then
     fm_backend_herdr_host_diagnostics
+  fi
+  if [ "$BACKEND" = hc ] && fm_backend_source hc 2>/dev/null; then
+    fm_backend_hc_host_diagnostics
   fi
 }
 

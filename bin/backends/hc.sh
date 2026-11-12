@@ -71,6 +71,8 @@
 . "$FM_BACKEND_LIB_DIR/fm-composer-lib.sh"
 # shellcheck source=bin/fm-agent-process-lib.sh
 . "$FM_BACKEND_LIB_DIR/fm-agent-process-lib.sh"
+# shellcheck source=bin/fm-oomd-slice-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-oomd-slice-lib.sh"
 
 # The hc session a new task is created on: the caller's HC_SESSION, else hc's
 # own default session name.
@@ -434,4 +436,34 @@ fm_backend_hc_group_has_agent() {  # <pid>
 $(LC_ALL=C ps -A -o pid=,pgid=,comm= 2>/dev/null)
 EOF
   return 1
+}
+
+# fm_backend_hc_host_diagnostics: the read-only startup warning printed by
+# bin/fm-bootstrap.sh (whose header owns the line format) when the `default`
+# session's holder runs under app.slice. The holder keeps the program of every
+# terminal of every home, so one systemd-oomd kill of its cgroup ends them all
+# (docs/hc-backend.md "Running the holder outside app.slice"). The holder is
+# found from the process table, never through an hc call, so nothing is started
+# by asking. FM_HC_PS_BIN and FM_HC_PROC_ROOT redirect the process reads.
+fm_backend_hc_host_diagnostics() {
+  local ps_bin proc pid cgroup
+  ps_bin=${FM_HC_PS_BIN:-ps}
+  proc=${FM_HC_PROC_ROOT:-/proc}
+  command -v "$ps_bin" >/dev/null 2>&1 || return 0
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    cgroup=$(fm_oomd_app_slice_cgroup "$proc" "$pid") || continue
+    echo "HC_HOLDER_CGROUP: the default hc holder (pid $pid) runs in $cgroup, under app.slice, where a systemd-oomd memory-pressure kill takes the holder and every terminal's program, in every home, with it; give its transient unit a slice outside app.slice (docs/hc-backend.md \"Running the holder outside app.slice\")"
+  done <<EOF
+$(LC_ALL=C "$ps_bin" -axo pid=,args= 2>/dev/null | awk '
+  {
+    pid = $1
+    line = $0
+    sub(/^[ \t]*[0-9]+[ \t]+/, "", line)
+    n = split(line, a, /[ \t]+/)
+    bin = a[1]; sub(/.*\//, "", bin)
+    sock = a[4]; sub(/.*\//, "", sock)
+    if (bin == "herdr-core" && a[2] == "hold" && a[3] == "--socket" && sock ~ /^default\.holder\./) print pid
+  }')
+EOF
 }
