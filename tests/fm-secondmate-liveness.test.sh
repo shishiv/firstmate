@@ -624,6 +624,22 @@ test_sweep_respawns_authoritatively_missing_pi_signed_secondmate() {
   pass "sweep: an authoritatively missing pi-signed secondmate window is relaunched"
 }
 
+test_sweep_respawns_dead_kiro_cli_secondmate() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-dead-kiro-cli)
+  add_sm_home "$w" sm1 firstmate:fm-sm1 kiro-cli
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
+
+  assert_not_contains "$out" "unverified for recovery" \
+    "a recorded kiro-cli secondmate should be verified for recovery"
+  assert_contains "$(cat "$log")" "new-window" \
+    "a kiro-cli secondmate whose agent died should be relaunched"
+  pass "sweep: a dead kiro-cli secondmate is relaunched"
+}
+
 test_sweep_never_acts_on_ambiguous_existing_process() {
   local w fb tmuxfb log out
   w=$(new_world sweep-ambiguous)
@@ -851,6 +867,7 @@ test_sweep_keeps_tmux_best_effort_kill_when_close_fails
 test_sweep_leaves_alive_secondmate_untouched
 test_sweep_respawns_authoritatively_missing_pi_secondmate
 test_sweep_respawns_authoritatively_missing_pi_signed_secondmate
+test_sweep_respawns_dead_kiro_cli_secondmate
 test_sweep_never_acts_on_ambiguous_existing_process
 test_sweep_never_acts_on_transient_unreadability
 test_sweep_reports_missing_endpoint_relaunch_failure

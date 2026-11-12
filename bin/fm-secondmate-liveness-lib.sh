@@ -58,6 +58,8 @@ FM_SM_LIVE_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 # shellcheck source=bin/fm-backend.sh
 . "$FM_SM_LIVE_LIB_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-control-lib.sh
+. "$FM_SM_LIVE_LIB_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$FM_SM_LIVE_LIB_DIR/fm-remote-readiness-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
@@ -141,7 +143,7 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
   local meta=$1 id=$2 mode=$3
   FM_SM_LIVE_STATUS=skipped FM_SM_LIVE_STATE=unknown FM_SM_LIVE_KILL=0 FM_SM_LIVE_RESUME=0
   FM_SM_LIVE_CAUSE='' FM_SM_LIVE_WHERE='' FM_SM_LIVE_REASON='' FM_SM_LIVE_LINE=''
-  local window harness remote_host remote_rc out agent_state readiness_reason route_out remote_backend
+  local window harness family remote_host remote_rc out agent_state readiness_reason route_out remote_backend
   window=$(fm_meta_get "$meta" window)
   [ -n "$window" ] || { FM_SM_LIVE_STATUS=silent; return 0; }
   harness=$(fm_meta_get "$meta" harness)
@@ -223,12 +225,13 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
   agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
-  case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|omp) ;;
-    *)
-      case "$agent_state" in dead|missing) agent_state=unverified-harness ;; esac
-      ;;
-  esac
+  # A dead or missing reading licenses a relaunch only for a harness whose
+  # mechanics the control plane verifies for a secondmate; the same predicate
+  # decides fm-control.sh relaunch and bin/fm-secondmate-restart-lib.sh.
+  if ! family=$(fm_control_harness_family "$harness") \
+    || ! fm_control_harness_supports_kind "$family" secondmate; then
+    case "$agent_state" in dead|missing) agent_state=unverified-harness ;; esac
+  fi
   FM_SM_LIVE_STATE=$agent_state
   case "$agent_state" in
     alive)
