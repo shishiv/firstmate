@@ -132,6 +132,44 @@ EOF
     "mode=ship"
 }
 
+# Regression (12/11/2026 hc holder loss): hc leaves a shell at a dead worker's
+# address, so endpoint presence alone showed the dead worker as "present".
+test_hc_worker_with_a_shell_reads_dead_in_snapshot_and_view() {
+  local home fakebin tag out view
+  home=$(make_home hc-shell)
+  fakebin=$(make_fakebin "$home")
+  tag=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" bash -c '. "'"$ROOT"'/bin/fm-backend.sh"; fm_backend_source hc; fm_backend_hometag')
+  cat > "$fakebin/hc" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get)
+    case "\${*: -1}" in
+      t7) fg=bash ;;
+      *) fg=kiro-cli ;;
+    esac
+    jq -n --arg t "$tag" --arg n "\$fg" --arg a "\${*: -1}" '{address:\$a, state:"live",
+      labels:{"firstmate.task":("fm-hc-" + (if \$a == "t7" then "dead" else "live" end)),"firstmate.home":\$t},
+      foreground:{name:\$n, argv:[\$n], cwd:"/w", pid:999999}}' ;;
+  read) printf 'screen\\n' ;;
+  *) printf '{}\\n' ;;
+esac
+SH
+  chmod +x "$fakebin/hc"
+  fm_write_meta "$home/state/hc-dead.meta" "backend=hc" "window=default:t7" \
+    "worktree=$home/projects/wt-dead" "project=alpha" "harness=kiro-cli" "kind=ship" "mode=ship"
+  fm_write_meta "$home/state/hc-live.meta" "backend=hc" "window=default:t8" \
+    "worktree=$home/projects/wt-live" "project=alpha" "harness=kiro-cli" "kind=ship" "mode=ship"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "hc-dead") | .endpoint.exists == true and .endpoint.agent_alive == "dead" and .endpoint.status == "dead")
+    and (.tasks[] | select(.id == "hc-live") | .endpoint.agent_alive == "alive")
+  ' >/dev/null || fail "an hc worker whose program became a shell must read dead, a live one alive: $out"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$VIEW")
+  assert_contains "$view" "| hc | present / dead |" "the fleet view must show the shell-only hc worker as dead"
+  assert_contains "$view" "| hc | present / alive |" "the fleet view must show a live hc worker as alive"
+  pass "fleet snapshot and view read an hc worker whose program became a shell as dead"
+}
+
 test_empty_fleet_json() {
   local home out view
   home=$(make_home empty)
@@ -1170,4 +1208,5 @@ fm_test_run \
   test_scout_reports_include_teardown_reports \
   test_backlog_tasks_axi_forms_and_overrides \
   test_view_renders_snapshot \
-  test_view_renders_dead_secondmate_agent_status
+  test_view_renders_dead_secondmate_agent_status \
+  test_hc_worker_with_a_shell_reads_dead_in_snapshot_and_view

@@ -2771,6 +2771,48 @@ test_no_run_grok_uses_isolated_fallback() {
   pass "grok still reads working through its isolated rendered-tail fallback"
 }
 
+# Regression (12/11/2026 hc holder loss): hc swaps a dead program for a login
+# shell at the same address, so the terminal stays readable. The reader must ask
+# the hc adapter's agent state instead of trusting that the terminal exists.
+make_fake_hc() {  # <case-dir> <foreground-name> -> exports FAKE_HC_JSON via the case dir
+  local d=$1 fg=$2 tag
+  tag=$(FM_STATE_OVERRIDE="$d/state" bash -c '. "'"$ROOT"'/bin/fm-backend.sh"; fm_backend_source hc; fm_backend_hometag')
+  jq -n --arg t "$tag" --arg n "$fg" '{address:"t7", state:"live",
+    labels:{"firstmate.task":"fm-feat-hc","firstmate.home":$t},
+    foreground:{name:$n, argv:[$n], cwd:"/w", pid:999999}}' > "$d/hc-terminal.json"
+  cat > "$d/fakebin/hc" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get) cat "$d/hc-terminal.json" ;;
+  read) printf 'screen\n' ;;
+  *) printf '{}\n' ;;
+esac
+SH
+  chmod +x "$d/fakebin/hc"
+}
+
+test_no_run_hc_shell_in_place_of_the_worker_reads_gone() {
+  command -v jq >/dev/null 2>&1 || { pass "hc shell-for-worker test skipped without jq"; return; }
+  reset_fakes
+  local d out; d=$(new_case hc-shell)
+  make_repo_on_branch "$d/wt" fm/feat-hc
+  make_fakebin "$d" >/dev/null
+  make_fake_hc "$d" bash
+  fm_write_meta "$d/state/feat-hc.meta" "window=default:t7" "worktree=$d/wt" "kind=ship" \
+    "backend=hc" "harness=kiro-cli"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  out=$(run_crew_state "$d" feat-hc)
+  assert_contains "$out" "state: unknown" "a shell in place of the worker must not read working"
+  assert_contains "$out" "backend target gone" "a shell in place of the worker reads as a gone agent"
+  assert_contains "$out" "agent gone, pane shell remains" "the reading names the surviving shell"
+
+  make_fake_hc "$d" kiro-cli
+  out=$(run_crew_state "$d" feat-hc)
+  assert_not_contains "$out" "backend target gone" "a live kiro-cli foreground is not a gone agent"
+  pass "an hc terminal whose program became a shell reads gone, a live worker does not"
+}
+
 test_no_run_herdr_unknown_uses_backend_capture() {
   command -v jq >/dev/null 2>&1 || { pass "herdr pane fallback skipped without jq"; return; }
   reset_fakes
@@ -6164,6 +6206,7 @@ test_no_run_overview_zero_branch_falls_through
 test_no_run_launch_prompt_parked_is_not_working
 test_no_run_footer_text_alone_is_not_working
 test_no_run_grok_uses_isolated_fallback
+test_no_run_hc_shell_in_place_of_the_worker_reads_gone
 test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_cli_failure_reads_unreachable_not_gone
 test_no_run_herdr_alive_with_failed_read_stays_live

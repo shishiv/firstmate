@@ -329,6 +329,13 @@ EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
     tmux) fm_backend_target_exists tmux "$1" ;;
+    # hc keeps a terminal whose program died and puts a shell in its place, so
+    # a readable screen proves nothing; the adapter's agent state owns that
+    # call, and only its `dead` reading makes the pane unreadable here.
+    hc)
+      fm_backend_capture hc "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 \
+        && [ "$(fm_backend_agent_state hc "$1")" != dead ]
+      ;;
     *) fm_backend_capture "$TASK_BACKEND" "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 ;;
   esac
 }
@@ -1357,7 +1364,7 @@ fi
 # liveness, so a finished-but-pane-closed crew never reaches here. Down here there
 # is no run to consult, so only positive evidence that the target is gone may
 # read as death - a backend that failed to answer is unknown, never death, for
-# the classifier-backed backends (tmux, herdr, rex, and t3code) - and every death-class
+# the classifier-backed backends (tmux, herdr, rex, t3code, and hc) - and every death-class
 # verdict reports unknown rather than trusting a possibly-stale status log as
 # the current state.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
@@ -1392,19 +1399,19 @@ if ! pane_readable "$BACKEND_TARGET"; then
   # report unverified, and tern's classifier is not promoted to recovery grade)
   # keep their historical capture-failure-means-gone reading.
   case "$TASK_BACKEND" in
-    tmux|herdr|rex|t3code) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
+    tmux|herdr|rex|t3code|hc) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
     *) AGENT_STATE=none ;;
   esac
   case "$TASK_BACKEND:$AGENT_STATE" in
-    tmux:alive|herdr:alive|rex:alive|t3code:alive)
+    tmux:alive|herdr:alive|rex:alive|t3code:alive|hc:alive)
       ;;
-    tmux:missing|herdr:missing|rex:missing|t3code:missing)
+    tmux:missing|herdr:missing|rex:missing|t3code:missing|hc:missing)
       emit unknown none "backend target gone: $BACKEND_TARGET"
       ;;
-    tmux:dead|herdr:dead|rex:dead|t3code:dead)
+    tmux:dead|herdr:dead|rex:dead|t3code:dead|hc:dead)
       emit unknown none "backend target gone: $BACKEND_TARGET (agent gone, pane shell remains)"
       ;;
-    tmux:*|herdr:*|rex:*|t3code:*)
+    tmux:*|herdr:*|rex:*|t3code:*|hc:*)
       emit unknown none "backend unreachable ($TASK_BACKEND endpoint state: $AGENT_STATE)"
       ;;
     *)
