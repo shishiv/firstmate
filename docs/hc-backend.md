@@ -101,6 +101,25 @@ The away-mode daemon still supports only tmux and Herdr 1 supervisor panes and r
 - A worker inherits `HC_SESSION`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, and `HC_SCOPE` from its terminal, and the `config/launch-env-allowlist` floor keeps them; a Kiro scout launched by `bin/fm-spawn.sh` reported its native status to herdr-core, and other harnesses are not verified.
 - hc has no event stream this adapter consumes; supervision polls like tmux.
 
+## Running the holder outside app.slice
+
+The `default` session's holder (`herdr-core hold`) keeps the program of every terminal of every home.
+`herdr-core serve` starts it with `systemd-run --user` and no `--slice`, so it lands in `app.slice`.
+Where systemd-oomd watches `app.slice` (Omarchy does), one memory-pressure kill of that cgroup ends every terminal's program in every home at once.
+Outside `app.slice` systemd-oomd picks another target, but the kernel's own OOM killer still applies.
+
+Session start warns on an hc home when the running `default` holder sits under `app.slice` (`HC_HOLDER_CGROUP`).
+A drop-in for the transient unit name prefix moves the next holder, and the holder already running stays where it is until it restarts.
+`~/.config/systemd/user/hc-hold-.service.d/slice.conf`:
+
+```ini
+[Service]
+Slice=herdr.slice
+```
+
+The slice is the one [`herdr-backend.md`](herdr-backend.md#running-the-server-under-systemd) defines.
+Restarting the holder ends every terminal's program, so the switch needs a time when every fleet can stop.
+
 ## Herdr.app mod
 
 `share/herdr-app/mods/firstmate/` is a Herdr.app mod that lists every Firstmate worker terminal grouped by home.

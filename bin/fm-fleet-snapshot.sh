@@ -65,9 +65,11 @@
 #     against current_state; hints.pending_decision and hints.blocked_event are
 #     booleans derived from that set.
 #     endpoint.exists is the cheap local backend endpoint-presence read.
-#     endpoint.agent_alive is populated for local secondmates only, where it is
-#     useful return-channel supervision data; remote secondmates use "unknown"
-#     without a probe, and other tasks use "not_checked".
+#     endpoint.agent_alive is populated for local secondmates, where it is
+#     useful return-channel supervision data, and for every task on the hc
+#     backend, where a dead program leaves its terminal behind as a shell;
+#     remote secondmates use "unknown" without a probe, and other tasks use
+#     "not_checked".
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
@@ -660,7 +662,7 @@ prefetch_task_observations() {  # <meta> <id>
       else
         endpoint_exists=false
       fi
-      if [ "$kind" = secondmate ]; then
+      if [ "$kind" = secondmate ] || [ "$backend" = hc ]; then
         agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
       fi
     fi
