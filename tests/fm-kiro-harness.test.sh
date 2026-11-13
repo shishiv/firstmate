@@ -449,11 +449,11 @@ test_kiro_worker_tool_check_stops_a_session_without_its_tools() {
   : > "$state/$id.status"
   write_kiro_request sess_alias code disclose_context execute_bash fs_write invoke_sub_agent web_fetch
   out=$(drive_kiro_tool_call sess_alias dump); rc=$?
-  [ "$rc" -eq 2 ] || fail "a session without its read and search tools must be stopped, got exit $rc"
-  assert_contains "$out" "lacks required tools: read_file, list_directory, file_search, grep_search" \
+  [ "$rc" -eq 2 ] || fail "a session without its read tool must be stopped, got exit $rc"
+  assert_contains "$out" "lacks required tools: read_file;" \
     "the stop message must name every missing tool"
   assert_contains "$(cat "$state/$id.status")" "blocked [at=" "firstmate must be told the worker was stopped"
-  assert_contains "$(cat "$state/$id.status")" "lacks required tools: read_file, list_directory, file_search, grep_search" \
+  assert_contains "$(cat "$state/$id.status")" "lacks required tools: read_file;" \
     "the blocked status must name the missing tools"
   drive_kiro_tool_call sess_alias dump >/dev/null; rc=$?
   [ "$rc" -eq 2 ] || fail "every later tool call of a stopped session must be denied too, got exit $rc"
@@ -473,6 +473,12 @@ test_kiro_worker_tool_check_stops_a_session_without_its_tools() {
     || fail "a passing check must record the session and the tools Kiro offered: $(cat "$kh/.fm-kiro-tools-ok" 2>/dev/null)"
   drive_kiro_tool_call sess_full dump >/dev/null; rc=$?
   [ "$rc" -eq 0 ] || fail "a checked session must pass later tool calls without a request record, got exit $rc"
+
+  # kiro-cli 3.2.1 and 3.3.0 send the default agent no list_directory,
+  # file_search, or grep_search; a worker lists and searches with the shell.
+  write_kiro_request sess_kiro33 execute_bash fs_write invoke_sub_agent load_resource read_file str_replace tool_call web_fetch
+  drive_kiro_tool_call sess_kiro33 dump >/dev/null; rc=$?
+  [ "$rc" -eq 0 ] || fail "a session offered the kiro-cli 3.3.0 default tools must pass, got exit $rc"
 
   out=$(drive_kiro_tool_call sess_plain); rc=$?
   [ "$rc" -eq 2 ] || fail "a session started outside Firstmate's launch cannot be checked and must be stopped, got exit $rc"
@@ -1081,7 +1087,7 @@ test_kiro_turn_end_wiring_lands_in_a_per_task_kiro_home() {
   assert_present "$v3_hook" "the task-specific V3 project hook is missing"
   [ -f "$v3_hook" ] && [ ! -L "$v3_hook" ] || fail "the task-specific V3 project hook must be a regular isolated-home copy"
   assert_present "$home_hook" "the task-specific V3 hook payload is missing from KIRO_HOME"
-  [ "$(cat "$kh/.fm-kiro-required-tools" 2>/dev/null | paste -sd' ' -)" = "read_file list_directory file_search grep_search fs_write execute_bash invoke_sub_agent" ] \
+  [ "$(cat "$kh/.fm-kiro-required-tools" 2>/dev/null | paste -sd' ' -)" = "read_file fs_write execute_bash invoke_sub_agent" ] \
     || fail "a V3 ship's KIRO_HOME must list the tools the worker tool check requires, got: $(cat "$kh/.fm-kiro-required-tools" 2>/dev/null)"
   hook_command=$(node -e '
     const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
@@ -1589,8 +1595,8 @@ test_kiro_v3_sessions_get_no_generated_agent_and_check_their_tools() {
     assert_absent "$kh/project/.kiro/agents/firstmate-kiro-$id.json" "kind '$kind' must get no generated agent payload"
     assert_present "$ws/.kiro/hooks/fm-firstmate-$id.json" "kind '$kind' must still get its task hooks"
     case "$kind" in
-      ship|scout) want="read_file list_directory file_search grep_search fs_write execute_bash invoke_sub_agent" ;;
-      secondmate) want="read_file list_directory file_search grep_search fs_write execute_bash" ;;
+      ship|scout) want="read_file fs_write execute_bash invoke_sub_agent" ;;
+      secondmate) want="read_file fs_write execute_bash" ;;
       *) want= ;;
     esac
     got=$(cat "$kh/.fm-kiro-required-tools" 2>/dev/null | paste -sd' ' -)
@@ -1648,7 +1654,7 @@ test_kiro_secondmate_uses_v3_project_scope_and_isolated_home() {
   assert_present "$mate/.kiro/hooks/fm-firstmate-$id.json"     "secondmate home lacks its project-scoped V3 hook"
   assert_absent "$mate/.kiro/agents/firstmate-oracle-$id.json" "a secondmate must not receive the worker oracle"
   assert_absent "$HOME_DIR/state/$id.kiro-home/.fm-kiro-steer-inject" "a secondmate keeps its typed doorbell, not worker in-turn steering"
-  [ "$(paste -sd' ' - < "$HOME_DIR/state/$id.kiro-home/.fm-kiro-required-tools")" = "read_file list_directory file_search grep_search fs_write execute_bash" ] \
+  [ "$(paste -sd' ' - < "$HOME_DIR/state/$id.kiro-home/.fm-kiro-required-tools")" = "read_file fs_write execute_bash" ] \
     || fail "a secondmate's KIRO_HOME must list the tools its worker tool check requires"
   assert_not_contains "$(cat "$HOME_DIR/data/$id/launch-brief.md" 2>/dev/null)" "# Kiro oracle" "a secondmate must not be told about an oracle"
   assert_grep '"chat.enableKnowledge": false'     "$HOME_DIR/state/$id.kiro-home/settings/cli.json"     "secondmate Kiro home did not disable knowledge"
