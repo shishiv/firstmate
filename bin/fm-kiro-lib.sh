@@ -298,11 +298,8 @@ fm_kiro_kind_consults_oracle() {  # <kind> [<config-dir>]
 }
 
 # Every kind fm-spawn launches (ship, scout, secondmate) gets the session tool
-# check: on kiro-cli 2.32.0 the default agent gave each of them every file,
-# image, search, write, shell, code, web, and sub-agent tool on a fresh spawn
-# and after a relaunch (docs/verification/runtime-backends.md), and the check
-# stops a session that was not given one. A library caller naming no kind gets
-# hooks only.
+# check: the check stops a session that was not given a tool it cannot work
+# without. A library caller naming no kind gets hooks only.
 fm_kiro_kind_checks_tools() {  # <kind>
   case "${1:-}" in ship|scout|secondmate) return 0 ;; esac
   return 1
@@ -310,9 +307,12 @@ fm_kiro_kind_checks_tools() {  # <kind>
 
 # The tools a session of <kind> cannot do its job without. The session tool
 # check in bin/fm-kiro-turnend-hook.sh stops a session that was not given one.
+# Listing and searching files are not on the list: kiro-cli 3.2.1 and 3.3.0 send
+# the default agent no list_directory, file_search, or grep_search, and the
+# shell does that work (docs/verification/runtime-backends.md).
 fm_kiro_worker_required_tools() {  # <kind> [<config-dir>]
   fm_kiro_kind_checks_tools "${1:-}" || return 0
-  printf '%s\n' read_file list_directory file_search grep_search fs_write execute_bash
+  printf '%s\n' read_file fs_write execute_bash
   if fm_kiro_kind_consults_oracle "$1" "${2:-}"; then
     printf '%s\n' invoke_sub_agent
   fi
