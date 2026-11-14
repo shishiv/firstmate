@@ -1289,6 +1289,9 @@ EOF
   supervisor_line=$(grep -n '^You are the first mate\.$' "$ROOT/AGENTS.md" | head -1 | cut -d: -f1)
   [ -n "$role_line" ] && [ "$role_line" -lt "$supervisor_line" ] ||
     fail "Firstmate AGENTS.md does not disambiguate a launched worker before assigning the supervisor identity"
+  # Kiro delivers only the first 50,000 characters of a steering document.
+  [ "$(wc -c < "$ROOT/AGENTS.md")" -le 50000 ] ||
+    fail "Firstmate AGENTS.md is longer than the 50,000 characters Kiro delivers to a primary"
   cmp -s "$ROOT/AGENTS.md" "$home/AGENTS.md" || fail "worker spawn changed the primary contract"
   pass "fm-spawn: every legacy worker receives scoped role instructions without changing project or primary instructions"
 }
