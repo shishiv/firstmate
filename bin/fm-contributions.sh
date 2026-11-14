@@ -221,15 +221,12 @@ jq_lib() { # jq options/program via final argument
   jq -L "$SCRIPT_DIR" "$@" "include \"fm-contributions\"; $program"
 }
 
-read_saved() {
+# The judgement of one record at a time: a wc and three jq for each file. It is
+# the reference read_saved_fast must agree with, and the path taken for any
+# batch read_saved_fast declines to judge.
+read_saved_slow() { # <file>...
   local file dir task
-  : > "$TMP/saved.jsonl"
-  ERRORS=0
-  if [ -L "$DATA" ]; then
-    ERRORS=1; printf '[]\n' > "$TMP/saved.json"; return 0
-  fi
-  for file in "$DATA"/*/contributions.json; do
-    [ -e "$file" ] || [ -L "$file" ] || continue
+  for file in "$@"; do
     fm_dirname_to dir "$file"
     fm_basename_to task "$dir"
     if [ -L "$file" ] || [ -L "$dir" ] || [ ! -f "$file" ] \
@@ -243,6 +240,70 @@ read_saved() {
       ERRORS=$((ERRORS + 1)); continue
     fi
     jq -c . "$file" >> "$TMP/saved.jsonl"
+  done
+}
+
+# The same judgement for a whole batch with one wc and one jq, because a home
+# keeps every task it ever enrolled and a jq per record made each poll its
+# largest burst of processes. It returns 1, having recorded nothing, when it
+# cannot be sure of a verdict for every file: a file that vanished or cannot be
+# read, or a name that breaks wc's one line per file.
+read_saved_fast() { # <file>...
+  local file dir task line errors=0 n=0 k=0
+  local -a plain=() tasks=() sizes=() named=()
+  for file in "$@"; do
+    fm_dirname_to dir "$file"
+    if [ -L "$file" ] || [ -L "$dir" ] || [ ! -f "$file" ]; then
+      errors=$((errors + 1)); continue
+    fi
+    fm_basename_to task "$dir"
+    plain+=("$file"); tasks+=("$task")
+  done
+  : > "$TMP/batch.jsonl"
+  if [ "${#plain[@]}" -gt 0 ]; then
+    # The size cap is judged before anything reads a record's bytes.
+    wc -c -- "${plain[@]}" > "$TMP/sizes" 2>/dev/null || return 1
+    while read -r line _; do sizes[n]=$line; n=$((n + 1)); done < "$TMP/sizes"
+    # Past one file wc adds a total line.
+    [ "$n" -eq $((${#plain[@]} + (${#plain[@]} > 1))) ] || return 1
+    for ((n = 0; n < ${#plain[@]}; n++)); do
+      case "${sizes[n]}" in ''|*[!0-9]*) return 1 ;; esac
+      if [ "${sizes[n]}" -gt 1048576 ]; then errors=$((errors + 1)); continue; fi
+      named+=(--rawfile "r$k" "${plain[n]}" --arg "t$k" "${tasks[n]}"); k=$((k + 1))
+    done
+    if [ "$k" -gt 0 ]; then
+      # One line per file: its record, or null when it is not one valid record of its own task.
+      jq_lib -nc "${named[@]}" --argjson count "$k" '
+        range($count) as $i | $ARGS.named["t\($i)"] as $task
+        | try ($ARGS.named["r\($i)"] | fromjson | if valid_record and .task == $task then . else null end) catch null' \
+        > "$TMP/batch.jsonl" 2>/dev/null || return 1
+    fi
+  fi
+  n=0
+  while IFS= read -r line; do n=$((n + 1)); done < "$TMP/batch.jsonl"
+  [ "$n" -eq "$k" ] || return 1
+  while IFS= read -r line; do
+    if [ "$line" = null ]; then errors=$((errors + 1)); else printf '%s\n' "$line" >> "$TMP/saved.jsonl"; fi
+  done < "$TMP/batch.jsonl"
+  ERRORS=$((ERRORS + errors))
+}
+
+read_saved() {
+  local file i=0
+  local -a files=()
+  : > "$TMP/saved.jsonl"
+  ERRORS=0
+  if [ -L "$DATA" ]; then
+    ERRORS=1; printf '[]\n' > "$TMP/saved.json"; return 0
+  fi
+  for file in "$DATA"/*/contributions.json; do
+    [ -e "$file" ] || [ -L "$file" ] || continue
+    files+=("$file")
+  done
+  # Batches keep every record path inside one argument list.
+  while [ "$i" -lt "${#files[@]}" ]; do
+    read_saved_fast "${files[@]:i:400}" || read_saved_slow "${files[@]:i:400}"
+    i=$((i + 400))
   done
   jq -s . "$TMP/saved.jsonl" > "$TMP/saved.json"
 }
