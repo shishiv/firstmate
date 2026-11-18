@@ -1789,42 +1789,46 @@ The setting is local to each home and is not inherited into secondmate homes.
 
 ## Worker memory scope (config/worker-memory-high)
 
-Every worker runs in its own systemd user scope with a `MemoryHigh` soft cap, so the kernel throttles one runaway worker before it pushes the desktop into swap.
-The kernel reclaims and slows a worker above the cap; it does not kill it.
-Node is the exception to that slowdown: it sizes its heap from the cap, so the launch also sets Node's heap size (below).
-Normal workers use 0.3 to 0.5 GB, and the default cap is 3G.
+Every worker runs in its own systemd user scope with a hard memory cap, no swap and one CPU, so one runaway process dies at the cap instead of pushing the desktop into swap.
+The scope carries `MemoryMax=<cap>`, `MemorySwapMax=0`, `CPUQuota=100%` and `OOMPolicy=continue`.
+When a process pushes the scope past its cap, the kernel kills that process, and `OOMPolicy=continue` keeps the rest of the worker running.
+Where `choom` is on `PATH`, the worker runs under `choom -n 500`, so the worker and its children have `oom_score_adj` 500 and a system-wide out-of-memory kill prefers them over Chromium, which runs at 300.
+A systemd scope accepts no `OOMScoreAdjust=`, so `choom` sets the score instead.
+Normal workers use 0.3 to 0.5 GB, and the default cap is 2G.
 The cap covers every pane launch: ship, scout, secondmate, and relaunch.
 T3 Code workers are excluded, because T3 Code owns their process.
 
 The local, gitignored `config/worker-memory-high` selects the cap.
 `fm-spawn.sh` removes all whitespace from the file's content.
 `off` gives today's uncapped launch, with no wrapper.
-Any other value is a size: a positive whole number with an optional `K`, `M`, `G` or `T` suffix, such as `2G` or `4096M`.
-An absent file means `3G`.
+Any other value is a size: a positive whole number with an optional `K`, `M`, `G` or `T` suffix, such as `4G` or `1536M`.
+An absent file means `2G`.
 Any other content, or an unreadable file, refuses the spawn before any task record, worktree or pane exists.
 `fm-spawn.sh` reads the file on every spawn and relaunch, so a change applies to the next launch and leaves running workers unchanged.
 The setting is local to each home and is not inherited into secondmate homes.
+A host drop-in for `fm-worker-.scope` overrides these properties, because systemd applies drop-ins after a transient unit's own settings.
+Such a host keeps its own limits whatever the file says.
 
 The scope is `firstmate.slice/fm-worker-<id>-<spawn_gen>.scope` under the user manager, and `spawn_gen` is the value in `state/<id>.meta`.
 A relaunch gets a new scope, and systemd removes the old scope when its last process exits.
-To check a running worker, run `systemctl --user show fm-worker-<id>-<spawn_gen>.scope -p MemoryHigh`; a 3G cap reads `MemoryHigh=3221225472`.
+To check a running worker, run `systemctl --user show fm-worker-<id>-<spawn_gen>.scope -p MemoryMax -p MemorySwapMax -p CPUQuotaPerSecUSec -p OOMPolicy`; a 2G cap reads `MemoryMax=2147483648`, with `MemorySwapMax=0`, `CPUQuotaPerSecUSec=1s` and `OOMPolicy=continue`.
+`/proc/<pid>/oom_score_adj` of a worker launched under `choom` reads `500`.
 The scopes sit outside `app.slice` on purpose.
-systemd-oomd watches `app.slice` for memory pressure and kills inside it, and a worker held at its cap creates that pressure.
+systemd-oomd watches `app.slice` for memory pressure and kills inside it, and a worker near its cap creates that pressure.
 The [Herdr server under systemd](herdr-backend.md#running-the-server-under-systemd) uses its own slice for the same reason.
 
-Where no systemd user scope is reachable, the worker launches uncapped.
+Where no systemd user scope starts, the worker launches uncapped and without `choom`.
 On a host without `systemd-run`, such as macOS, that is silent.
-On a host with `systemd-run` but no reachable user manager, the pane shows one note naming the skipped cap.
+On a host with `systemd-run` whose user manager is unreachable or refuses one of the scope's properties, the pane shows one note naming the skipped cap.
 A remote secondmate's host decides with its own `config/worker-memory-high`.
 
-Node reads the scope's cap as the machine's memory and shrinks its heap limit to fit: a 3G cap gave 1632 MB where an unscoped Node gets 4192 MB here.
-A typecheck that needs more then dies with `JavaScript heap out of memory` instead of being slowed.
-When the scope applies, the helper measures the heap limit Node has outside the scope and appends `--max-old-space-size=<MB>` to `NODE_OPTIONS`, so Node keeps the heap it would have without a cap and the cap throttles its memory use as it does for any other process.
-A `NODE_OPTIONS` that already holds `--max-old-space-size` or `--max-old-space-size-percentage` is left as it is.
+Node reads the scope's cap as the machine's memory and sizes its heap limit from it: a 2G cap gives a heap limit of about 1 GB.
+A Node process that needs more heap stops with `JavaScript heap out of memory`.
+A heap set above the cap with `--max-old-space-size` would only trade that error for a kernel kill, so the helper adds no heap flag and leaves `NODE_OPTIONS` as the caller set it.
 
 With the cap on, the launch runs under `/bin/sh -c`, so a raw `--harness` command must be POSIX sh unless the home writes `off`.
 The scope keeps the worker's PID, process group and session, so busy, ownership and teardown checks read the same process tree.
-[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns when the launch is wrapped, [`bin/fm-worker-memory-scope.sh`](../bin/fm-worker-memory-scope.sh) owns the fallback, and [`tests/fm-spawn-worker-memory-scope.test.sh`](../tests/fm-spawn-worker-memory-scope.test.sh) and [`tests/fm-worker-memory-scope.test.sh`](../tests/fm-worker-memory-scope.test.sh) pin both.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns when the launch is wrapped, [`bin/fm-worker-memory-scope.sh`](../bin/fm-worker-memory-scope.sh) owns the scope properties and the fallback, and [`tests/fm-spawn-worker-memory-scope.test.sh`](../tests/fm-spawn-worker-memory-scope.test.sh) and [`tests/fm-worker-memory-scope.test.sh`](../tests/fm-worker-memory-scope.test.sh) pin both.
 
 ## Kiro worker oracle (config/kiro-oracle)
 

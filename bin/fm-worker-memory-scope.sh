@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # fm-worker-memory-scope.sh - run one worker launch inside its own systemd user
-# scope with a MemoryHigh soft cap, so one runaway worker is throttled by the
-# kernel (memory reclaim, not a kill) before it pushes the desktop into swap.
-# The kernel throttles; a Node process in the scope can still die, so the helper
-# also gives Node its normal heap size (see "Node heap size" below).
+# scope with a hard memory cap, no swap and one CPU, so one runaway process
+# dies at the cap instead of pushing the desktop into swap. OOMPolicy=continue
+# keeps the rest of the worker running when the kernel kills that process.
 #
-# Usage: fm-worker-memory-scope.sh <memory-high> <unit> -- <command> [args...]
-#   <memory-high>  a positive whole number with an optional K, M, G or T suffix
-#                  (systemd MemoryHigh syntax), for example 3G.
+# Usage: fm-worker-memory-scope.sh <memory-max> <unit> -- <command> [args...]
+#   <memory-max>   a positive whole number with an optional K, M, G or T suffix
+#                  (systemd MemoryMax syntax), for example 2G.
 #   <unit>         the scope unit name, [A-Za-z0-9._-]+ ending in .scope.
 #                  bin/fm-spawn.sh passes fm-worker-<id>-<spawn_gen>.scope.
 # Bad usage prints this usage to stderr and exits 2 without running <command>.
@@ -28,33 +27,28 @@
 # The probe exists because `systemd-run ... -- cmd || cmd` would run the worker
 # twice when the worker itself exits non-zero.
 #
-# Node heap size: Node reads the cgroup's memory.high (libuv
-# uv_get_constrained_memory) and sizes its heap limit from it, so a 3G scope
-# gave Node a 1632 MB heap instead of the 4192 MB it gets outside a scope, and
-# typechecks died with "JavaScript heap out of memory" instead of slowing down.
-# In branches 2 and 3, when NODE_OPTIONS holds neither --max-old-space-size nor
-# --max-old-space-size-percentage, the helper measures the heap limit Node has
-# in this pane, outside the scope, and appends --max-old-space-size=<that MB> to
-# NODE_OPTIONS. That is the megabyte flag, which every Node version accepts.
-# Node then ends up within about 100 MB of its unscoped limit (the flag sets
-# old space, and the limit adds the young generation on top). A NODE_OPTIONS
-# that already sets a size is left alone, and so is a pane with no node.
+# Scope properties: MemoryMax=<memory-max>, MemorySwapMax=0, CPUQuota=100% and
+# OOMPolicy=continue. In branches 2 and 3, when choom is on PATH, the command
+# runs as `choom -n 500 -- <command>`, so the worker and its children have
+# oom_score_adj 500 and a system-wide OOM kill prefers them over Chromium (300).
+# The scope cannot carry that itself: systemd scopes take no OOMScoreAdjust=.
+# Node sizes its heap limit from the cap (about half of it), and the helper
+# leaves NODE_OPTIONS as the caller set it, so Node's heap stays under the cap.
 #
 # Scopes go in firstmate.slice, directly under the user manager and outside
 # app.slice: systemd-oomd watches app.slice for memory pressure and kills inside
-# it, and a worker held at MemoryHigh creates exactly that pressure, so app.slice
-# would turn "throttled" into "killed".
+# it, and a worker near its cap creates exactly that pressure.
 #
 # Exec in place: systemd-run --scope registers the scope and then execs the
-# command, and this helper execs too, so the worker keeps the pane shell's
-# PID, PGID and session. Neither this helper nor systemd-run appears in the
-# pane's process tree, which keeps the harness ancestry, busy and teardown
-# checks reading the same tree as an uncapped launch.
+# command, choom execs it too, and so does this helper, so the worker keeps the
+# pane shell's PID, PGID and session. None of the three appears in the pane's
+# process tree, which keeps the harness ancestry, busy and teardown checks
+# reading the same tree as an uncapped launch.
 set -u
 
 usage() {
-  echo 'usage: fm-worker-memory-scope.sh <memory-high> <unit> -- <command> [args...]' >&2
-  echo '  <memory-high> is a positive whole number with an optional K, M, G or T suffix (for example 3G); <unit> matches [A-Za-z0-9._-]+.scope' >&2
+  echo 'usage: fm-worker-memory-scope.sh <memory-max> <unit> -- <command> [args...]' >&2
+  echo '  <memory-max> is a positive whole number with an optional K, M, G or T suffix (for example 2G); <unit> matches [A-Za-z0-9._-]+.scope' >&2
   exit 2
 }
 
@@ -62,7 +56,7 @@ usage() {
 [ "$3" = -- ] || usage
 [[ "$1" =~ ^[1-9][0-9]*[KMGT]?$ ]] || usage
 [[ "$2" =~ ^[A-Za-z0-9._-]+\.scope$ ]] || usage
-memory_high=$1
+memory_max=$1
 unit=$2
 shift 3
 
@@ -70,26 +64,19 @@ if ! command -v systemd-run >/dev/null 2>&1; then
   exec "$@"
 fi
 
-# node_heap_env: see "Node heap size" in the header. Runs before the exec, so
-# the measurement sees the pane's own cgroup, not the capped scope.
-node_heap_env() {
-  local mb
-  case "${NODE_OPTIONS:-}" in *--max-old-space-size*) return 0 ;; esac
-  command -v node >/dev/null 2>&1 || return 0
-  mb=$(env -u NODE_OPTIONS node -p 'Math.floor(require("v8").getHeapStatistics().heap_size_limit/2**20)' 2>/dev/null) || return 0
-  [[ "$mb" =~ ^[1-9][0-9]*$ ]] || return 0
-  export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=$mb"
-}
-
-scope_args=(--user --scope --quiet --collect --slice=firstmate.slice -p "MemoryHigh=$memory_high")
+scope_args=(--user --scope --quiet --collect --slice=firstmate.slice
+  -p "MemoryMax=$memory_max" -p MemorySwapMax=0 -p CPUQuota=100% -p OOMPolicy=continue)
+if command -v choom >/dev/null 2>&1; then
+  scoped_command=(choom -n 500 -- "$@")
+else
+  scoped_command=("$@")
+fi
 if systemd-run "${scope_args[@]}" -- true >/dev/null 2>&1; then
-  node_heap_env
-  exec systemd-run "${scope_args[@]}" --unit="$unit" -- "$@"
+  exec systemd-run "${scope_args[@]}" --unit="$unit" -- "${scoped_command[@]}"
 fi
 machine_arg="--machine=$(id -un)@.host"
 if systemd-run "$machine_arg" "${scope_args[@]}" -- true >/dev/null 2>&1; then
-  node_heap_env
-  exec systemd-run "$machine_arg" "${scope_args[@]}" --unit="$unit" -- "$@"
+  exec systemd-run "$machine_arg" "${scope_args[@]}" --unit="$unit" -- "${scoped_command[@]}"
 fi
-echo "fm-worker-memory-scope: no systemd user scope is reachable here; launching without the MemoryHigh=$memory_high cap" >&2
+echo "fm-worker-memory-scope: systemd-run could not start a user scope here; launching without the MemoryMax=$memory_max cap" >&2
 exec "$@"

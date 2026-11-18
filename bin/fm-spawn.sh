@@ -484,20 +484,19 @@
 #   Every pane launch (ship, scout, secondmate, and relaunch; never T3 Code,
 #   which owns its own process) runs through bin/fm-worker-memory-scope.sh,
 #   which puts the worker in its own systemd user scope,
-#   firstmate.slice/fm-worker-<id>-<spawn_gen>.scope, with MemoryHigh set. The
-#   kernel then throttles one runaway worker before it pushes the desktop into
-#   swap; it does not kill it, except that Node sizes its heap from the cap, so
-#   the helper also appends Node's unscoped heap size to NODE_OPTIONS (its header
-#   owns that). The default is 3G. The content of the local,
-#   gitignored config/worker-memory-high, with all whitespace removed, selects
-#   `off` (no wrapper, today's uncapped launch text) or another size: a positive
-#   whole number with an optional K, M, G or T suffix. Any other value, or an
-#   unreadable file, refuses the spawn before any endpoint, worktree or record
-#   exists. The file is read on every spawn and relaunch and is not inherited
-#   into secondmate homes. Where no systemd user scope is reachable (macOS, a
-#   remote host without a user manager) the helper launches uncapped; its
-#   header owns that fallback. A raw --harness command now runs under
-#   `/bin/sh -c`, so it must be POSIX sh unless the home writes `off`.
+#   firstmate.slice/fm-worker-<id>-<spawn_gen>.scope, with a hard MemoryMax cap,
+#   no swap and one CPU (its header owns the scope properties). A runaway
+#   process then dies at the cap instead of pushing the desktop into swap, and
+#   the rest of the worker keeps running. The default is 2G. The content of the
+#   local, gitignored config/worker-memory-high, with all whitespace removed,
+#   selects `off` (no wrapper, today's uncapped launch text) or another size: a
+#   positive whole number with an optional K, M, G or T suffix. Any other
+#   value, or an unreadable file, refuses the spawn before any endpoint,
+#   worktree or record exists. The file is read on every spawn and relaunch and
+#   is not inherited into secondmate homes. Where no systemd user scope is
+#   reachable (macOS, a remote host without a user manager) the helper launches
+#   uncapped; its header owns that fallback. A raw --harness command now runs
+#   under `/bin/sh -c`, so it must be POSIX sh unless the home writes `off`.
 # Codex permission mode: docs/configuration.md owns config/codex-permission-mode.
 #
 # Claude permission mode (config/claude-permission-mode):
@@ -980,15 +979,15 @@ fi
 if ! WORKER_MEMORY_HIGH_PRESENT=$(fm_config_source_present "$CONFIG/worker-memory-high"); then
   exit 1
 fi
-WORKER_MEMORY_HIGH=3G
+WORKER_MEMORY_HIGH=2G
 if [ "$WORKER_MEMORY_HIGH_PRESENT" = 1 ]; then
   if [ ! -f "$CONFIG/worker-memory-high" ] || [ ! -r "$CONFIG/worker-memory-high" ]; then
-    echo "error: config/worker-memory-high must be a readable regular file holding off or a size such as 3G" >&2
+    echo "error: config/worker-memory-high must be a readable regular file holding off or a size such as 2G" >&2
     exit 1
   fi
   WORKER_MEMORY_HIGH=$(tr -d '[:space:]' <"$CONFIG/worker-memory-high" || true)
   if [ "$WORKER_MEMORY_HIGH" != off ] && ! [[ "$WORKER_MEMORY_HIGH" =~ ^[1-9][0-9]*[KMGT]?$ ]]; then
-    echo "error: config/worker-memory-high holds '$WORKER_MEMORY_HIGH'; accepted values are: off, or a size such as 3G (a positive whole number with an optional K, M, G or T suffix); an absent file means 3G" >&2
+    echo "error: config/worker-memory-high holds '$WORKER_MEMORY_HIGH'; accepted values are: off, or a size such as 2G (a positive whole number with an optional K, M, G or T suffix); an absent file means 2G" >&2
     exit 1
   fi
 fi
@@ -7971,7 +7970,7 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
   LAUNCH="$LAUNCH_ENV_PREFIX /bin/sh -c $(fm_shell_quote "$LAUNCH")"
 fi
 # Worker memory scope (header section of that name): the pane runs the whole
-# launch as one command inside the worker's own MemoryHigh scope. The
+# launch as one command inside the worker's own capped scope. The
 # allowlist launch is already one simple command, so it is prefixed directly.
 if [ "$BACKEND" != t3code ] && [ "$WORKER_MEMORY_HIGH" != off ]; then
   WORKER_SCOPE_PREFIX="$(fm_shell_quote "$SCRIPT_DIR/fm-worker-memory-scope.sh") $(fm_shell_quote "$WORKER_MEMORY_HIGH") $(fm_shell_quote "fm-worker-$ID-$SPAWN_GEN.scope") --"

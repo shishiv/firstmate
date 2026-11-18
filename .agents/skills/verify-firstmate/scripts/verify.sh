@@ -172,25 +172,25 @@ standin_pid() {
 }
 spawn_gen() { sed -n 's/^spawn_gen=//p' "$LAB/state/$1.meta" | tail -1; }
 # scope_proof <id> <stand-in path> <label>: the worker's own scope carries
-# MemoryHigh=3G and holds the stand-in, whose harness ancestry still names
+# MemoryMax=2G and holds the stand-in, whose harness ancestry still names
 # claude. Sets UNIT and PID and appends the evidence to $OUT/scope.txt.
 scope_proof() {
-  local id=$1 standin=$2 label=$3 high cg verdict crew
+  local id=$1 standin=$2 label=$3 max cg verdict crew
   UNIT="fm-worker-$id-$(spawn_gen "$id").scope"
   PID=
   wait_for 20 standin_pid "$standin" >/dev/null && PID=$(standin_pid "$standin")
-  high=$(host_env systemctl --user show "$UNIT" -p MemoryHigh --value 2>&1)
+  max=$(host_env systemctl --user show "$UNIT" -p MemoryMax --value 2>&1)
   cg=$(cat "/proc/$PID/cgroup" 2>/dev/null)
   verdict=$("$WT/bin/fm-harness.sh" ancestry "$PID" 2>&1)
   crew=$(FM_CREW_STATE_NO_FORGE=1 fm fm-crew-state.sh "$id" 2>&1)
   {
     echo "[$label] unit=$UNIT pid=$PID"
-    echo "MemoryHigh=$high"
+    echo "MemoryMax=$max"
     echo "cgroup=$cg"
     echo "ancestry=$verdict"
     echo "crew-state=$crew"
   } >> "$OUT/scope.txt"
-  if [ "$high" = 3221225472 ]; then check ok "$label: $UNIT reports MemoryHigh=3221225472"; else check bad "$label: $UNIT reports MemoryHigh=3221225472 (got $high)"; fi
+  if [ "$max" = 2147483648 ]; then check ok "$label: $UNIT reports MemoryMax=2147483648"; else check bad "$label: $UNIT reports MemoryMax=2147483648 (got $max)"; fi
   case "$cg" in
     */firstmate.slice/"$UNIT") check ok "$label: the stand-in (pid $PID) runs inside firstmate.slice/$UNIT" ;;
     *) check bad "$label: the stand-in (pid ${PID:-none}) runs inside firstmate.slice/$UNIT (cgroup $cg)" ;;

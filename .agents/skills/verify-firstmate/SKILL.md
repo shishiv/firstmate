@@ -44,7 +44,7 @@ The first lines of the output name the worktree sha, the hc version, the private
 `scripts/verify.sh` is the recipe; each step prints a `PASS:` or `FAIL:` line.
 
 1. Spawn: `bin/fm-brief.sh vf1 demo --scout`, then `bin/fm-spawn.sh vf1 <demo> --scout --backend hc --harness "<stand-in> --fake"`. Asserts `backend=hc` in `state/vf1.meta` and a live terminal in the private core.
-2. Memory scope: the stand-in runs in `firstmate.slice/fm-worker-vf1-<spawn_gen>.scope` with `MemoryHigh=3221225472`, its harness ancestry names `claude`, and `bin/fm-crew-state.sh` reads it as working.
+2. Memory scope: the stand-in runs in `firstmate.slice/fm-worker-vf1-<spawn_gen>.scope` with `MemoryMax=2147483648`, its harness ancestry names `claude`, and `bin/fm-crew-state.sh` reads it as working.
 3. Notification: the stand-in's status lines land in `state/vf1.status`; `FM_POLL=1 bin/fm-watch.sh` must print `signal: .../vf1.status`, and `bin/fm-wake-drain.sh` must present the `done` line.
 4. Steer: `bin/fm-send.sh vf1 '<text>'` exits 0, writes an inbox `.msg` record, and the stand-in receives the doorbell line.
 5. Cleanup: `bin/fm-captain-hold.sh complete vf1 --none`, then `bin/fm-teardown.sh vf1`; the private core must list no terminal afterwards, and systemd must have collected the worker's scope.
