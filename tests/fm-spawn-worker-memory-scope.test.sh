@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/fm-spawn-worker-memory-scope.test.sh - every pane launch bin/fm-spawn.sh
-# builds runs through bin/fm-worker-memory-scope.sh with the MemoryHigh value
-# config/worker-memory-high selects (absent: 3G), and `off` restores today's
+# builds runs through bin/fm-worker-memory-scope.sh with the memory cap
+# config/worker-memory-high selects (absent: 2G), and `off` restores today's
 # launch text.
 #
 # The cases drive the real spawn against the fake pane from tests/fixtures.sh,
@@ -89,7 +89,7 @@ spawn_gen_of() {  # <home> <id>
   sed -n 's/^spawn_gen=//p' "$1/state/$2.meta" | tail -1
 }
 
-test_default_ship_wraps_3g() {
+test_default_ship_wraps_2g() {
   local id=mem-ship-a1 rec out gen launch seen
   rec=$(make_case ship-default codex "$id")
   read_case "$rec"
@@ -98,8 +98,8 @@ test_default_ship_wraps_3g() {
   gen=$(spawn_gen_of "$HOME_DIR" "$id")
   [ -n "$gen" ] || fail "the task record carries no spawn_gen"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "fm-worker-memory-scope.sh' '3G' 'fm-worker-$id-$gen.scope' -- /bin/sh -c " \
-    "the default launch should run under a 3G scope named for this spawn"
+  assert_contains "$launch" "fm-worker-memory-scope.sh' '2G' 'fm-worker-$id-$gen.scope' -- /bin/sh -c " \
+    "the default launch should run under a 2G scope named for this spawn"
   install_env_probe "$FAKEBIN_DIR" codex
   seen=$(emitted_launch_run "$FAKEBIN_DIR" "$LAUNCH_LOG" "$PANE_LOG") \
     || fail "the wrapped launch failed to run: $seen"
@@ -107,7 +107,7 @@ test_default_ship_wraps_3g() {
   assert_contains "$seen" "FM_TASK_INBOX=$(cd "$HOME_DIR/state" && pwd -P)/$id.inbox" \
     "the wrapped agent must keep its steering inbox"
   assert_contains "$seen" "BASH_ENV=$ROOT/bin/fm-worker-bash-env.sh" "the wrapped agent must keep the pipefail BASH_ENV"
-  pass "an absent config/worker-memory-high wraps the ship launch in a 3G scope and keeps the agent's environment"
+  pass "an absent config/worker-memory-high wraps the ship launch in a 2G scope and keeps the agent's environment"
 }
 
 # The busy and ownership checks read the harness from the pane's process tree.
@@ -165,7 +165,7 @@ test_off_restores_todays_launch() {
 
 test_custom_size_and_whitespace() {
   local value rec id out n=0
-  for value in 2G ' 2G '; do
+  for value in 4G ' 4G '; do
     n=$((n + 1))
     id="mem-size-$n-a1"
     rec=$(make_case "size-$n" codex "$id")
@@ -173,7 +173,7 @@ test_custom_size_and_whitespace() {
     printf '%s\n' "$value" > "$HOME_DIR/config/worker-memory-high"
     out=$(run_case_spawn "$id" "$PROJ_DIR" --mode no-mistakes --yolo off)
     expect_code 0 "$?" "a spawn with '$value' should succeed: $out"
-    assert_contains "$(cat "$LAUNCH_LOG")" "fm-worker-memory-scope.sh' '2G' " "'$value' should select 2G"
+    assert_contains "$(cat "$LAUNCH_LOG")" "fm-worker-memory-scope.sh' '4G' " "'$value' should select 4G"
   done
   pass "config/worker-memory-high selects another size and ignores surrounding whitespace"
 }
@@ -227,8 +227,8 @@ test_secondmate_is_wrapped() {
   git -C "$sm" init -q -b main
   out=$(run_case_spawn "$id" "$sm" --secondmate)
   expect_code 0 "$?" "a secondmate spawn should succeed: $out"
-  assert_contains "$(cat "$LAUNCH_LOG")" "fm-worker-memory-scope.sh' '3G' 'fm-worker-$id-" \
-    "a secondmate launch should run under the 3G scope"
+  assert_contains "$(cat "$LAUNCH_LOG")" "fm-worker-memory-scope.sh' '2G' 'fm-worker-$id-" \
+    "a secondmate launch should run under the 2G scope"
   pass "a secondmate launch runs under the worker memory scope"
 }
 
@@ -335,7 +335,7 @@ test_relaunch_gets_new_scope_and_honours_off() {
   gen=$(spawn_gen_of "$home" "$id")
   [ -n "$gen" ] && [ "$gen" != s1.1.1 ] || fail "relaunch should record a new spawn_gen, got '$gen'"
   launch=$(grep 'encode launch-brief' "$dir/fake/literal" | tail -1)
-  assert_contains "$launch" "fm-worker-memory-scope.sh' '3G' 'fm-worker-$id-$gen.scope' -- " \
+  assert_contains "$launch" "fm-worker-memory-scope.sh' '2G' 'fm-worker-$id-$gen.scope' -- " \
     "the relaunch should run under a new scope named for the new spawn_gen"
 
   printf 'codex' > "$dir/fake/command"
@@ -348,7 +348,7 @@ test_relaunch_gets_new_scope_and_honours_off() {
 }
 
 fm_test_run \
-  test_default_ship_wraps_3g \
+  test_default_ship_wraps_2g \
   test_process_tree_verdict_unchanged \
   test_off_restores_todays_launch \
   test_custom_size_and_whitespace \
