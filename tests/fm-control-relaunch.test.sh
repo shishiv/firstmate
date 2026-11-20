@@ -1092,8 +1092,11 @@ kiro_session_rows() {
   done >> "$f"
 }
 
-run_pool() {  # <case-dir> <args...>
-  CONTROL="$ROOT/bin/fm-kiro-account-pool.sh" run_control "$@"
+# run_pool <case-dir> <args...>: the pool script, with an ordinary Kiro login
+# that is logged out, so the caller's own login never answers for it.
+run_pool() {
+  mkdir -p "$1/ordinary-share"
+  XDG_DATA_HOME="$1/ordinary-share" CONTROL="$ROOT/bin/fm-kiro-account-pool.sh" run_control "$@"
 }
 
 test_kiro_account_pool_check_moves_only_the_limited_worker() {
