@@ -15,6 +15,8 @@
 # Kiro has no login that can be synthesized offline, so its case proves only
 # the refusal: the real kiro-cli says "Not logged in" for an empty data root,
 # and the real fm-spawn refuses a home pinned to it before any task record.
+# With FM_WORKER_ACCOUNT_KIRO_ROOT naming a logged-in data root it also checks
+# the Email line config/kiro-account-pool compares, reading only.
 #
 # It submits no prompt and spends no tokens, so the shared live gate runs it by
 # default wherever a runner is installed. Run it after every Claude or Pi
@@ -137,7 +139,32 @@ kiro_live_cases() {
     fail "$version: fm-spawn's refusal did not name the pin: $out"
   [ ! -e "$home/state/$id.meta" ] || fail "$version: a refused Kiro spawn published a task record"
   pass "$version: kiro-cli whoami reports an empty data root not logged in, and fm-spawn refuses a home pinned to it"
+  kiro_pool_identity_case "$version" "$empty"
   CHECKED="$CHECKED kiro-cli"
+}
+
+# The pool tells a pool account from the ordinary login by the Email line of
+# `kiro-cli whoami`, which only a real login prints, so this case needs
+# FM_WORKER_ACCOUNT_KIRO_ROOT naming a logged-in data root. It only reads.
+kiro_pool_identity_case() {
+  local version=$1 empty=$2 root=${FM_WORKER_ACCOUNT_KIRO_ROOT:-} out email config="$TMP_ROOT/kiro-pool/config"
+  if [ -z "$root" ]; then
+    printf 'skip-case: %s pool identity: set FM_WORKER_ACCOUNT_KIRO_ROOT to a logged-in Kiro data root to check the Email line the pool compares\n' "$version"
+    return 0
+  fi
+  out=$(fm_worker_account_kiro_whoami "$root" kiro-cli) || fail "$version: FM_WORKER_ACCOUNT_KIRO_ROOT=$root is not logged in"
+  email=$(printf '%s\n' "$out" | fm_worker_account_kiro_email)
+  [ -n "$email" ] || fail "$version: kiro-cli whoami printed no Email line for $root ('$out'); revisit fm_worker_account_kiro_email"
+  mkdir -p "$config" "$TMP_ROOT/kiro-pool/state"
+  printf '%s\n' "$root" > "$config/kiro-account-pool"
+  out=$(XDG_DATA_HOME="$empty" fm_worker_account_kiro_pool_pick "$config" "$TMP_ROOT/kiro-pool/state" kiro-cli 2>&1) ||
+    fail "$version: the pool refused $root beside a logged-out ordinary login: $out"
+  [ "$out" = "$root" ] || fail "$version: the pool picked '$out' instead of $root"
+  out=$(XDG_DATA_HOME="$root" fm_worker_account_kiro_pool_pick "$config" "$TMP_ROOT/kiro-pool/state" kiro-cli 2>&1) &&
+    fail "$version: the pool used $root while the ordinary login is the same account"
+  [[ "$out" == *"it is logged in as $email, the ordinary login"* ]] ||
+    fail "$version: the pool did not name the shared account: $out"
+  pass "$version: kiro-cli whoami names $email, and the pool takes that root only while the ordinary login is another account"
 }
 
 for runner in claude pi pi-signed kiro-cli; do

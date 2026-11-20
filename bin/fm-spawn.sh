@@ -539,6 +539,9 @@
 #   secondmate first checks config/secondmate-accounts/<id>/<runner>-account
 #   in this launching home, then falls back to its home-wide pin when absent.
 #   Pins are never inherited; remote per-mate overrides refuse locally.
+#   A ship or scout Kiro launch or relaunch instead takes the first usable
+#   account of config/kiro-account-pool when that file exists, and records
+#   that root as account=.
 #   T3 Code refuses a pin because its provider instance owns the account.
 #   bin/fm-worker-account-lib.sh owns parsing, the check, and the shed list.
 # Per-secondmate omp profile (config/secondmate-accounts/<id>/omp-profile):
@@ -3366,8 +3369,9 @@ fi
 RAW_COMMAND=
 [ "$RAW_LAUNCH" = 0 ] || RAW_COMMAND=$ARG3
 WORKER_ACCOUNT_MATE=
-[ "$KIND" != secondmate ] || WORKER_ACCOUNT_MATE=$ID
-WORKER_ACCOUNT=$(fm_worker_account_select "$HARNESS" "$CONFIG" "$MODEL" "${PI_BIN:-${KIRO_BIN:-$HARNESS}}" "$RAW_COMMAND" "$WORKER_ACCOUNT_MATE") || exit 1
+WORKER_ACCOUNT_POOL_STATE=$STATE
+[ "$KIND" != secondmate ] || { WORKER_ACCOUNT_MATE=$ID; WORKER_ACCOUNT_POOL_STATE=; }
+WORKER_ACCOUNT=$(fm_worker_account_select "$HARNESS" "$CONFIG" "$MODEL" "${PI_BIN:-${KIRO_BIN:-$HARNESS}}" "$RAW_COMMAND" "$WORKER_ACCOUNT_MATE" "$WORKER_ACCOUNT_POOL_STATE") || exit 1
 WORKER_ACCOUNT_DECLARED=${WORKER_ACCOUNT%%$'\t'*}
 WORKER_ACCOUNT_ROOT=${WORKER_ACCOUNT#*$'\t'}
 WORKER_ACCOUNT_PROVIDER=${WORKER_ACCOUNT_ROOT#*$'\t'}

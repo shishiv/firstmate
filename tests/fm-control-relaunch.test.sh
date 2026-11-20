@@ -87,6 +87,7 @@ case "${1:-}" in
           ;;
         *'encode launch-brief'* | *'Firstmate operational input waiting: read'*)
           cat "$D/becomes" > "$D/command"
+          [ ! -f "$D/screen-on-launch" ] || cp "$D/screen-on-launch" "$D/screen"
           [ -z "${FM_FAKE_LAUNCH_TRANSPORT_FAIL_AFTER_START:-}" ] || exit 1
           ;;
       esac
@@ -121,6 +122,7 @@ case "${1:-}" in
     printf 'fakepane\n'; exit 0 ;;
   capture-pane)
     [ -z "${FM_FAKE_COMPOSER_READ_FAIL:-}" ] || exit 1
+    [ ! -f "$D/screen" ] || cat "$D/screen"
     if [ -s "$D/composer" ]; then
       printf '╭────╮\n│ %s  │\n╰────╯\n' "$(cat "$D/composer")"
     else
@@ -1041,6 +1043,107 @@ test_worker_account_pin_follows_the_relaunch() {
   assert_not_contains "$(cat "$dir/fake/literal")" "CLAUDE_CONFIG_DIR=" \
     "an unpinned replacement must launch exactly as before"
   pass "fm-control relaunch: the replacement follows the home's current worker account pin"
+}
+
+# make_kiro_pool_case <case-name> <id>: a Kiro ship recorded on pool account
+# dev10 of a two-account pool, with a kiro-cli that is logged in only where
+# a data root holds data.sqlite3 and names the account stored beside it.
+make_kiro_pool_case() {
+  local dir root
+  dir=$(new_case "$1" "$2")
+  add_ship_task "$dir" "$2" kiro-cli
+  printf 'kiro-cli' > "$dir/fake/command"
+  printf 'kiro-cli' > "$dir/fake/becomes"
+  # Kiro's persistent chrome, which the launch gate reads as a live TUI once
+  # the replacement starts.
+  printf 'Trust All Tools active, confirmations are off\n' > "$dir/fake/screen-on-launch"
+  cat > "$dir/fakebin/kiro-cli" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = whoami ] || exit 0
+db=${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli
+[ -f "$db/data.sqlite3" ] || { echo 'Not logged in'; exit 1; }
+printf 'Logged in\nEmail: %s\n' "$(cat "$db/email")"
+SH
+  chmod +x "$dir/fakebin/kiro-cli"
+  mkdir -p "$dir/home/config"
+  for root in dev10 dev11; do
+    mkdir -p "$dir/$root/kiro-cli"
+    : > "$dir/$root/kiro-cli/data.sqlite3"
+    printf '%s@example.invalid\n' "$root" > "$dir/$root/kiro-cli/email"
+    printf '%s\n' "$dir/$root" >> "$dir/home/config/kiro-account-pool"
+  done
+  printf 'account=%s\n' "$dir/dev10" >> "$dir/home/state/$2.meta"
+  printf '%s\n' "$dir"
+}
+
+# kiro_session_rows <case-dir> <id> <row-kind>...: writes one Kiro V3 history
+# for the task, one row per kind (reply or limit), a second apart in order.
+kiro_session_rows() {
+  local dir=$1 id=$2 kind n=0 f
+  shift 2
+  f="$dir/home/state/$id.kiro-home/sessions/ws/sess_1/messages.jsonl"
+  mkdir -p "${f%/*}"
+  for kind in "$@"; do
+    n=$((n + 1))
+    case "$kind" in
+    reply) printf '{"timestamp":"2026-11-20T10:00:0%s.000Z","payload":{"type":"assistant"}}\n' "$n" ;;
+    limit) printf '{"timestamp":"2026-11-20T10:00:0%s.000Z","payload":{"type":"session_metadata","key":"displayError","value":{"message":"You'"'"'ve reached your monthly usage limit. Please return next month to continue building.","errorType":"UsageLimitReachedError"}}}\n' "$n" ;;
+    esac
+  done >> "$f"
+}
+
+# run_pool <case-dir> <args...>: the pool script, with an ordinary Kiro login
+# that is logged out, so the caller's own login never answers for it.
+run_pool() {
+  mkdir -p "$1/ordinary-share"
+  XDG_DATA_HOME="$1/ordinary-share" CONTROL="$ROOT/bin/fm-kiro-account-pool.sh" run_control "$@"
+}
+
+test_kiro_account_pool_check_moves_only_the_limited_worker() {
+  local dir out rc id=rl-kiro-pool ledger
+  dir=$(make_kiro_pool_case kiro-pool "$id")
+  ledger="$dir/home/state/kiro-accounts/exhausted-$(date -u +%Y-%m)"
+  printf 'window=fmses:fm-idle\nharness=kiro-cli\nkind=scout\naccount=%s\n' "$dir/dev10" > "$dir/home/state/idle.meta"
+  kiro_session_rows "$dir" idle limit reply
+  kiro_session_rows "$dir" "$id" reply limit
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_pool "$dir" check --dry-run); rc=$?
+  expect_code 0 "$rc" "a dry run should succeed: $out"
+  assert_contains "$out" "would mark $dir/dev10 exhausted" "the dry run should name the account it would mark"
+  assert_not_contains "$out" "relaunch idle" "a worker that answered after its limit error must not be moved"
+  assert_absent "$ledger" "a dry run must not write the ledger"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a dry run must not relaunch"
+  out=$(run_pool "$dir" check); rc=$?
+  expect_code 0 "$rc" "the check should relaunch the limited worker: $out"
+  [ "$(cat "$ledger")" = "$dir/dev10" ] || fail "the limited account should be the only one in the ledger: $(cat "$ledger")"
+  [ "$(meta_field "$dir" "$id" account)" = "$dir/dev11" ] || fail "the relaunched worker should move to the next pool account"
+  assert_contains "$(cat "$dir/fake/literal")" "XDG_DATA_HOME='$dir/dev11'" "the replacement should launch on the next account"
+  assert_grep "reached its monthly usage limit" "$dir/home/data/$id/brief.md" "the replacement should read why it was relaunched"
+  [ "$(meta_field "$dir" idle account)" = "$dir/dev10" ] || fail "a worker that has not hit the limit must stay where it is"
+  pass "fm-kiro-account-pool check: marks the limited account and moves only the worker that hit it"
+}
+
+test_kiro_account_pool_check_waits_when_no_account_is_left() {
+  local dir out rc id=rl-kiro-pool-out ledger
+  dir=$(make_kiro_pool_case kiro-pool-out "$id")
+  ledger="$dir/home/state/kiro-accounts/exhausted-$(date -u +%Y-%m)"
+  kiro_session_rows "$dir" "$id" reply limit
+  out=$(run_pool "$dir" mark "$dir/dev11"); rc=$?
+  expect_code 0 "$rc" "marking a pool account should succeed: $out"
+  out=$(run_pool "$dir" mark "$dir/elsewhere"); rc=$?
+  expect_code 1 "$rc" "marking a root outside the pool must refuse"
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_pool "$dir" check); rc=$?
+  expect_code 2 "$rc" "with every account exhausted the check should report the wait: $out"
+  assert_contains "$out" "no account left" "the refusal should say the pool is spent"
+  assert_contains "$out" "$id wait on the usage limit" "the refusal should name the waiting worker"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a spent pool must leave the worker untouched"
+  [ ! -s "$dir/fake/literal" ] || fail "a spent pool must not send any lifecycle input"
+  grep -qxF "$dir/dev10" "$ledger" || fail "the limited account should still be recorded"
+  out=$(run_pool "$dir" status); rc=$?
+  expect_code 0 "$rc" "status should succeed: $out"
+  assert_contains "$out" "$dir/dev10"$'\t'"exhausted"$'\t'"$id" "status should show the worker on its exhausted account"
+  pass "fm-kiro-account-pool check: a spent pool leaves the worker in place and exits 2"
 }
 
 test_secondmate_account_pin_follows_relaunch_and_refuses_before_stop() {
@@ -3104,6 +3207,8 @@ test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop
 test_signed_out_worker_account_pin_refuses_before_stop
 test_logged_out_kiro_account_pin_refuses_before_stop
 test_worker_account_pin_follows_the_relaunch
+test_kiro_account_pool_check_moves_only_the_limited_worker
+test_kiro_account_pool_check_waits_when_no_account_is_left
 test_secondmate_account_pin_follows_relaunch_and_refuses_before_stop
 test_pi_exclude_tools_follow_the_relaunch
 test_exclude_tools_refusals_happen_before_the_agent_stops
