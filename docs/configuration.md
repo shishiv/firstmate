@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), its [Kiro account pool](#kiro-account-pool-configkiro-account-pool), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), [worker memory scope](#worker-memory-scope-configworker-memory-high), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
+| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), its [Kiro account pool](#kiro-account-pool-configkiro-account-pool), the [supervisor's account on Pi](#the-supervisors-account-on-pi), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), [worker memory scope](#worker-memory-scope-configworker-memory-high), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [record export](#record-export-configrecord-export-root), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [warm-cache compaction](#warm-cache-compaction-configwarm-compact), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1569,7 +1569,8 @@ Order matters for billing: on a Kiro subscription a seat still pending this mont
 The supervisor keeps its own account out of the pool.
 A Firstmate main session on Pi or on `bin/fm-kiro-primary.sh` without a pin uses the ordinary login under `~/.local/share/kiro-cli`, and no pool root may be logged in as that same account, or the workers would spend the supervisor's credit and stop it with them.
 Each launch compares the `Email:` line `kiro-cli whoami` prints for the candidate root with the ordinary login's, skips a root that names the same account, and also skips one when either line is missing, because the two then cannot be told apart.
-The comparison cannot see a `config/kiro-account` root, so keep that account out of the pool by hand.
+An account belongs to one list only: the comparison sees the ordinary login, not a `config/kiro-account` root, a per-secondmate pin, or another home's pool, so keep each of those accounts out of this pool by hand.
+Firstmate does not cross-check homes, and a root named twice spends one account's credit from two places and stops both.
 
 `state/kiro-accounts/exhausted-<YYYY-MM>` records the roots that ran out in the current UTC month, one per line; a new month starts with an empty ledger, and deleting a line puts that account back in use.
 When every root is exhausted or unusable, the launch refuses, names the pool and the ledger, and never falls back to the ordinary login.
@@ -1581,7 +1582,10 @@ The relaunched worker keeps its local copy and instructions and loses only that 
 With no account left, `check` exits 2 and names the waiting workers without touching them.
 `mark <root>` records an exhaustion by hand, `status` lists each root with `exhausted` or `open` and the workers on it, and `--dry-run` reports what `check` would do; the script's header owns the exit codes.
 
-Run `check` every few minutes for each home that has a pool, for example with a systemd user timer:
+Run `check` every few minutes for each home that has a pool, from a systemd user timer or from a limit notifier the host already runs outside Kiro.
+A notifier that runs `check` itself alerts only on exit 1 or 2, because exit 0 means the workers were moved or nothing hit the limit.
+Only workers of this home are moved; a secondmate with its own pin stays on that account until someone changes the pin.
+A timer looks like this:
 
 ```ini
 # ~/.config/systemd/user/firstmate-kiro-account-pool.service
@@ -1603,6 +1607,27 @@ WantedBy=timers.target
 `PATH` must reach `kiro-cli`, `jq`, and the runtime backend's own tools (`hc`, `herdr`, or `tmux`), because the relaunch drives the worker's endpoint.
 Enable it with `systemctl --user daemon-reload` and `systemctl --user enable --now firstmate-kiro-account-pool.timer`.
 systemd does not start the service again while a run is still going, so two checks never relaunch the same worker at once.
+
+### The supervisor's account on Pi
+
+A Firstmate main session on Pi spends the account of the ordinary Kiro login, so it never takes an account from the pool.
+The `pi-provider-kiro` package (read at 0.12.3) opens `~/.local/share/kiro-cli/data.sqlite3` itself on Linux and ignores `XDG_DATA_HOME`, so no data root, `config/kiro-account`, or pool entry moves Pi.
+When Pi renews its Kiro token it prefers that file's login while it is valid, and otherwise refreshes the entry in its own `~/.pi/agent/auth.json` and writes the result back into that file.
+A Kiro IDE login under `~/.aws/sso/cache/kiro-auth-token.json` that has not expired ranks above both.
+
+To give the supervisor an account of its own, make the ordinary login that account, with a data root built as in [Kiro data roots](#kiro-data-roots) and logged in, and leave it out of every pool and pin:
+
+```sh
+root=~/.local/share-kiro-<account>
+mv ~/.local/share/kiro-cli ~/.local/share/kiro-cli.before-"$(date +%Y%m%d)"
+ln -s "$root/kiro-cli" ~/.local/share/kiro-cli
+env -u XDG_DATA_HOME kiro-cli whoami
+```
+
+The last command names the account the ordinary login holds, which is the one Pi spends.
+To change it later, point the link at another root's `kiro-cli` folder with `ln -sfn`, then log in to the Kiro provider again in Pi and take the cached `kiro-cli` credentials it offers, so Pi's own entry follows the link.
+Without that login Pi keeps its old entry until it renews, and if the new login's token has expired by then, Pi renews the old entry and writes it over the new login.
+These behaviors come from reading the package source, which an update can change, so after a switch run `whoami` again and check which account Pi bills.
 
 ### Launch scope and sign-in checks
 
