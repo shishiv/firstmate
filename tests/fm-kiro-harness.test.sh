@@ -1903,6 +1903,19 @@ test_kiro_account_pool_takes_the_first_open_account() {
   pass "fm-spawn: config/kiro-account-pool launches each ship on the first open account, skipping exhausted and logged-out ones"
 }
 
+test_kiro_account_pool_starts_a_new_month_with_no_exhausted_account() {
+  local id out rc ledger
+  id="kiro-pool-month-$$"
+  new_kiro_pool_case pool-month "$id"
+  ledger="$HOME_DIR/state/kiro-accounts/exhausted-2000-01"
+  mkdir -p "${ledger%/*}"
+  printf '%s\n' "$CASE_DIR/dev10" "$CASE_DIR/dev11" > "$ledger"
+  out=$(XDG_DATA_HOME="$CASE_DIR/ambient-share" run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id"); rc=$?
+  expect_code 0 "$rc" "a ledger of an earlier month must not stop a launch: $out"
+  assert_contains "$out" "account=$CASE_DIR/dev10" "an account exhausted in an earlier month is open again"
+  pass "fm-spawn: config/kiro-account-pool ignores the exhausted ledger of an earlier month"
+}
+
 test_kiro_account_pool_refuses_when_spent_or_shared_with_the_ordinary_login() {
   local id out rc ledger
   id="kiro-pool-out-$$"
@@ -2097,6 +2110,7 @@ test_kiro_account_pin_selects_the_data_root
 test_kiro_account_pin_absent_or_ordinary_keeps_xdg_data_home
 test_kiro_account_pin_refuses_a_logged_out_root
 test_kiro_account_pool_takes_the_first_open_account
+test_kiro_account_pool_starts_a_new_month_with_no_exhausted_account
 test_kiro_account_pool_refuses_when_spent_or_shared_with_the_ordinary_login
 test_kiro_account_pool_serves_only_ships_and_scouts
 test_kiro_secondmate_account_override
