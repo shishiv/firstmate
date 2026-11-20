@@ -884,6 +884,22 @@ A Claude root whose `settings.json` names an `apiKeyHelper` reports `loggedIn: t
 Each refusal is paired with the divergence it depends on: the same runner, given `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the extension's key variable, answers signed in for the empty root, so the refusal proves the check's cleared environment.
 Replacing `env -i` with `env` in the check makes the guard fail on the Claude refusal.
 A Kiro login cannot be made offline, so the Kiro case checks only the refusal: real `kiro-cli whoami` with `XDG_DATA_HOME` on an empty root prints `Not logged in` and exits 1, and the real `fm-spawn.sh` refuses a home whose `config/kiro-account` names that root before any task record exists.
+The [Kiro account pool](../configuration.md#kiro-account-pool-configkiro-account-pool) also reads the `Email:` line of `kiro-cli whoami`; with `FM_WORKER_ACCOUNT_KIRO_ROOT` naming a logged-in data root, the guard checks that line and that the pool takes the root beside a logged-out ordinary login and skips it when the ordinary login is the same account.
+
+Verified 2026-11-20 on kiro-cli 3.5.0 on Linux, with only the Kiro runner on `PATH` and a logged-in Kiro Enterprise data root.
+
+```sh
+FM_WORKER_ACCOUNT_KIRO_ROOT=/home/shiv/.local/share-kiro-dev20 bash tests/fm-worker-account-live-e2e.test.sh
+```
+
+```
+skip-runner: claude is not installed, so its pin check was not exercised
+skip-runner: pi is not installed, so its pin check was not exercised
+skip-runner: pi-signed is not installed, so its pin check was not exercised
+ok - kiro-cli 3.5.0: kiro-cli whoami reports an empty data root not logged in, and fm-spawn refuses a home pinned to it
+ok - kiro-cli 3.5.0: kiro-cli whoami names dev20@triangulotec.com.br, and the pool takes that root only while the ordinary login is another account
+# worker account live guard checked: kiro-cli
+```
 
 Verified 2026-10-28 on kiro-cli 2.35.1 and pi 1.4.0 on Linux, with Claude Code taken off `PATH` because on this host the installed `claude` launcher (Claude Code 2.1.312) finds no native version under the guard's throwaway `HOME` and exits 1 for every command, so the Claude case fails before it checks anything.
 

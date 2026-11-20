@@ -43,6 +43,19 @@
 # shed-credential, or XDG_DATA_HOME assignment would override the pin; a
 # pinned home refuses such a command.
 #
+# Kiro ships and scouts can instead draw from config/kiro-account-pool, an
+# ordered list of data roots, one absolute path per line (blank lines and
+# `#` lines are ignored). When the file exists it governs every ship and scout
+# Kiro launch and relaunch, ahead of config/kiro-account, which then pins only
+# the primary and secondmates. A launch takes the first root, in file order,
+# that is not listed in this home's state/kiro-accounts/exhausted-<YYYY-MM>
+# for the current UTC month, is a readable directory, is logged in, and is not
+# the account of the ordinary login, which the supervisor keeps for itself.
+# Roots that fail are skipped with a note; when none is left the launch
+# refuses and never falls back to the ordinary login. A new month starts with
+# an empty ledger. bin/fm-kiro-account-pool.sh writes the ledger and moves the
+# workers of an exhausted account to the next one.
+#
 # The sign-in check asks the runner itself, with only HOME, PATH, TMPDIR,
 # USER, LOGNAME, and the selected root in its environment, so a credential
 # variable left in the caller cannot answer for a root that has no login:
@@ -226,13 +239,7 @@ fm_worker_account_check() {
     return 1
     ;;
   kiro-cli)
-    if [ -n "$root" ]; then
-      clean+=("XDG_DATA_HOME=$root")
-    elif [ -n "${XDG_DATA_HOME:-}" ]; then
-      clean+=("XDG_DATA_HOME=$XDG_DATA_HOME")
-    fi
-    if fm_run_timed "$FM_WORKER_ACCOUNT_CHECK_SECONDS" "${clean[@]}" \
-      "$executable" whoami >/dev/null 2>&1 </dev/null; then
+    if fm_worker_account_kiro_whoami "$root" "$executable" >/dev/null; then
       return 0
     fi
     if [ -n "$root" ]; then
@@ -270,30 +277,144 @@ fm_worker_account_check() {
   return 0
 }
 
-# fm_worker_account_select <harness> <config-dir> <model> <executable> [<raw-command>] [<secondmate-id>]
+# fm_worker_account_kiro_whoami <root> <executable>
+# Runs `kiro-cli whoami` for one data root, or for the ordinary login when
+# root is empty (the XDG_DATA_HOME this process has, else ~/.local/share), with
+# the same cleared environment as every sign-in check. Prints its stdout and
+# returns its status, which is 0 only when that root is logged in.
+fm_worker_account_kiro_whoami() {
+  local root=$1 executable=$2 name
+  local -a clean=(env -i "HOME=${HOME:-}" "PATH=${PATH:-}")
+  for name in TMPDIR USER LOGNAME; do
+    [ -z "${!name:-}" ] || clean+=("$name=${!name}")
+  done
+  if [ -n "$root" ]; then
+    clean+=("XDG_DATA_HOME=$root")
+  elif [ -n "${XDG_DATA_HOME:-}" ]; then
+    clean+=("XDG_DATA_HOME=$XDG_DATA_HOME")
+  fi
+  fm_run_timed "$FM_WORKER_ACCOUNT_CHECK_SECONDS" "${clean[@]}" \
+    "$executable" whoami 2>/dev/null </dev/null
+}
+
+# fm_worker_account_kiro_email: the account a `kiro-cli whoami` output on
+# stdin names on its `Email:` line, or nothing.
+fm_worker_account_kiro_email() {
+  sed -n 's/^Email:[[:space:]]*//p' | sed -n '1s/[[:space:]]*$//p'
+}
+
+# fm_worker_account_kiro_ledger <state-dir>
+# Prints this UTC month's exhausted-account ledger path. Only
+# bin/fm-kiro-account-pool.sh writes it.
+fm_worker_account_kiro_ledger() {
+  printf '%s/kiro-accounts/exhausted-%s\n' "${1%/}" "$(date -u +%Y-%m)"
+}
+
+# fm_worker_account_kiro_pool_roots <pool-file>
+# Prints the pool's roots in order. Refuses, naming the file, when it is not a
+# readable regular file or a line other than a blank or `#` line is not one
+# absolute path free of control characters.
+fm_worker_account_kiro_pool_roots() {
+  local pool=$1 line n=0
+  if [ ! -f "$pool" ] || [ ! -r "$pool" ]; then
+    echo "error: config/kiro-account-pool must be a readable regular file: $pool" >&2
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$line" in
+    '' | '#'*) continue ;;
+    *[[:cntrl:]]*) ;;
+    /*) printf '%s\n' "$line"; continue ;;
+    esac
+    echo "error: config/kiro-account-pool line $n must be one absolute data root, a blank line, or a # comment, with no control characters: $pool" >&2
+    return 1
+  done < "$pool"
+}
+
+# fm_worker_account_kiro_pool_pick <config-dir> <state-dir> <executable>
+# Prints the root a ship or scout launches on: the first pool root that is not
+# in this month's ledger, is a readable directory, is logged in, and names an
+# account other than the ordinary login's. Notes each skipped root on stderr.
+# Refuses, never falling back to the ordinary login, when no root is left.
+fm_worker_account_kiro_pool_pick() {
+  local config=$1 state=$2 executable=$3 pool="$1/kiro-account-pool" roots root ledger out email
+  local ordinary='' ordinary_read=0 exhausted=0 skipped=0
+  roots=$(fm_worker_account_kiro_pool_roots "$pool") || return 1
+  ledger=$(fm_worker_account_kiro_ledger "$state")
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    if [ -f "$ledger" ] && grep -qxF -- "$root" "$ledger"; then
+      exhausted=$((exhausted + 1))
+      continue
+    fi
+    skipped=$((skipped + 1))
+    if [ ! -d "$root" ] || [ ! -r "$root" ] || [ ! -x "$root" ]; then
+      echo "note: config/kiro-account-pool skips $root: not a readable, searchable directory" >&2
+      continue
+    fi
+    if ! out=$(fm_worker_account_kiro_whoami "$root" "$executable"); then
+      echo "note: config/kiro-account-pool skips $root: not logged in (kiro-cli whoami); log in with XDG_DATA_HOME=$root kiro-cli login" >&2
+      continue
+    fi
+    email=$(printf '%s\n' "$out" | fm_worker_account_kiro_email)
+    if [ "$ordinary_read" = 0 ]; then
+      ordinary_read=1
+      if out=$(fm_worker_account_kiro_whoami "" "$executable"); then
+        ordinary=$(printf '%s\n' "$out" | fm_worker_account_kiro_email)
+        [ -n "$ordinary" ] || ordinary='?'
+      fi
+    fi
+    if [ -n "$ordinary" ] && { [ -z "$email" ] || [ "$ordinary" = '?' ]; }; then
+      echo "note: config/kiro-account-pool skips $root: kiro-cli whoami printed no Email line for it or for the logged-in ordinary login, so the two cannot be told apart; $("$executable" --version 2>/dev/null | head -1)" >&2
+      continue
+    fi
+    if [ -n "$ordinary" ] && [ "$email" = "$ordinary" ]; then
+      echo "note: config/kiro-account-pool skips $root: it is logged in as $email, the ordinary login the supervisor keeps; remove it from the pool" >&2
+      continue
+    fi
+    printf '%s\n' "$root"
+    return 0
+  done <<< "$roots"
+  echo "error: config/kiro-account-pool has no Kiro account left for $(date -u +%Y-%m): $exhausted exhausted (listed in $ledger), $skipped unusable; add a logged-in account to $pool or wait for the next month" >&2
+  return 1
+}
+
+# fm_worker_account_select <harness> <config-dir> <model> <executable> [<raw-command>] [<secondmate-id>] [<pool-state-dir>]
 # The whole launch-time decision. Prints nothing for an unpinned runner, so
 # the caller keeps today's launch unchanged. For a pinned one prints
 # "declared<TAB>root<TAB>provider", where provider is the Pi launch model's
 # own (empty for Claude and Kiro), after the model guard and the sign-in check pass. On
 # refusal prints one error and returns 1. bin/fm-spawn.sh runs it before any
 # endpoint exists, and bin/fm-control.sh before a relaunch stops the live
-# agent.
+# agent. A ship or scout launch passes its home's state directory as
+# pool-state-dir, the only launch config/kiro-account-pool serves; a pool
+# pick prints the chosen root as both declared and root.
 fm_worker_account_select() {
-  local harness=$1 config=$2 model=$3 executable=$4 raw=${5:-} mate=${6:-}
-  local selection declared root providers word provider='' selected_config setting
-  selected_config=$(fm_worker_account_config "$harness" "$config" "$mate") || return 1
-  setting="config/$(fm_worker_account_file "$harness")"
-  [ "$selected_config" = "$config" ] || setting="$selected_config/$(fm_worker_account_file "$harness")"
-  selection=$(fm_worker_account_resolve "$harness" "$selected_config" "$setting") || return 1
-  if [ -z "$selection" ]; then
-    [ "$selected_config" = "$config" ] && return 0
-    echo "error: secondmate account pin disappeared during selection: $setting" >&2
-    return 1
+  local harness=$1 config=$2 model=$3 executable=$4 raw=${5:-} mate=${6:-} pool_state=${7:-}
+  local selection declared root providers word provider='' selected_config setting pooled=0
+  if [ "$harness" = kiro-cli ] && [ -z "$mate" ] && [ -n "$pool_state" ] &&
+    { [ -e "$config/kiro-account-pool" ] || [ -L "$config/kiro-account-pool" ]; }; then
+    root=$(fm_worker_account_kiro_pool_pick "$config" "$pool_state" "$executable") || return 1
+    declared=$root
+    providers=
+    setting=config/kiro-account-pool
+    pooled=1
+  else
+    selected_config=$(fm_worker_account_config "$harness" "$config" "$mate") || return 1
+    setting="config/$(fm_worker_account_file "$harness")"
+    [ "$selected_config" = "$config" ] || setting="$selected_config/$(fm_worker_account_file "$harness")"
+    selection=$(fm_worker_account_resolve "$harness" "$selected_config" "$setting") || return 1
+    if [ -z "$selection" ]; then
+      [ "$selected_config" = "$config" ] && return 0
+      echo "error: secondmate account pin disappeared during selection: $setting" >&2
+      return 1
+    fi
+    declared=${selection%%$'\t'*}
+    root=${selection#*$'\t'}
+    providers=${root#*$'\t'}
+    root=${root%%$'\t'*}
   fi
-  declared=${selection%%$'\t'*}
-  root=${selection#*$'\t'}
-  providers=${root#*$'\t'}
-  root=${root%%$'\t'*}
   if [ "$harness" = claude ] || [ "$harness" = kiro-cli ]; then
     local runner=Claude guarded=" CLAUDE_CONFIG_DIR $FM_WORKER_ACCOUNT_CLAUDE_SHED "
     [ "$harness" = claude ] || { runner=Kiro; guarded=" XDG_DATA_HOME "; }
@@ -327,7 +448,8 @@ fm_worker_account_select() {
       ;;
     esac
   fi
-  fm_worker_account_check "$harness" "$declared" "$root" "$executable" "$provider" "$setting" || return 1
+  [ "$pooled" = 1 ] ||
+    fm_worker_account_check "$harness" "$declared" "$root" "$executable" "$provider" "$setting" || return 1
   printf '%s\t%s\t%s\n' "$declared" "$root" "$provider"
 }
 

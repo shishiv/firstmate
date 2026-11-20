@@ -1745,7 +1745,11 @@ share=\${XDG_DATA_HOME:-\$HOME/.local/share}
 case "\${1:-}" in
   whoami)
     printf '%s\n' "\${XDG_DATA_HOME-unset}" >> '$dir/kiro-checks'
-    if [ -f "\$share/kiro-cli/data.sqlite3" ]; then echo 'Logged in'; exit 0; fi
+    if [ -f "\$share/kiro-cli/data.sqlite3" ]; then
+      echo 'Logged in'
+      [ ! -f "\$share/kiro-cli/email" ] || printf 'Email: %s\n' "\$(cat "\$share/kiro-cli/email")"
+      exit 0
+    fi
     echo 'Not logged in'
     exit 1
     ;;
@@ -1757,10 +1761,12 @@ SH
   chmod +x "$fakebin/kiro-cli"
 }
 
-# kiro_logged_in_root <dir>: a data root holding a Kiro login.
+# kiro_logged_in_root <dir> [<email>]: a data root holding a Kiro login, whose
+# whoami names <email> when one is given.
 kiro_logged_in_root() {
   mkdir -p "$1/kiro-cli"
   : > "$1/kiro-cli/data.sqlite3"
+  [ -z "${2:-}" ] || printf '%s\n' "$2" > "$1/kiro-cli/email"
 }
 
 # run_kiro_account_pane: execute the recorded launch in a pane whose ambient
@@ -1849,6 +1855,93 @@ test_kiro_account_pin_refuses_a_logged_out_root() {
   pass "fm-spawn: a logged-out, malformed, or overridden Kiro pin refuses before any endpoint or record"
 }
 
+# kiro_pool <root>...: this case's config/kiro-account-pool, in order.
+kiro_pool() {
+  printf '# workers spend these in order\n\n' > "$HOME_DIR/config/kiro-account-pool"
+  printf '%s\n' "$@" >> "$HOME_DIR/config/kiro-account-pool"
+}
+
+kiro_pool_ledger() {
+  printf '%s/state/kiro-accounts/exhausted-%s\n' "$HOME_DIR" "$(date -u +%Y-%m)"
+}
+
+# new_kiro_pool_case <name> <id>: a Kiro spawn case whose pool lists a
+# logged-out dev9, then dev10 and dev11, beside a config/kiro-account pin and
+# an ordinary login, each its own account.
+new_kiro_pool_case() {
+  new_kiro_account_case "$1" "$2"
+  kiro_logged_in_root "$CASE_DIR/ambient-share" ordinary@example.invalid
+  mkdir -p "$CASE_DIR/dev9"
+  kiro_logged_in_root "$CASE_DIR/dev10" dev10@example.invalid
+  kiro_logged_in_root "$CASE_DIR/dev11" dev11@example.invalid
+  kiro_logged_in_root "$CASE_DIR/pinned" pinned@example.invalid
+  printf '%s\n' "$CASE_DIR/pinned" > "$HOME_DIR/config/kiro-account"
+  kiro_pool "$CASE_DIR/dev9" "$CASE_DIR/dev10" "$CASE_DIR/dev11"
+}
+
+test_kiro_account_pool_takes_the_first_open_account() {
+  local id out rc ledger
+  id="kiro-pool-$$"
+  new_kiro_pool_case pool "$id"
+  out=$(XDG_DATA_HOME="$CASE_DIR/ambient-share" run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id"); rc=$?
+  expect_code 0 "$rc" "a pooled Kiro ship should launch: $out"
+  assert_contains "$out" "account=$CASE_DIR/dev10" "the ship should take the first logged-in pool account, ahead of config/kiro-account"
+  assert_contains "$out" "skips $CASE_DIR/dev9: not logged in" "a logged-out pool account should be named as skipped"
+  assert_grep "account=$CASE_DIR/dev10" "$HOME_DIR/state/$id.meta" "the task record should carry the pool account"
+  assert_contains "$(cat "$CASE_DIR/launch.log")" "XDG_DATA_HOME='$CASE_DIR/dev10' " "the launch should carry the pool account's root"
+  run_kiro_account_pane
+  assert_grep "XDG_DATA_HOME=$CASE_DIR/dev10" "$CASE_DIR/kiro-worker" "the worker should run on the pool account"
+
+  id="kiro-pool-next-$$"
+  new_kiro_pool_case pool-next "$id"
+  ledger=$(kiro_pool_ledger)
+  mkdir -p "${ledger%/*}"
+  printf '%s\n' "$CASE_DIR/dev10" > "$ledger"
+  out=$(XDG_DATA_HOME="$CASE_DIR/ambient-share" run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id"); rc=$?
+  expect_code 0 "$rc" "a ship launched after the first account is exhausted should launch: $out"
+  assert_contains "$out" "account=$CASE_DIR/dev11" "an exhausted account should send the next ship to the next account"
+  pass "fm-spawn: config/kiro-account-pool launches each ship on the first open account, skipping exhausted and logged-out ones"
+}
+
+test_kiro_account_pool_refuses_when_spent_or_shared_with_the_ordinary_login() {
+  local id out rc ledger
+  id="kiro-pool-out-$$"
+  new_kiro_account_case pool-out "$id"
+  kiro_logged_in_root "$CASE_DIR/ambient-share" ordinary@example.invalid
+  kiro_logged_in_root "$CASE_DIR/same" ordinary@example.invalid
+  kiro_logged_in_root "$CASE_DIR/dev10" dev10@example.invalid
+  kiro_pool "$CASE_DIR/same" "$CASE_DIR/dev10"
+  ledger=$(kiro_pool_ledger)
+  mkdir -p "${ledger%/*}"
+  printf '%s\n' "$CASE_DIR/dev10" > "$ledger"
+  out=$(XDG_DATA_HOME="$CASE_DIR/ambient-share" run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id"); rc=$?
+  expect_code 1 "$rc" "a pool with no open account must refuse, even with an ordinary login"
+  assert_contains "$out" "skips $CASE_DIR/same: it is logged in as ordinary@example.invalid, the ordinary login" \
+    "a pool account that is the ordinary login must be skipped"
+  assert_contains "$out" "config/kiro-account-pool has no Kiro account left" "the refusal should say the pool is spent"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused spawn must not publish a task record"
+  [ ! -s "$CASE_DIR/launch.log" ] || fail "a refused spawn must not launch a worker"
+  assert_no_grep "new-window" "$CASE_DIR/tmux-calls.log" "a refused spawn must not create an endpoint"
+  printf 'relative/root\n' > "$HOME_DIR/config/kiro-account-pool"
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id-bad"); rc=$?
+  expect_code 1 "$rc" "a malformed pool must refuse"
+  assert_contains "$out" "config/kiro-account-pool line 1 must be one absolute data root" "the refusal should name the line"
+  pass "fm-spawn: a spent or malformed pool refuses, and a pool account shared with the ordinary login is never used"
+}
+
+test_kiro_account_pool_serves_only_ships_and_scouts() {
+  local dir fakebin
+  dir="$TMP_ROOT/primary-pool"; fakebin=$(fm_fakebin "$dir/fake")
+  mkdir -p "$dir/home/state" "$dir/home/config"
+  make_kiro_account_fake "$fakebin" "$dir"
+  kiro_logged_in_root "$dir/dev10" dev10@example.invalid
+  printf '%s\n' "$dir/dev10" > "$dir/home/config/kiro-account-pool"
+  XDG_DATA_HOME="$dir/ambient" PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" \
+    "$ROOT/bin/fm-kiro-primary.sh" >/dev/null 2>&1 || fail "the primary launcher should start beside a pool"
+  assert_grep "XDG_DATA_HOME=$dir/ambient" "$dir/kiro-worker" "the primary must keep its own login, never a pool account"
+  pass "fm-kiro-primary: config/kiro-account-pool never moves the primary off its login"
+}
+
 test_kiro_secondmate_account_override() {
   local id rec out rc mate
   id="kiro-acct-sm-$$"
@@ -1858,6 +1951,8 @@ test_kiro_secondmate_account_override() {
   printf '%s\n' "$CASE_DIR/primary" > "$HOME_DIR/config/kiro-account"
   mkdir -p "$HOME_DIR/config/secondmate-accounts/$id"
   printf '%s\n' "$CASE_DIR/mate" > "$HOME_DIR/config/secondmate-accounts/$id/kiro-account"
+  kiro_logged_in_root "$CASE_DIR/pooled"
+  kiro_pool "$CASE_DIR/pooled"
   mate="$CASE_DIR/mate-home"
   mkdir -p "$mate/bin" "$mate/data" "$mate/config"
   git init -q -b main "$mate"
@@ -1877,7 +1972,7 @@ test_kiro_secondmate_account_override() {
     PATH="$FAKEBIN_DIR:$BASE_PATH" \
     "$SPAWN" "$id" "$mate" --harness kiro-cli --secondmate 2>&1); rc=$?
   expect_code 0 "$rc" "a Kiro secondmate with its own account should launch: $out"
-  assert_contains "$out" "account=$CASE_DIR/mate" "the per-mate pin must override the home-wide pin"
+  assert_contains "$out" "account=$CASE_DIR/mate" "the per-mate pin must override the home-wide pin, and the ship pool must not apply"
   assert_contains "$(cat "$CASE_DIR/launch.log")" "XDG_DATA_HOME='$CASE_DIR/mate' " \
     "the secondmate launch should carry its own root"
   assert_absent "$mate/config/kiro-account" "the pin must not be copied into the secondmate home"
@@ -2001,6 +2096,9 @@ test_kiro_refuses_outside_an_isolated_worktree
 test_kiro_account_pin_selects_the_data_root
 test_kiro_account_pin_absent_or_ordinary_keeps_xdg_data_home
 test_kiro_account_pin_refuses_a_logged_out_root
+test_kiro_account_pool_takes_the_first_open_account
+test_kiro_account_pool_refuses_when_spent_or_shared_with_the_ordinary_login
+test_kiro_account_pool_serves_only_ships_and_scouts
 test_kiro_secondmate_account_override
 test_kiro_primary_launcher_uses_the_account_pin
 test_kiro_teardown_removes_every_artifact

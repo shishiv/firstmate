@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), [worker memory scope](#worker-memory-scope-configworker-memory-high), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
+| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), its [Kiro account pool](#kiro-account-pool-configkiro-account-pool), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), [worker memory scope](#worker-memory-scope-configworker-memory-high), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [record export](#record-export-configrecord-export-root), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [warm-cache compaction](#warm-cache-compaction-configwarm-compact), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1549,9 +1549,65 @@ Each home that should spend that account then names the root in its own `config/
 Several homes can each hold a different account this way, and a home without the file keeps the ordinary login.
 A new entry later added to `~/.local/share` needs its link added to each root.
 
+### Kiro account pool (config/kiro-account-pool)
+
+A home whose Kiro ships and scouts should move to a fresh account when one runs out of monthly credit lists several Kiro data roots in `config/kiro-account-pool`, one absolute path per line, in the order they should be spent.
+Blank lines and lines that start with `#` are ignored; any other line that is not one absolute path, or that holds a control character, refuses every pooled launch and names the line.
+
+```text
+/home/me/.local/share-kiro-dev3
+/home/me/.local/share-kiro-dev6
+/home/me/.local/share-kiro-dev20
+```
+
+When the file exists, every ship and scout `kiro-cli` launch and relaunch from this home takes the first root that is not exhausted this month, is a readable directory, is logged in, and is not the account of the ordinary login.
+It takes precedence over `config/kiro-account` for ships and scouts; that pin, or the ordinary login when it is absent, keeps serving the primary, `bin/fm-kiro-primary.sh`, and local secondmates, whose per-secondmate pins are unchanged.
+A logged-out, missing, or unreadable root is skipped with a `note:` line naming it, so one broken login does not stop the fleet.
+The spawn records the chosen root as `account=` like any pin.
+Order matters for billing: on a Kiro subscription a seat still pending this month starts billing at its first turn, so list accounts in the order they should become active.
+
+The supervisor keeps its own account out of the pool.
+A Firstmate main session on Pi or on `bin/fm-kiro-primary.sh` without a pin uses the ordinary login under `~/.local/share/kiro-cli`, and no pool root may be logged in as that same account, or the workers would spend the supervisor's credit and stop it with them.
+Each launch compares the `Email:` line `kiro-cli whoami` prints for the candidate root with the ordinary login's, skips a root that names the same account, and also skips one when either line is missing, because the two then cannot be told apart.
+The comparison cannot see a `config/kiro-account` root, so keep that account out of the pool by hand.
+
+`state/kiro-accounts/exhausted-<YYYY-MM>` records the roots that ran out in the current UTC month, one per line; a new month starts with an empty ledger, and deleting a line puts that account back in use.
+When every root is exhausted or unusable, the launch refuses, names the pool and the ledger, and never falls back to the ordinary login.
+
+`bin/fm-kiro-account-pool.sh check` moves workers off an exhausted account.
+It reads each pooled ship's and scout's own Kiro session history, and when the newest event there is a `UsageLimitReachedError`, or an error naming the monthly usage limit, rather than an assistant reply, it records that account in the ledger and relaunches that task with `bin/fm-control.sh <id> relaunch --note`, which puts it on the next account.
+A worker on the same account that has not hit the limit yet keeps its conversation; its next turn fails, and the following check moves it.
+The relaunched worker keeps its local copy and instructions and loses only that task's conversation.
+With no account left, `check` exits 2 and names the waiting workers without touching them.
+`mark <root>` records an exhaustion by hand, `status` lists each root with `exhausted` or `open` and the workers on it, and `--dry-run` reports what `check` would do; the script's header owns the exit codes.
+
+Run `check` every few minutes for each home that has a pool, for example with a systemd user timer:
+
+```ini
+# ~/.config/systemd/user/firstmate-kiro-account-pool.service
+[Service]
+Type=oneshot
+Environment=FM_HOME=/home/me/firstmate
+Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/me/firstmate/bin/fm-kiro-account-pool.sh check
+
+# ~/.config/systemd/user/firstmate-kiro-account-pool.timer
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+
+[Install]
+WantedBy=timers.target
+```
+
+`PATH` must reach `kiro-cli`, `jq`, and the runtime backend's own tools (`hc`, `herdr`, or `tmux`), because the relaunch drives the worker's endpoint.
+Enable it with `systemctl --user daemon-reload` and `systemctl --user enable --now firstmate-kiro-account-pool.timer`.
+systemd does not start the service again while a run is still going, so two checks never relaunch the same worker at once.
+
 ### Launch scope and sign-in checks
 
 When a file is present, supported command-line launches of that runner from this home use it: ships, scouts, local secondmate agents, raw Claude and Kiro launch commands, and relaunches, plus a Kiro primary started with `bin/fm-kiro-primary.sh`.
+A [Kiro account pool](#kiro-account-pool-configkiro-account-pool) takes precedence over `config/kiro-account` for Kiro ships and scouts.
 A Kiro Crew worker (`kirocrew`) runs inside the Crew gateway, which starts no `kiro-cli` from this home, so the pin does not apply to it.
 A local secondmate can override this default with its own [per-secondmate account pin](#per-secondmate-account-pins).
 T3 Code selects the account through its provider instance instead, so `backend=t3code` refuses a worker account pin before mutation; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
