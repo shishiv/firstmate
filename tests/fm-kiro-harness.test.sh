@@ -35,6 +35,8 @@
 #   7. Busy state is the pinned rendered-tail fallback alone (nothing armed,
 #      because no push writer could clear a seeded record), scoped to
 #      harness=kiro-cli, busy on its anchors and unknown when they scroll out.
+#      The lines Kiro prints once its KAS agent process exited classify the task
+#      dead ahead of any record, in the last 12 rows of its tail only.
 #   8. --model and --effort ride the launch (effort accepts the full
 #      low|medium|high|xhigh|max vocabulary natively).
 #   9. Teardown removes every kiro-cli artifact and the .fm-kiro-turnend pointer
@@ -300,6 +302,30 @@ Thinking... (esc to cancel)')
   [ "$scrolled" = "unknown kiro-regex" ] \
     || fail "a scrolled-out marker must classify unknown kiro-regex (never idle), got '$scrolled'"
   pass "fm-busy-lib: kiro-cli classifies busy on its anchor and unknown without it"
+}
+
+test_kiro_classify_dead_agent_outranks_a_busy_record() {
+  local statedir gen dead out
+  statedir="$TMP_ROOT/classify-dead"; mkdir -p "$statedir"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$statedir" kiro-dead-1) || fail "could not arm a busy generation"
+  "$ROOT/bin/fm-busy-event.sh" apply "$statedir" kiro-dead-1 busy --gen "$gen" \
+    --source kiro-hook --event user-prompt-submit || fail "could not record a busy turn"
+  out=$(fm_busy_classify tmux fake:win kiro-cli kiro-dead-1 "$statedir" 'streaming reply')
+  [ "$out" = "busy kiro-hook" ] || fail "the control record must read busy kiro-hook, got '$out'"
+
+  dead=$'KAS agent process exited unexpectedly (code 137)\nKiro not initialized'
+  out=$(fm_busy_classify tmux fake:win kiro-cli kiro-dead-1 "$statedir" "$dead")
+  [ "$out" = "dead kiro-agent-exited" ] || fail "both Kiro lines must classify dead over a busy record, got '$out'"
+  out=$(fm_busy_classify tmux fake:win kiro-cli kiro-dead-1 "$statedir" 'KAS agent process exited unexpectedly (code 1)')
+  [ "$out" = "dead kiro-agent-exited" ] || fail "the exit error alone must classify dead, got '$out'"
+  out=$(fm_busy_classify tmux fake:win kiro-cli kiro-dead-1 "$statedir" $'\n\nkiro not initialized\n\n')
+  [ "$out" = "dead kiro-agent-exited" ] || fail "the init error alone, in any case and among blank rows, must classify dead, got '$out'"
+
+  out=$(fm_busy_classify tmux fake:win kiro-cli kiro-dead-1 "$statedir" "$dead"$'\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12')
+  [ "$out" = "busy kiro-hook" ] || fail "lines pushed out of the last 12 rows must leave the record in charge, got '$out'"
+  out=$(fm_busy_classify tmux fake:win claude kiro-dead-1 "$statedir" "$dead")
+  case "$out" in dead*) fail "another harness must never read dead from Kiro's lines, got '$out'" ;; esac
+  pass "fm-busy-lib: Kiro's dead-agent lines classify dead over a busy record, in the last 12 rows and for kiro-cli only"
 }
 
 test_kiro_semantic_busy_source_is_registered() {
@@ -2074,6 +2100,7 @@ test_kiro_idle_placeholder_is_exact_and_harness_scoped
 test_kiro_busy_tail_needs_a_pinned_anchor
 test_kiro_busy_signatures_are_harness_scoped
 test_kiro_classify_busy_on_anchor_unknown_when_scrolled_out
+test_kiro_classify_dead_agent_outranks_a_busy_record
 test_kiro_semantic_busy_source_is_registered
 test_kiro_hooks_drive_semantic_busy_idle_and_progress
 test_kiro_pretool_denies_a_backgrounded_worker_command

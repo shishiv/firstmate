@@ -59,13 +59,15 @@
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
 #   endpoint-gone, herdr-native, rex-native, t3code-native, tern-native, grok-regex,
-#   rovo-regex, agy-regex, kiro-regex, muse-session-log,
+#   rovo-regex, agy-regex, kiro-regex, kiro-agent-exited, muse-session-log,
 #   cursor-transcript, missing, malformed, gen-mismatch, source-mismatch,
 #   kimi-unverified, codex-unverified, capture-failed, no-target, launch-prompt
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
 # with the producing source as the second token. Precedence:
 #   1. dead endpoint (fm_busy_classify_live only) -> dead endpoint-gone
+#   1b. a kiro-cli task whose rendered tail shows the dead-agent messages
+#      (fm_busy_kiro_agent_exited) -> dead kiro-agent-exited, ahead of any record
 #   2. a t3code task: the T3 server's busy, idle, or unknown verdict
 #      (the provider reports it for claude and codex alike, and no
 #      shell sits in front of the agent)
@@ -1135,12 +1137,29 @@ fm_busy_kiro_tail_busy() {
     | grep -qiE "${FM_BUSY_KIRO_REGEX:-Thinking\\.\\.\\.[[:space:]]*\\(esc to cancel\\)|Kiro is working}"
 }
 
+# fm_busy_kiro_agent_exited: the kiro-cli-only rendered-tail check for a dead
+# agent. Consumes the tail on stdin; 0 when either message Kiro prints once its
+# KAS agent process is gone sits in the last 12 non-blank lines. Both strings
+# are in the kiro-cli 3.5.0 TUI bundle: `KAS agent process exited unexpectedly
+# (code N)` is the error a turn in flight fails with when the agent exits, and
+# `Kiro not initialized` is what every later send fails with once the session
+# client is gone. The TUI stays open with no agent behind it, and the hooks
+# that close a turn are written by that agent, so the hook record keeps reading
+# busy. Either message alone carries the verdict, so no single vendor string is
+# load-bearing. The tail is bounded so words that merely scrolled by, such as a
+# worker grepping the source, stop matching once later output pushes them up.
+fm_busy_kiro_agent_exited() {
+  grep -v '^[[:space:]]*$' | tail -12 \
+    | grep -qiF -e 'KAS agent process exited unexpectedly' -e 'Kiro not initialized'
+}
+
 # fm_busy_classify: semantic classification for a task whose endpoint the
 # caller has already established as present. Prints "<verdict> <source>":
-# busy|idle|unknown plus the producing source (see header). Never probes
-# process state. <tail40> is optional pre-captured plain output: the grok,
-# rovo, and agy arms capture it themselves through fm_backend_capture when it
-# is absent (or report unknown capture-failed if that is unavailable too),
+# busy|idle|unknown plus the producing source (see header), or dead for a
+# kiro-cli task whose agent exited. Never probes process state. <tail40> is
+# optional pre-captured plain output: the grok, rovo, agy, and kiro-cli arms
+# capture it themselves through fm_backend_capture when it is absent (grok,
+# rovo, and agy report unknown capture-failed if that is unavailable too),
 # while the launch-prompt backstop below has no capture fallback of its own -
 # without a supplied tail40 it is skipped entirely and a record still pinned
 # at the fm-spawn seed keeps reading busy fm-spawn, unchanged.
@@ -1160,6 +1179,18 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
     esac
   fi
   case "$harness" in
+    kiro-cli)
+      # A dead agent outranks every record: the hooks that would close a turn
+      # run inside it. The tail is captured here when the caller gave none, and
+      # a failed capture leaves the record's own verdict in charge.
+      if [ -z "$tail40" ] && command -v fm_backend_capture >/dev/null 2>&1; then
+        tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || tail40=
+      fi
+      if printf '%s' "$tail40" | fm_busy_kiro_agent_exited; then
+        printf 'dead kiro-agent-exited'
+        return 0
+      fi
+      ;;
     kimi*)
       if ! fm_busy_kimi_verified; then
         printf 'unknown kimi-unverified'

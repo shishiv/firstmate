@@ -182,6 +182,25 @@ ok - kiro-cli live crewmate signals (turn-end, detection, busy/idle, control, te
 ```
 
 
+### Kiro dead-agent messages, 2026-11-21
+
+`fm_busy_kiro_agent_exited` in `bin/fm-busy-lib.sh` reads the two lines Kiro prints once its KAS agent process is gone.
+A dead agent leaves its hook `busy` record standing, because the hooks that close a turn run inside the agent, so the lines are the only evidence.
+Observed on 2026-11-20 on a worker whose KAS agent the kernel killed at its memory cap: the terminal stayed open and printed `KAS agent process exited unexpectedly`, then `Kiro not initialized`, while `bin/fm-crew-state.sh` kept reading `working`.
+The kiro-cli 3.5.0 terminal program throws the first as `KAS agent process exited unexpectedly (code N)` when the agent process exits during a turn, and the second as `Kiro not initialized` when a send finds no session client.
+`tests/fm-kiro-agent-exit-live-e2e.test.sh` pins both strings in the installed terminal program's bundle and fails naming the kiro-cli version when either is gone.
+It submits no prompt and spends no tokens, so it runs by default wherever kiro-cli is installed; rerun it after every kiro-cli upgrade.
+
+```sh
+bash tests/fm-kiro-agent-exit-live-e2e.test.sh
+```
+
+```
+1..1
+ok - kiro-cli 3.5.0 still throws both dead-agent messages fm_busy_kiro_agent_exited reads (/home/shiv/.local/share/kiro-cli/tui.js)
+FM_TEST_COMPLETE
+```
+
 ## Polytoken worker lifecycle
 
 Verified on 2026-10-14 with Polytoken 0.9.0 on macOS arm64 using the tmux worker path.
@@ -930,6 +949,7 @@ The guard submits no prompt and spends no tokens, so it runs by default wherever
 
 `bin/fm-spawn.sh` exports `BASH_ENV=bin/fm-worker-bash-env.sh` in front of every ship and scout launch, so the worker's bash tool runs each command with `set -o pipefail`.
 The guarantee holds only while the vendor's bash tool keeps running `bash -c <command>` with the launch environment.
+The same file raises that command's `oom_score_adj` to 1000 inside a worker memory scope, so that guarantee is the guard for the kill order too (`docs/configuration.md` "Worker memory scope").
 `tests/fm-worker-shell-live-e2e.test.sh` builds each worker's launch with the real `fm-spawn.sh` (fake pane, no worktree pool), starts that launch with the real binary in a real tmux pane, and asks the worker to run `false | true; echo "PIPEFAIL_RC=$?" > <result>` with its own shell tool.
 The file must read `PIPEFAIL_RC=1`.
 With `config/worker-pipefail` set to `off`, the same guard reads `PIPEFAIL_RC=0` and fails, so the check is not vacuous.

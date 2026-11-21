@@ -5,6 +5,8 @@
 #   spawn one scout, check its worker memory scope, see its status line reach
 #   the wake queue, steer it once, tear it down. Then relaunches a second scout
 #   on a private tmux server, in a new scope and once more with the scope off.
+#   Then fills a 200M worker scope (scripts/kill-order.sh) to show the kernel
+#   kills the agent's command and not the agent.
 #   Then runs bin/fm-test-run.sh with the selection after --
 #   (default --changed). Exits 0 only when every step passed. Evidence goes to
 #   --out (default /tmp/fmvf-evidence.<pid>); the scratch root is removed on
@@ -339,6 +341,14 @@ fm fm-teardown.sh vf2 2>&1 | tee "$OUT/teardown-vf2.txt" | tail -2
 vf2_gone() { ! standin_pid "$S2" >/dev/null; }
 if wait_for 20 vf2_gone; then check ok "teardown retired vf2's stand-in"; else check bad "teardown retired vf2's stand-in"; fi
 unset TMUX_TMPDIR
+
+step "worker kill order in a full scope"
+host_env bash "$WT/.agents/skills/verify-firstmate/scripts/kill-order.sh" --out "$OUT" 2>&1 | tee "$OUT/kill-order.log"
+if [ "${PIPESTATUS[0]}" = 0 ]; then
+  check ok "kill-order.sh: in a full 200M worker scope the kernel kills the command and spares the agent, and killed the agent before the change"
+else
+  check bad "kill-order.sh: in a full 200M worker scope the kernel kills the command and spares the agent, and killed the agent before the change"
+fi
 
 step "tests: bin/fm-test-run.sh ${SUITE[*]}"
 if host_env "$WT/bin/fm-test-run.sh" "${SUITE[@]}" >"$OUT/suite.txt" 2>&1; then

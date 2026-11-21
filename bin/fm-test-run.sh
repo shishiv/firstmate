@@ -372,7 +372,7 @@ family_for_basename() {
     fm-backend-t3code-pr-tools-live-e2e.test.sh|\
     fm-kiro-resume-live-e2e.test.sh|fm-kiro-primary-live-e2e.test.sh|\
     fm-kiro-host-mirror-live-e2e.test.sh|fm-kiro-supervision-host-live-e2e.test.sh|\
-    fm-kiro-afk-host-live-e2e.test.sh|\
+    fm-kiro-afk-host-live-e2e.test.sh|fm-kiro-agent-exit-live-e2e.test.sh|\
     fm-pi-seeded-home-trust-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-herdr-pi-stale-registration-live-e2e.test.sh|\
@@ -970,6 +970,7 @@ tests/fm-worker-memory-scope.test.sh 300
 tests/fm-worker-shell-live-e2e.test.sh 50
 tests/fm-backlog-pruner.test.sh 3306
 tests/fm-kiro-afk-host-live-e2e.test.sh 190
+tests/fm-kiro-agent-exit-live-e2e.test.sh 50
 tests/fm-kiro-host-mirror-live-e2e.test.sh 189
 tests/fm-kiro-primary-live-e2e.test.sh 189
 tests/fm-kiro-resume-live-e2e.test.sh 192
