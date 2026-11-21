@@ -485,7 +485,8 @@
 #   which owns its own process) runs through bin/fm-worker-memory-scope.sh,
 #   which puts the worker in its own systemd user scope,
 #   firstmate.slice/fm-worker-<id>-<spawn_gen>.scope, with a hard MemoryMax cap,
-#   no swap and one CPU (its header owns the scope properties). A runaway
+#   no swap and one CPU (its header owns the scope properties and the order in
+#   which a full scope kills the worker's processes). A runaway
 #   process then dies at the cap instead of pushing the desktop into swap, and
 #   the rest of the worker keeps running. The default is 2G. The content of the
 #   local, gitignored config/worker-memory-high, with all whitespace removed,

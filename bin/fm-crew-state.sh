@@ -1430,6 +1430,7 @@ if [ "$KIND" != secondmate ]; then
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;
+    dead) emit unknown pane "agent stopped (${BUSY_VERDICT#* }): the terminal is open but its agent process is gone, so the worker needs a relaunch" ;;
     *) emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
   esac
 fi

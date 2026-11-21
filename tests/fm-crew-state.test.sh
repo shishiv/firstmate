@@ -2771,6 +2771,66 @@ test_no_run_grok_uses_isolated_fallback() {
   pass "grok still reads working through its isolated rendered-tail fallback"
 }
 
+# A Kiro worker whose KAS agent process died (memory scope kill, 2026-11-20)
+# keeps its TUI open, and the hook record it left reads busy for good because the
+# Stop hook runs inside the dead agent. The two lines Kiro prints then are the
+# only evidence, and they must read as a stopped agent, not as working. The
+# control cases drive the same record and the same fake pane without the lines
+# (still working), with the lines scrolled out of the tail (still working), and
+# for a harness whose agent is not Kiro's (still working), so the stopped
+# reading cannot come from the record, the pane, or the harness alone.
+make_kiro_agent_case() {  # <case-name> <harness> <pane-text>
+  reset_fakes
+  local d=$TMP_ROOT/$1 gen
+  mkdir -p "$d/state"
+  make_repo_on_branch "$d/wt" fm/feat-kas
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-kas.meta" "window=fm:fm-feat-kas" "worktree=$d/wt" "kind=ship" "harness=$2"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  FM_FAKE_BUSY_TEXT=$3
+  export FM_FAKE_BUSY_TEXT
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-kas)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-kas busy --gen "$gen" \
+    --source "$([ "$2" = kiro-cli ] && echo kiro-hook || echo claude-hook)" --event user-prompt-submit
+}
+
+test_kiro_dead_agent_reads_stopped_not_working() {
+  local d out dead scrolled
+  dead=$'Error: KAS agent process exited unexpectedly (code 137)\nKiro not initialized'
+  scrolled=$dead$'\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12'
+
+  make_kiro_agent_case kas-alive kiro-cli 'Thinking... (esc to cancel)'
+  d=$TMP_ROOT/kas-alive
+  out=$(run_crew_state "$d" feat-kas)
+  assert_contains "$out" "state: working" "a Kiro worker with a busy record and no dead-agent lines is working"
+
+  make_kiro_agent_case kas-dead kiro-cli "$dead"
+  d=$TMP_ROOT/kas-dead
+  out=$(run_crew_state "$d" feat-kas)
+  assert_contains "$out" "state: unknown" "a Kiro worker whose agent exited must not read working"
+  assert_contains "$out" "agent stopped (kiro-agent-exited)" "the reading names the stopped agent and its source"
+  assert_not_contains "$out" "state: working" "the stale busy record must not win over the dead agent"
+
+  make_kiro_agent_case kas-dead-error-only kiro-cli 'KAS agent process exited unexpectedly (code 1)'
+  out=$(run_crew_state "$TMP_ROOT/kas-dead-error-only" feat-kas)
+  assert_contains "$out" "agent stopped (kiro-agent-exited)" "the exit error alone carries the verdict"
+
+  make_kiro_agent_case kas-dead-init-only kiro-cli 'Kiro not initialized'
+  out=$(run_crew_state "$TMP_ROOT/kas-dead-init-only" feat-kas)
+  assert_contains "$out" "agent stopped (kiro-agent-exited)" "the not-initialized error alone carries the verdict"
+
+  make_kiro_agent_case kas-scrolled kiro-cli "$scrolled"
+  out=$(run_crew_state "$TMP_ROOT/kas-scrolled" feat-kas)
+  assert_contains "$out" "state: working" "lines that scrolled out of the tail no longer stop a worker"
+
+  make_kiro_agent_case kas-other-harness claude "$dead"
+  out=$(run_crew_state "$TMP_ROOT/kas-other-harness" feat-kas)
+  assert_contains "$out" "state: working" "another harness printing the same words stays working"
+  pass "a Kiro worker whose agent process exited reads stopped, and only on the dead-agent lines in its own tail"
+}
+
 # Regression (12/11/2026 hc holder loss): hc swaps a dead program for a login
 # shell at the same address, so the terminal stays readable. The reader must ask
 # the hc adapter's agent state instead of trusting that the terminal exists.
@@ -6202,6 +6262,7 @@ test_no_mistakes_prevalidation_done_stays_done
 test_moved_remote_branch_without_named_head_is_blocked
 test_external_review_done_reads_ready
 test_no_run_busy_pane
+test_kiro_dead_agent_reads_stopped_not_working
 test_no_run_overview_zero_branch_falls_through
 test_no_run_launch_prompt_parked_is_not_working
 test_no_run_footer_text_alone_is_not_working

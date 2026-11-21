@@ -87,6 +87,7 @@ Its interactive session on 2.22.1 is a contiguous four-frame run (`kiro-cli` -> 
 
 `../../../../../bin/fm-spawn.sh` arms a busy generation for kiro-cli and passes it to the hook as `FM_KIRO_BUSY_GEN`, which always wins over the session record above; `../../../../../bin/fm-kiro-turnend-hook.sh` applies `busy` on `UserPromptSubmit`, progress on `PreToolUse`/`PostToolUse`, and `idle` on `Stop`, each bound to the task by the isolated-home pointer and per-`KIRO_HOME` token before any state mutation (verified live on 2026-09-21 by `tests/fm-kiro-signals-live-e2e.test.sh`).
 `fm_busy_kiro_tail_busy` matches the `Thinking... (esc to cancel)` and `Kiro is working` anchors (with the `FM_BUSY_KIRO_REGEX` override) as the fallback when no generation is recorded, and `fm_busy_classify` reports `unknown kiro-regex` rather than idle when they are absent, because a long turn can scroll them out of the captured tail.
+`fm_busy_kiro_agent_exited` reads `KAS agent process exited unexpectedly` or `Kiro not initialized` in the last 12 non-blank rows of the tail, and `fm_busy_classify` then reports `dead kiro-agent-exited` ahead of any record, because the hooks that close a turn run inside the agent and a dead agent leaves its `busy` record standing; `bin/fm-crew-state.sh` reads that as `unknown` and nothing relaunches the worker.
 The authoritative turn-end signal is the `stop` hook above, not this rendered fallback; `state/<id>.turn-ended` remains a wake notification for the watcher rather than current-state truth.
 
 ## Primary integration

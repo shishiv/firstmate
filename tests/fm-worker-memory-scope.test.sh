@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # tests/fm-worker-memory-scope.test.sh - bin/fm-worker-memory-scope.sh puts one
 # command in its own systemd user scope with MemoryMax, no swap, one CPU and
-# OOMPolicy=continue, under `choom -n 500` when choom is on PATH, in place (same
-# PID), and launches it uncapped exactly once wherever no systemd user scope
-# starts.
+# OOMPolicy=continue, under `choom -n 400` when choom is on PATH, in place
+# (same PID), and launches it uncapped exactly once wherever no systemd user
+# scope starts. In a real worker scope, a command run through the worker's
+# BASH_ENV (bin/fm-worker-bash-env.sh) is first in line for the OOM killer.
 #
 # A fake systemd-run records its argv, answers the `-- true` probes as each case
 # chooses, and otherwise execs the command after `--`, as the real one does; a
-# fake choom checks its arguments and execs the same way. The last case runs the
+# fake choom checks its arguments and execs the same way. The last cases run the
 # real systemd-run and choom when the host has a user manager.
 set -u
 
@@ -78,9 +79,9 @@ test_user_scope_execs_in_place() {
   [ -n "$inner" ] || fail "the command did not run: $out"
   assert_equals "$outer" "$inner" "the helper, systemd-run and choom must exec, so the worker keeps the launching PID"
   assert_equals "$SCOPE_FLAGS -- true
-$SCOPE_FLAGS --unit=$UNIT -- choom -n 500 -- sh -c echo \"inner=\$\$\"" "$(cat "$ARGV_LOG")" \
+$SCOPE_FLAGS --unit=$UNIT -- choom -n 400 -- sh -c echo \"inner=\$\$\"" "$(cat "$ARGV_LOG")" \
     "the helper should probe once, then exec systemd-run with the scope limits, the unit and choom"
-  pass "a reachable user scope runs the command under choom -n 500 in a capped firstmate.slice scope and keeps its PID"
+  pass "a reachable user scope runs the command under choom -n 400 in a capped firstmate.slice scope and keeps its PID"
 }
 
 test_machine_transport_fallback() {
@@ -91,7 +92,7 @@ test_machine_transport_fallback() {
   assert_equals 1 "$(printf '%s\n' "$out" | grep -cx ran)" "the command should run once"
   assert_equals "$SCOPE_FLAGS -- true
 $machine $SCOPE_FLAGS -- true
-$machine $SCOPE_FLAGS --unit=$UNIT -- choom -n 500 -- sh -c echo ran" "$(cat "$ARGV_LOG")" \
+$machine $SCOPE_FLAGS --unit=$UNIT -- choom -n 400 -- sh -c echo ran" "$(cat "$ARGV_LOG")" \
     "a failed local probe should fall back to the machine transport"
   pass "a pane that cannot reach the user manager locally uses the machine transport"
 }
@@ -201,11 +202,51 @@ SH
   assert_equals "$outer" "$inner" "the real systemd-run and choom must exec, so the worker keeps the launching PID"
   adj=$(printf '%s\n' "$out" | sed -n 's/^adj=//p')
   if command -v choom >/dev/null 2>&1; then
-    assert_equals 500 "$adj" "with choom on PATH the command should run with oom_score_adj 500"
-    pass "the real systemd user manager runs the command in firstmate.slice/$unit with MemoryMax, no swap, one CPU, OOMPolicy=continue and oom_score_adj 500"
+    assert_equals 400 "$adj" "with choom on PATH the command should run with oom_score_adj 400"
+    pass "the real systemd user manager runs the command in firstmate.slice/$unit with MemoryMax, no swap, one CPU, OOMPolicy=continue and oom_score_adj 400"
   else
     pass "the real systemd user manager runs the command in firstmate.slice/$unit with MemoryMax, no swap, one CPU and OOMPolicy=continue (no choom on this host)"
   fi
+}
+
+# Kill order inside a real worker scope: the agent runs at 400, the `bash -c`
+# command string its shell tool runs at 1000, and a bash script or a bash outside
+# any worker scope keeps the score it started with.
+test_command_scores_above_the_agent_in_a_worker_scope() {
+  local unit probe out agent here
+  if ! command -v systemd-run >/dev/null 2>&1 || [ ! -r /proc/self/oom_score_adj ] ||
+    ! systemd-run --user --scope --quiet --collect -p MemoryMax=1536M -- true >/dev/null 2>&1; then
+    pass "skip: no systemd user scope or /proc/self/oom_score_adj on this host"
+    return 0
+  fi
+  unit="fm-worker-fmtest-$$-$RANDOM.scope"
+  probe="$TMP_ROOT/kill-order.sh"
+  cat > "$probe" <<'SH'
+#!/bin/bash
+unset FM_WORKER_PIPEFAIL_APPLIED FM_PRIOR_BASH_ENV
+export BASH_ENV=$1
+echo "agent=$(cat /proc/self/oom_score_adj)"
+bash -c 'echo "command=$(cat /proc/self/oom_score_adj)"; bash -c "echo nested=\$(cat /proc/self/oom_score_adj)"'
+echo '#!/bin/bash
+echo "script=$(cat /proc/self/oom_score_adj)"' > "$2"
+bash "$2"
+SH
+  chmod +x "$probe"
+  out=$("$HELPER" 1536M "$unit" -- "$probe" "$ROOT/bin/fm-worker-bash-env.sh" "$TMP_ROOT/script.sh" 2>&1)
+  expect_code 0 "$?" "the real scope launch should succeed: $out"
+  agent=$(printf '%s\n' "$out" | sed -n 's/^agent=//p')
+  assert_equals 400 "$agent" "the agent should start at oom_score_adj 400"
+  assert_equals 1000 "$(printf '%s\n' "$out" | sed -n 's/^command=//p')" "a bash -c command run inside a worker scope should score 1000"
+  assert_equals 1000 "$(printf '%s\n' "$out" | sed -n 's/^nested=//p')" "what the command starts should inherit 1000"
+  assert_equals "$agent" "$(printf '%s\n' "$out" | sed -n 's/^script=//p')" "a bash script is not a command string and keeps the agent's score"
+  here=$(cat /proc/self/oom_score_adj)
+  out=$(env -u FM_WORKER_PIPEFAIL_APPLIED -u FM_PRIOR_BASH_ENV BASH_ENV="$ROOT/bin/fm-worker-bash-env.sh" \
+    "$BASH_BIN" -c 'cat /proc/self/oom_score_adj')
+  case "$(cat /proc/self/cgroup)" in
+    */firstmate.slice/fm-worker-*.scope*) ;;
+    *) assert_equals "$here" "$out" "a command outside any worker scope should keep its score" ;;
+  esac
+  pass "inside a worker scope the agent scores 400 and its bash -c commands score 1000; scripts and commands outside a worker scope keep their score"
 }
 
 fm_test_run \
@@ -216,4 +257,5 @@ fm_test_run \
   test_no_systemd_run_is_silent \
   test_bad_usage_refuses \
   test_node_options_pass_through \
-  test_real_systemd_scope
+  test_real_systemd_scope \
+  test_command_scores_above_the_agent_in_a_worker_scope

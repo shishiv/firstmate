@@ -1856,13 +1856,14 @@ That file sets pipefail only for the outermost `bash -c <command>` string, which
 Bash scripts, and any `bash -c` those commands start in turn, keep plain bash behavior.
 A `BASH_ENV` the launching shell already carries is kept and sourced first.
 A secondmate is never given `BASH_ENV`.
+The same file raises each such command's `oom_score_adj` to 1000 inside a worker memory scope, so the kernel kills the command before the agent ([Worker memory scope](#worker-memory-scope-configworker-memory-high)).
 
 A pipeline whose reader exits early, such as `cmd | head` or `cmd | grep -q`, can report exit code 141 (128 plus SIGPIPE) although its output is complete.
 This is the accepted cost.
 The worker clears pipefail for one command with `set +o pipefail`, or reads `${PIPESTATUS[0]}`.
 
 A home that cannot accept the cost writes `off` as the first line of the local, gitignored `config/worker-pipefail`.
-With `off`, `fm-spawn.sh` exports no `BASH_ENV` for any worker of that home.
+With `off`, `fm-spawn.sh` exports no `BASH_ENV` for any worker of that home, which also leaves that home's commands at the agent's `oom_score_adj`.
 An absent file, or any other content, keeps pipefail on.
 `fm-spawn.sh` reads the file on every spawn and relaunch, so a change applies to the next launch and leaves running workers unchanged.
 The setting is local to each home and is not inherited into secondmate homes.
@@ -1873,8 +1874,6 @@ The setting is local to each home and is not inherited into secondmate homes.
 Every worker runs in its own systemd user scope with a hard memory cap, no swap and one CPU, so one runaway process dies at the cap instead of pushing the desktop into swap.
 The scope carries `MemoryMax=<cap>`, `MemorySwapMax=0`, `CPUQuota=100%` and `OOMPolicy=continue`.
 When a process pushes the scope past its cap, the kernel kills that process, and `OOMPolicy=continue` keeps the rest of the worker running.
-Where `choom` is on `PATH`, the worker runs under `choom -n 500`, so the worker and its children have `oom_score_adj` 500 and a system-wide out-of-memory kill prefers them over Chromium, which runs at 300.
-A systemd scope accepts no `OOMScoreAdjust=`, so `choom` sets the score instead.
 Normal workers use 0.3 to 0.5 GB, and the default cap is 2G.
 The cap covers every pane launch: ship, scout, secondmate, and relaunch.
 T3 Code workers are excluded, because T3 Code owns their process.
@@ -1893,10 +1892,22 @@ Such a host keeps its own limits whatever the file says.
 The scope is `firstmate.slice/fm-worker-<id>-<spawn_gen>.scope` under the user manager, and `spawn_gen` is the value in `state/<id>.meta`.
 A relaunch gets a new scope, and systemd removes the old scope when its last process exits.
 To check a running worker, run `systemctl --user show fm-worker-<id>-<spawn_gen>.scope -p MemoryMax -p MemorySwapMax -p CPUQuotaPerSecUSec -p OOMPolicy`; a 2G cap reads `MemoryMax=2147483648`, with `MemorySwapMax=0`, `CPUQuotaPerSecUSec=1s` and `OOMPolicy=continue`.
-`/proc/<pid>/oom_score_adj` of a worker launched under `choom` reads `500`.
+`/proc/<pid>/oom_score_adj` of a worker launched under `choom` reads `400`.
 The scopes sit outside `app.slice` on purpose.
 systemd-oomd watches `app.slice` for memory pressure and kills inside it, and a worker near its cap creates that pressure.
 The [Herdr server under systemd](herdr-backend.md#running-the-server-under-systemd) uses its own slice for the same reason.
+
+Inside a full scope, the order of death is set by score: the kernel kills the process with the highest score, which is its resident size plus its `oom_score_adj` share of the limit.
+The agent (the harness terminal program and what it starts, such as Kiro's KAS agent) runs at `oom_score_adj` 400, and each command the agent runs through its shell tool runs at 1000.
+A full scope therefore kills the command (a `tsc`, a test run) before the agent, unless the agent is larger than the command by more than 60% of the cap.
+A killed command is an error the agent reads and recovers from, while a killed agent leaves its terminal open with nothing behind it, and the worker stays stopped until it is relaunched.
+The agent is not lower than 400 because a system-wide out-of-memory kill must still prefer workers over Chromium, which runs at 300.
+A systemd scope accepts no `OOMScoreAdjust=`, so the 400 comes from `choom -n 400` where `choom` is on `PATH`, and the 1000 comes from [`bin/fm-worker-bash-env.sh`](../bin/fm-worker-bash-env.sh), which raises a shell-tool command only while it runs inside a worker scope.
+A secondmate, a worker with `off` in `config/worker-pipefail`, and a harness whose shell tool does not read that file keep their commands at the agent's score.
+
+When a Kiro worker's agent process dies anyway, `kiro-cli` stays open and prints `KAS agent process exited unexpectedly` or `Kiro not initialized`.
+The stale busy record the dead agent left behind no longer decides, because `bin/fm-crew-state.sh` reads either line in the last 12 non-blank rows of the pane as `state: unknown` with `agent stopped (kiro-agent-exited)`, and the notification for a worker that stopped responding reaches firstmate.
+Nothing relaunches the worker on its own.
 
 Where no systemd user scope starts, the worker launches uncapped and without `choom`.
 On a host without `systemd-run`, such as macOS, that is silent.
@@ -1909,7 +1920,8 @@ A heap set above the cap with `--max-old-space-size` would only trade that error
 
 With the cap on, the launch runs under `/bin/sh -c`, so a raw `--harness` command must be POSIX sh unless the home writes `off`.
 The scope keeps the worker's PID, process group and session, so busy, ownership and teardown checks read the same process tree.
-[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns when the launch is wrapped, [`bin/fm-worker-memory-scope.sh`](../bin/fm-worker-memory-scope.sh) owns the scope properties and the fallback, and [`tests/fm-spawn-worker-memory-scope.test.sh`](../tests/fm-spawn-worker-memory-scope.test.sh) and [`tests/fm-worker-memory-scope.test.sh`](../tests/fm-worker-memory-scope.test.sh) pin both.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns when the launch is wrapped, [`bin/fm-worker-memory-scope.sh`](../bin/fm-worker-memory-scope.sh) owns the scope properties, the kill order and the fallback, and [`tests/fm-spawn-worker-memory-scope.test.sh`](../tests/fm-spawn-worker-memory-scope.test.sh) and [`tests/fm-worker-memory-scope.test.sh`](../tests/fm-worker-memory-scope.test.sh) pin both.
+[`tests/fm-crew-state.test.sh`](../tests/fm-crew-state.test.sh) and [`tests/fm-kiro-harness.test.sh`](../tests/fm-kiro-harness.test.sh) pin the stopped-agent reading.
 
 ## Kiro worker oracle (config/kiro-oracle)
 
