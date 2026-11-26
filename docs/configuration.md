@@ -1555,6 +1555,7 @@ Kiro extracts its engine into the `KIRO_DATA_DIR` it is given, about 430 MB of `
 When `config/kiro-engine-reflink` exists, `bin/fm-spawn.sh` first clones that engine from the ordinary login's `~/.local/share/kiro-cli` into the task's data directory with copy-on-write, `.sha256` files included, so the blocks are shared instead of repeated.
 `FM_KIRO_ENGINE_SOURCE` names another source directory.
 A source that is absent, or a filesystem that cannot clone (anything but btrfs, XFS with reflink, and APFS), seeds nothing and prints one warning; Kiro then extracts as it always did.
+An engine file or directory already in the task's data directory, whether from an earlier spawn or one Kiro extracted itself before a relaunch, is left alone: the seed neither clones over it nor removes it, and a clone that fails removes only what that call created.
 Cloning does not change what `du` reports, since it counts shared blocks once per file; read the saving with `btrfs filesystem du -s --human-readable state/<id>.kiro-home/data`, whose `Exclusive` column is the new disk use.
 Whether Kiro skips its own extraction when the hashes already match is Kiro's decision and is not assumed: compare the `Exclusive` figure of one task spawned with the file against one spawned without it, and delete the file if they match, since Kiro then writes over the clones.
 

@@ -525,32 +525,39 @@ fm_kiro_build_task_home() {  # <kiro-home> <v2-agent-name-or-empty> <turn-end-pa
 #
 # Opt-in through config/kiro-engine-reflink (bin/fm-spawn.sh reads it). The
 # source defaults to the ordinary data root's kiro-cli directory and can be
-# redirected with FM_KIRO_ENGINE_SOURCE. Cloning is all or nothing: a source
-# that is absent, or a filesystem that cannot clone, leaves <kiro-home>/data as
-# Kiro finds it empty and returns 1 without writing anything, so a launch is
-# never slowed by a full copy that would save nothing. Each payload lands before
-# its .sha256, so a hash file never names a file that is not there yet.
+# redirected with FM_KIRO_ENGINE_SOURCE. Cloning is all or nothing for what this
+# call creates: a source that is absent, or a filesystem that cannot clone,
+# leaves <kiro-home>/data as it found it and returns 1, so a launch is never
+# slowed by a full copy that would save nothing. An item already in the data
+# directory (an earlier spawn's seed, or an engine Kiro extracted itself, as a
+# relaunch finds) is left alone, never cloned over or removed. Each payload lands
+# before its .sha256, so a hash file never names a file that is not there yet.
 FM_KIRO_ENGINE_ITEMS='bun bun.sha256 node node.sha256 tui.js tui.js.sha256 kas'
 
 fm_kiro_seed_engine() {
-  local home=$1 src=${2:-${FM_KIRO_ENGINE_SOURCE:-${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli}} data item
+  local home=$1 src=${2:-${FM_KIRO_ENGINE_SOURCE:-${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli}} data item created=
   data="$home/data"
   [ -d "$src" ] && [ -d "$home" ] || return 1
   [ -f "$src/bun" ] && [ -f "$src/node" ] && [ -f "$src/tui.js" ] || return 1
   mkdir -p "$data" || return 1
   for item in $FM_KIRO_ENGINE_ITEMS; do
     [ -e "$src/$item" ] || continue
+    if [ -e "$data/$item" ] || [ -L "$data/$item" ]; then
+      continue
+    fi
     if ! fm_kiro_clone "$src/$item" "$data/$item"; then
-      fm_kiro_unseed_engine "$data"
+      fm_kiro_unseed_engine "$data" $created "$item"
       return 1
     fi
+    created="$created $item"
   done
 }
 
-fm_kiro_unseed_engine() {  # <kiro-data-dir>
-  local item
-  for item in $FM_KIRO_ENGINE_ITEMS; do
-    rm -rf -- "${1:?}/$item"
+fm_kiro_unseed_engine() {  # <kiro-data-dir> <item>...
+  local dir=${1:?} item
+  shift
+  for item in "$@"; do
+    rm -rf -- "${dir:?}/$item"
   done
 }
 

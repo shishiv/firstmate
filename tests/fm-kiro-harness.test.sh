@@ -2158,6 +2158,38 @@ test_kiro_engine_seed_is_all_or_nothing_and_needs_a_complete_source() {
   pass "fm_kiro_seed_engine: all or nothing, and only from a complete extracted engine"
 }
 
+test_kiro_engine_seed_never_overwrites_or_removes_an_engine_already_in_the_data_directory() {
+  local w src home log
+  w="$TMP_ROOT/engine-seed-existing"; src="$w/src"; home="$w/kiro-home"; log="$w/cp.log"
+  mkdir -p "$home/data/kas/3.6.2-abc"
+  make_engine_source "$src"
+  : > "$log"
+  # An engine Kiro extracted itself (a relaunch finds one): the payloads differ
+  # from the source and the kas directory already exists.
+  printf 'own-bun\n' > "$home/data/bun"
+  printf 'own-kas\n' > "$home/data/kas/3.6.2-abc/kas"
+  make_clone_cp "$w/bin" "$log" ok
+  PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src" \
+    || fail "seeding a data directory that already holds part of an engine must succeed"
+  [ "$(cat "$home/data/bun")" = own-bun ] || fail "an existing engine file must not be cloned over"
+  [ "$(cat "$home/data/kas/3.6.2-abc/kas")" = own-kas ] || fail "an existing kas payload must not be replaced"
+  assert_absent "$home/data/kas/kas" "cloning onto an existing kas directory must not nest a second one inside it"
+  assert_present "$home/data/node" "an engine file the data directory lacks must still be cloned"
+  PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src" \
+    || fail "seeding twice must succeed"
+  assert_absent "$home/data/kas/kas" "a second seed must not nest kas either"
+  # A clone that fails halfway removes what this call created and keeps what was there.
+  make_clone_cp "$w/bin" "$log" fail-node
+  rm -f "$home/data/node" "$home/data/node.sha256" "$home/data/tui.js" "$home/data/tui.js.sha256" "$home/data/bun.sha256"
+  if PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src"; then
+    fail "a clone failure must still refuse the seed"
+  fi
+  [ "$(cat "$home/data/bun")" = own-bun ] || fail "a failed seed must not delete an engine that was already there"
+  [ "$(cat "$home/data/kas/3.6.2-abc/kas")" = own-kas ] || fail "a failed seed must not delete an existing kas payload"
+  assert_absent "$home/data/bun.sha256" "a failed seed must remove the items it created"
+  pass "fm_kiro_seed_engine: leaves an engine already in the data directory alone, on success and on failure"
+}
+
 test_kiro_spawn_seeds_the_engine_only_when_the_home_opts_in() {
   local id rec out kh
   id="kiro-engine-z14-$$"
@@ -2266,6 +2298,7 @@ test_kiro_secondmate_account_override
 test_kiro_primary_launcher_uses_the_account_pin
 test_kiro_engine_seed_clones_only_the_engine_and_each_payload_before_its_hash
 test_kiro_engine_seed_is_all_or_nothing_and_needs_a_complete_source
+test_kiro_engine_seed_never_overwrites_or_removes_an_engine_already_in_the_data_directory
 test_kiro_spawn_seeds_the_engine_only_when_the_home_opts_in
 test_kiro_teardown_removes_every_artifact
 test_kiro_teardown_does_not_treat_the_pointer_as_unlanded_work
