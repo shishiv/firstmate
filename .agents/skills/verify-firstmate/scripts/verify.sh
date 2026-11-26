@@ -3,8 +3,10 @@
 # Usage: verify.sh [--keep] [--out <dir>] [-- <fm-test-run.sh selection...>]
 #   Runs the hc lifecycle against a private herdr-core, with a stand-in agent:
 #   spawn one scout, check its worker memory scope, see its status line reach
-#   the wake queue, steer it once, tear it down. Then relaunches a second scout
-#   on a private tmux server, in a new scope and once more with the scope off.
+#   the wake queue, steer it once, tear it down. Then relaunches a third scout
+#   on the same core, after moving its Herdr.app labels to a stale space, and
+#   reads the labels back. Then relaunches a fourth scout on a private tmux
+#   server, in a new scope and once more with the scope off.
 #   Then fills a 200M worker scope (scripts/kill-order.sh) to show the kernel
 #   kills the agent's command and not the agent.
 #   Then runs bin/fm-test-run.sh with the selection after --
@@ -162,6 +164,9 @@ if hc get --json "$ADDR" | jq -e '.state != "finished"' >/dev/null 2>&1; then ch
 agent_up() { [ -s "$LAB/state/$ID.status" ]; }
 if wait_for 20 agent_up; then check ok "stand-in agent started and wrote its first status line"; else check bad "stand-in agent started and wrote its first status line"; fi
 hc get --json "$ADDR" | jq -c 'del(.screen)' | tee "$OUT/terminal.json"
+# The demo project's folder is `demo`, so its worker opens the space fm-p-demo.
+SPACE=$(jq -r '.labels["herdr.space"]' "$OUT/terminal.json")
+if [ "$SPACE" = fm-p-demo ]; then check ok "the scout opens its project's Herdr.app space (herdr.space=$SPACE)"; else check bad "the scout opens its project's Herdr.app space (herdr.space=$SPACE, wanted fm-p-demo)"; fi
 
 # standin_pid <stand-in path>: the stand-in agent process itself (comm claude),
 # never a shell whose command line merely names it.
@@ -241,9 +246,49 @@ if wait_for 20 gone; then check ok "no terminal left in the private core"; else 
 unit_gone() { [ "$(host_env systemctl --user show "$1" -p LoadState --value 2>/dev/null)" = not-found ]; }
 if wait_for 20 unit_gone "$VF1_UNIT"; then check ok "systemd collected $VF1_UNIT after teardown"; else check bad "systemd collected $VF1_UNIT after teardown"; fi
 
+step "relaunch puts an hc terminal back in its project's space"
+mkdir -p "$R/agents3/claude"
+cat > "$R/agents3/claude/claude" <<SH
+#!/bin/bash
+printf 'stand-in agent ready: %s\n' "\$*"
+echo "working [at=\$(date +%s)]: stand-in up" >> '$LAB/state/vf3.status'
+while IFS= read -r line; do
+  printf 'got: %s\n' "\$line"
+  [ "\$line" != /exit ] || exit 0
+done
+SH
+chmod +x "$R/agents3/claude/claude"
+S3="$R/agents3/claude/claude"
+fm fm-brief.sh vf3 demo --scout >/dev/null || check bad "vf3 brief scaffolded"
+sed -i -e 's/{TASK}/Lab task: write the word ok to the report./' \
+  -e 's/{FIRSTMATE_SPEC}/Write ok to the report and stop./' "$LAB/data/vf3/brief.md"
+fm fm-spawn.sh vf3 "$LAB/projects/demo" --scout --backend hc --harness "$S3 --fake" 2>&1 | tee "$OUT/spawn-vf3.txt" | tail -3
+ADDR3=$(sed -n 's/^spawned .* window=[^:]*:\([^ ]*\) .*/\1/p' "$OUT/spawn-vf3.txt")
+vf3_labels() { hc get --json "$ADDR3" | jq -c '[.labels["herdr.space"], .labels["herdr.tab"]]'; }
+vf3_task_terminals() { hc ls --json --label firstmate.task=fm-vf3 | jq -c '[.terminals[].address]'; }
+BORN_TAB=$(vf3_labels | jq -r '.[1]')
+# The state a terminal born under the old rule is in: another space, another tab.
+hc label "$ADDR3" herdr.space=fm-old herdr.tab=old-tab >/dev/null
+echo "stale: $(vf3_labels) terminals: $(vf3_task_terminals)" | tee "$OUT/relaunch-vf3.txt"
+if [ "$(vf3_labels)" = '["fm-old","old-tab"]' ]; then check ok "vf3's labels now name a stale space and tab"; else check bad "vf3's labels now name a stale space and tab (got $(vf3_labels))"; fi
+# fm-control refuses a stand-in harness (as in the tmux step below), so the
+# stand-in is told to leave and the documented path for a stopped task runs.
+vf3_agent_gone() { [ "$(hc get --json "$ADDR3" | jq -r '.foreground.name')" != claude ]; }
+hc send "$ADDR3" /exit >/dev/null
+if wait_for 20 vf3_agent_gone; then check ok "the stand-in left vf3's terminal"; else check bad "the stand-in left vf3's terminal"; fi
+if fm fm-spawn.sh vf3 --relaunch --harness "$S3 --fake" >>"$OUT/relaunch-vf3.txt" 2>&1; then check ok "bin/fm-spawn.sh vf3 --relaunch exited 0"; else check bad "bin/fm-spawn.sh vf3 --relaunch exited 0"; fi
+echo "after: $(vf3_labels) terminals: $(vf3_task_terminals)" | tee -a "$OUT/relaunch-vf3.txt"
+if [ "$(vf3_labels)" = "[\"fm-p-demo\",\"$BORN_TAB\"]" ]; then check ok "the relaunch put the adopted terminal back in fm-p-demo with its own tab id"; else check bad "the relaunch put the adopted terminal back in fm-p-demo with its own tab id (got $(vf3_labels))"; fi
+if [ "$(vf3_task_terminals)" = "[\"$ADDR3\"]" ]; then check ok "the relaunch adopted $ADDR3 and started no second terminal"; else check bad "the relaunch adopted $ADDR3 and started no second terminal (got $(vf3_task_terminals))"; fi
+printf 'ok\n' > "$LAB/data/vf3/report.md"
+fm fm-captain-hold.sh complete vf3 --none >/dev/null 2>&1 || true
+fm fm-teardown.sh vf3 2>&1 | tee "$OUT/teardown-vf3.txt" | tail -2
+vf3_gone() { [ "$(hc ls --json --all | jq '.terminals | length')" = 0 ]; }
+if wait_for 20 vf3_gone; then check ok "no terminal left in the private core after vf3"; else check bad "no terminal left in the private core after vf3"; fi
+
 step "relaunch and off switch on a private tmux server"
-# hc has no relaunch (fm_control_backend_relaunch_supported in
-# bin/fm-control-lib.sh), so the relaunch proof runs a second scout on tmux.
+# The memory-scope relaunch proof runs a second scout on tmux; the hc relaunch
+# above proves the placement.
 LAB_TMUX_DIR=$("$LAB_HOME_HELPER" tmux-dir "$LAB")
 export TMUX_TMPDIR=$LAB_TMUX_DIR
 unset TMUX TMUX_PANE

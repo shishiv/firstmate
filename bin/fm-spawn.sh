@@ -139,8 +139,9 @@
 #   firstmate runs in when it runs directly inside Rex, otherwise in its home's
 #   own Rex session; a --secondmate launch opens its tab in that secondmate
 #   home's own Rex session (bin/backends/rex.sh owns placement). An hc
-#   --secondmate launch likewise opens that home's own Herdr.app space
-#   (bin/backends/hc.sh owns placement).
+#   crewmate or scout opens its Herdr.app tab in the space of its project, and
+#   an hc --secondmate launch in the primary's own space (bin/backends/hc.sh
+#   owns placement).
 #   t3code is experimental (docs/t3code-backend.md): T3 Code
 #   owns the agent session, so the spawn leases a treehouse slot durably,
 #   launches a T3 thread on it, and sends the launch brief over T3's /mcp
@@ -4919,6 +4920,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
     T=$RELAUNCH_TARGET
     WT_TARGET=$T
     SES=${T%%:*}
+    # An adopted hc terminal keeps the Herdr.app labels it was born with, so
+    # the placement rule is applied to it again (bin/backends/hc.sh).
+    [ "$BACKEND" != hc ] || fm_backend_hc_place "$T" "$W" "$PROJ_ABS" "$KIND"
   elif [ "$BACKEND" = rex ]; then
     # The recorded endpoint is authoritatively gone, so there is nothing to
     # adopt: create ONE fresh endpoint for the same task, opened directly in the
@@ -5312,12 +5316,10 @@ EOF
     T="$TERN_SESSION_ID:$TERN_BLOCK_ID"
     ;;
   hc)
-    # A --secondmate launch opens its own home's space, and its identity
-    # labels stay this home's (bin/backends/hc.sh owns placement).
-    HC_OTHER_HOME=
-    [ "$KIND" != secondmate ] || HC_OTHER_HOME=$PROJ_ABS
+    # The task's kind decides its Herdr.app space, and a --secondmate launch's
+    # identity labels stay this home's (bin/backends/hc.sh owns placement).
     HC_SES=$(fm_backend_hc_container_ensure) || exit 1
-    HC_TERMINAL=$(fm_backend_hc_create_task "$HC_SES" "$W" "$PROJ_ABS" "$HC_OTHER_HOME") || exit 1
+    HC_TERMINAL=$(fm_backend_hc_create_task "$HC_SES" "$W" "$PROJ_ABS" "$KIND") || exit 1
     T="$HC_SES:$HC_TERMINAL"
     ;;
   orca)

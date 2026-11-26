@@ -34,25 +34,31 @@
 #
 # Visibility in Herdr.app: the app shows a terminal that carries
 # herdr.space=<id> and herdr.tab=<id> labels, and an unknown id becomes a new
-# space or tab. create_task puts each task in one space per home, with one tab
-# each (herdr.tab=<scoped label>). The space is FM_HC_SPACE when set, else the
-# primary's own space: the herdr.space label of the live hc terminal that
-# state/.primary-endpoint names on the same session. Without one it is a
-# per-home space, fm-<hometag>. A machine-qualified space id (`vps/sp...`)
-# falls back too.
-# A --secondmate launch is the exception, as on herdr and rex: it opens the
-# secondmate home's own space, fm-<that home's tag>, which is also the space
-# that home's own crew land in. Its identity labels stay this home's, because
+# space or tab. Each task is one tab (herdr.tab=<scoped label>), and
+# fm_backend_hc_placement picks its space from what the task is, not from where
+# it was launched: a crewmate or scout opens the space of its project,
+# fm-p-<project>, where <project> is the folder name of the cwd it starts in,
+# so every worker of a project sits together whichever home launched it; a
+# secondmate opens the primary's own space, where the supervisors sit: the
+# herdr.space label of the live hc terminal that state/.primary-endpoint names
+# on the same session (a machine-qualified id such as `vps/sp...` is refused),
+# else a per-home space, fm-<hometag>. FM_HC_SPACE, when
+# set, overrides both. A secondmate's identity labels stay this home's, because
 # this home owns the task record and checks them on every later call.
+# A terminal keeps the labels it was born with, so fm_backend_hc_place applies
+# the same rule again to the terminal a relaunch adopts. Herdr.app does not move
+# a tab it already shows when its labels change, so that tab changes space the
+# next time the app starts.
 # Names: the app names an unnamed space after its first terminal's folder and
 # an unnamed tab by its position, and a space's name goes with it when its last
 # tab closes. On the `default` session, the one Herdr.app shows, create_task
-# therefore waits briefly for the app to show the new tab, names the tab after
-# the task (`tab.rename`) and the space after its home (`space.rename`, which
-# marks it named): a secondmate home by its id, any other by its folder name.
-# Every spawn renames again, so a per-home space that closed with its last task
-# gets its name back with the next one. Only the new tab and its space are
-# renamed; no other tab, terminal, or space is moved, renamed, or closed.
+# and place therefore wait briefly for the app to show the tab, name the tab
+# after the task (`tab.rename`) and the space after its project, or after this
+# home's folder for the primary's or a pinned space (`space.rename`, which
+# marks it named). Every spawn and relaunch names again, so a space that closed
+# with its last task gets its name back with the next one. Only the task's tab
+# and its space are renamed; no other tab, terminal, or space is moved,
+# renamed, or closed.
 # Naming is best effort: with no app, or no tab within the wait, the task still
 # starts and a warning says why.
 # A firstmate.home-path=<FM_HOME> label lets an app mod find the task's state/.
@@ -185,33 +191,51 @@ fm_backend_hc_container_ensure() {
   printf '%s' "$session"
 }
 
+# fm_backend_hc_home_path: this home's directory, the value of the
+# firstmate.home-path label.
+fm_backend_hc_home_path() {
+  cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME"
+}
+
+# fm_backend_hc_placement: the Herdr.app space a task belongs in, printed as
+# "<space-id><TAB><space-name>". It reads only the task's kind and cwd (and the
+# primary's own space, for a secondmate), so a fresh terminal and an adopted one
+# land in the same place. <kind> is the task kind; `secondmate` is the only one
+# that matters.
+fm_backend_hc_placement() {  # <session> <cwd> [kind]
+  local session=$1 cwd=$2 kind=${3:-} space project
+  if [ -z "${FM_HC_SPACE:-}" ] && [ "$kind" != secondmate ]; then
+    project=$(basename -- "$cwd")
+    printf 'fm-p-%s\t%s\n' "$(printf '%s' "$project" | tr -c 'A-Za-z0-9._-' '-')" "$project"
+    return 0
+  fi
+  space=${FM_HC_SPACE:-}
+  [ -n "$space" ] || space=$(fm_backend_hc_primary_space "$session") || space=fm-$(fm_backend_hometag)
+  printf '%s\t%s\n' "$space" "$(fm_backend_hc_home_name "$(fm_backend_hc_home_path)")"
+}
+
 # fm_backend_hc_create_task: start a login shell terminal in <cwd> for
 # <window-label>, refusing a live duplicate in this home. Prints the address.
 # --no-parent and --outlive-parent keep the terminal independent of whichever
 # hc terminal firstmate itself runs in; --no-notify keeps hc from typing notes
 # into any parent. --keep gives a terminal lost with its core a shell at the
 # same address, which agent_state reads as dead, so relaunch can adopt it.
-# [other-home] is the secondmate home a --secondmate launch stands up; the
-# terminal then opens that home's space instead of this one's (see header).
-fm_backend_hc_create_task() {  # <session> <window-label> <cwd> [other-home]
-  local session=$1 label=$2 cwd=$3 other=${4:-} home scoped dup out address space space_home home_path
+# [kind] is the task kind, which decides its space (see header). A secondmate's
+# <cwd> is its own home, and its labels are still this home's.
+fm_backend_hc_create_task() {  # <session> <window-label> <cwd> [kind]
+  local session=$1 label=$2 cwd=$3 kind=${4:-} home scoped dup out address space space_name home_path
   home=$(fm_backend_hometag)
   scoped=$(fm_backend_hc_scoped_label "$label")
-  home_path=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || home_path=$FM_HOME
+  home_path=$(fm_backend_hc_home_path)
   dup=$(fm_backend_hc_cli "$session" ls --json --label "firstmate.task=$label" --label "firstmate.home=$home" 2>/dev/null) \
     || { echo "error: 'hc ls' failed for session '$session'; cannot create $label" >&2; return 1; }
   if [ -n "$(printf '%s' "$dup" | jq -r '.terminals[]?.address' 2>/dev/null)" ]; then
     echo "error: hc terminal for $label already exists in session '$session'" >&2
     return 1
   fi
-  if [ -n "$other" ]; then
-    space=fm-$(FM_HOME=$other FM_ROOT=$other fm_backend_hometag)
-    space_home=$other
-  else
-    space=${FM_HC_SPACE:-}
-    [ -n "$space" ] || space=$(fm_backend_hc_primary_space "$session") || space=fm-$home
-    space_home=$home_path
-  fi
+  IFS=$'\t' read -r space space_name <<EOF
+$(fm_backend_hc_placement "$session" "$cwd" "$kind")
+EOF
   out=$(fm_backend_hc_cli "$session" run --bg --json --keep --no-parent --outlive-parent --no-notify \
     --cwd "$cwd" \
     --label "firstmate.task=$label" --label "firstmate.home=$home" --label "firstmate.home-path=$home_path" \
@@ -219,8 +243,41 @@ fm_backend_hc_create_task() {  # <session> <window-label> <cwd> [other-home]
     || { echo "error: hc run failed for $label: $out" >&2; return 1; }
   address=$(printf '%s' "$out" | jq -r '.address // empty' 2>/dev/null)
   fm_backend_hc_address_valid "$address" || { echo "error: hc run did not return a terminal address for $label (got: $out)" >&2; return 1; }
-  [ "$session" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "$(fm_backend_hc_home_name "$space_home")"
+  [ "$session" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "$space_name"
   printf '%s\n' "$address"
+}
+
+# fm_backend_hc_place: apply the placement rule to a terminal that already
+# exists, the one a relaunch adopts, so it converges to where a fresh task of
+# the same kind would open. Only the herdr.space and herdr.tab labels change,
+# and only when they differ; the identity labels are never touched. A terminal
+# that is not this task's live one is left alone. Best effort, like naming: a
+# warning says why a terminal kept its place, and the relaunch goes on.
+# Herdr.app places a tab when it first shows the terminal and does not move it
+# when its labels change (docs/verification/runtime-backends.md), so on the
+# `default` session a relabeled tab stays in its space until the app next
+# starts and reads the labels again; its name is fixed now.
+fm_backend_hc_place() {  # <target> <window-label> <cwd> [kind]
+  local target=$1 label=$2 cwd=$3 kind=${4:-} scoped space space_name json
+  fm_backend_hc_target_ready "$target" "$label" \
+    || { echo "warning: $target is not $label's live hc terminal, so it keeps its place in Herdr.app" >&2; return 0; }
+  scoped=$(fm_backend_hc_scoped_label "$label")
+  IFS=$'\t' read -r space space_name <<EOF
+$(fm_backend_hc_placement "$FM_BACKEND_HC_SESSION" "$cwd" "$kind")
+EOF
+  json=$(fm_backend_hc_get "$target" || true)
+  if printf '%s' "$json" | jq -e --arg s "$space" --arg t "$scoped" \
+    '.labels["herdr.space"] == $s and .labels["herdr.tab"] == $t' >/dev/null 2>&1; then
+    [ "$FM_BACKEND_HC_SESSION" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "$space_name"
+    return 0
+  fi
+  fm_backend_hc_cli "$FM_BACKEND_HC_SESSION" label --json "$FM_BACKEND_HC_ADDRESS" \
+    "herdr.space=$space" "herdr.tab=$scoped" >/dev/null 2>&1 \
+    || { echo "warning: hc did not set the Herdr.app labels of $target, so it keeps its place" >&2; return 0; }
+  [ "$FM_BACKEND_HC_SESSION" = default ] && command -v herdr-app >/dev/null 2>&1 || return 0
+  herdr-app 'do' tab.rename "$(jq -nc --arg id "$scoped" --arg name "${label#fm-}" '{id: $id, name: $name}')" >/dev/null 2>&1 \
+    || echo "warning: Herdr.app did not rename tab $scoped to ${label#fm-}" >&2
+  echo "note: $label's labels now name Herdr.app space $space; the app moves the tab there when it next starts" >&2
 }
 
 # fm_backend_hc_home_name: what Herdr.app calls <home>'s space.
