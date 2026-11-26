@@ -546,18 +546,17 @@ fm_kiro_seed_engine() {
       continue
     fi
     if ! fm_kiro_clone "$src/$item" "$data/$item"; then
-      fm_kiro_unseed_engine "$data" $created "$item"
+      fm_kiro_unseed_engine "$data" "$created $item"
       return 1
     fi
     created="$created $item"
   done
 }
 
-fm_kiro_unseed_engine() {  # <kiro-data-dir> <item>...
-  local dir=${1:?} item
-  shift
-  for item in "$@"; do
-    rm -rf -- "${dir:?}/$item"
+fm_kiro_unseed_engine() {  # <kiro-data-dir> <space-separated items>
+  local item
+  for item in $2; do
+    rm -rf -- "${1:?}/$item"
   done
 }
 
