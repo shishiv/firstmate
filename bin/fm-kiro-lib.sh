@@ -511,6 +511,64 @@ fm_kiro_build_task_home() {  # <kiro-home> <v2-agent-name-or-empty> <turn-end-pa
   printf '%s\n' "$token"
 }
 
+# fm_kiro_seed_engine <kiro-home> [<engine-source-dir>]
+#
+# Gives a task's KIRO_DATA_DIR (<kiro-home>/data) the Kiro engine the ordinary
+# login already extracted - bun, node, tui.js with their .sha256 files, and the
+# kas payload - as copy-on-write clones, before the agent launches. Kiro
+# extracts that engine (about 430 MB) into every KIRO_DATA_DIR it is given, and
+# firstmate gives each task its own, so a fleet of tasks holds one copy each;
+# clones of an engine whose hashes already match let each task share the blocks.
+# Whether Kiro then skips its own extraction is Kiro's decision and is measured
+# in docs/configuration.md ("Kiro engine reuse"): if it extracts anyway it writes
+# over the clones and nothing is lost but the clone.
+#
+# Opt-in through config/kiro-engine-reflink (bin/fm-spawn.sh reads it). The
+# source defaults to the ordinary data root's kiro-cli directory and can be
+# redirected with FM_KIRO_ENGINE_SOURCE. Cloning is all or nothing for what this
+# call creates: a source that is absent, or a filesystem that cannot clone,
+# leaves <kiro-home>/data as it found it and returns 1, so a launch is never
+# slowed by a full copy that would save nothing. An item already in the data
+# directory (an earlier spawn's seed, or an engine Kiro extracted itself, as a
+# relaunch finds) is left alone, never cloned over or removed. Each payload lands
+# before its .sha256, so a hash file never names a file that is not there yet.
+FM_KIRO_ENGINE_ITEMS='bun bun.sha256 node node.sha256 tui.js tui.js.sha256 kas'
+
+fm_kiro_seed_engine() {
+  local home=$1 src=${2:-${FM_KIRO_ENGINE_SOURCE:-${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli}} data item created=
+  data="$home/data"
+  [ -d "$src" ] && [ -d "$home" ] || return 1
+  [ -f "$src/bun" ] && [ -f "$src/node" ] && [ -f "$src/tui.js" ] || return 1
+  mkdir -p "$data" || return 1
+  for item in $FM_KIRO_ENGINE_ITEMS; do
+    [ -e "$src/$item" ] || continue
+    if [ -e "$data/$item" ] || [ -L "$data/$item" ]; then
+      continue
+    fi
+    if ! fm_kiro_clone "$src/$item" "$data/$item"; then
+      fm_kiro_unseed_engine "$data" "$created $item"
+      return 1
+    fi
+    created="$created $item"
+  done
+}
+
+fm_kiro_unseed_engine() {  # <kiro-data-dir> <space-separated items>
+  local item
+  for item in $2; do
+    rm -rf -- "${1:?}/$item"
+  done
+}
+
+# One copy-on-write clone, or failure: GNU cp clones with --reflink=always and
+# fails where the filesystem cannot; BSD cp clones with -c.
+fm_kiro_clone() {  # <source> <destination>
+  case "$(uname -s)" in
+    Darwin) cp -Rc "$1" "$2" 2>/dev/null ;;
+    *) cp -R --reflink=always "$1" "$2" 2>/dev/null ;;
+  esac
+}
+
 fm_kiro_primary_home() {  # <state-dir>
   printf '%s/.kiro-primary-home' "${1%/}"
 }

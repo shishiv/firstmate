@@ -2073,6 +2073,160 @@ test_kiro_teardown_removes_every_artifact() {
   pass "fm-spawn+fm-teardown: a full kiro-cli cycle removes every artifact"
 }
 
+# --- shared engine: config/kiro-engine-reflink ---------------------------------
+# Kiro extracts about 430 MB of engine into every KIRO_DATA_DIR it is given and
+# each task has its own. An opted-in home clones the ordinary login's engine into
+# the task's data directory first (fm_kiro_seed_engine in bin/fm-kiro-lib.sh).
+
+# make_engine_source <dir>: the files an extracted Kiro engine leaves, plus the
+# login and state files that must never be cloned.
+make_engine_source() {
+  local dir=$1
+  mkdir -p "$dir/kas/3.6.2-abc"
+  printf 'bun-bytes\n' > "$dir/bun"; chmod +x "$dir/bun"
+  printf 'node-bytes\n' > "$dir/node"; chmod +x "$dir/node"
+  printf 'tui\n' > "$dir/tui.js"
+  printf 'h-bun\n' > "$dir/bun.sha256"
+  printf 'h-node\n' > "$dir/node.sha256"
+  printf 'h-tui\n' > "$dir/tui.js.sha256"
+  printf 'kas-bytes\n' > "$dir/kas/3.6.2-abc/kas"
+  printf 'SECRET-LOGIN\n' > "$dir/data.sqlite3"
+  printf '{}\n' > "$dir/feed.json"
+  mkdir -p "$dir/run/chat-cli-3.6.2"
+}
+
+# make_clone_cp <dir> <log> <mode>: a cp that logs its argv and either clones by
+# plain copy (mode ok) or fails on the third item (mode fail-node), standing in
+# for a filesystem that can or cannot clone.
+make_clone_cp() {
+  local dir=$1 log=$2 mode=$3
+  mkdir -p "$dir"
+  cat > "$dir/cp" <<SH
+#!/bin/bash
+printf '%s\n' "\$*" >> '$log'
+args=()
+for a in "\$@"; do [ "\$a" = --reflink=always ] || args+=("\$a"); done
+if [ '$mode' = fail-node ]; then
+  case "\$*" in *node) exit 1 ;; esac
+fi
+exec /bin/cp "\${args[@]}"
+SH
+  chmod +x "$dir/cp"
+}
+
+test_kiro_engine_seed_clones_only_the_engine_and_each_payload_before_its_hash() {
+  local w src home log out
+  w="$TMP_ROOT/engine-seed"; src="$w/src"; home="$w/kiro-home"; log="$w/cp.log"
+  mkdir -p "$home"
+  make_engine_source "$src"
+  : > "$log"
+  make_clone_cp "$w/bin" "$log" ok
+  PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src" \
+    || fail "a complete source on a cloning filesystem must seed"
+  for f in bun bun.sha256 node node.sha256 tui.js tui.js.sha256 kas/3.6.2-abc/kas; do
+    cmp -s "$src/$f" "$home/data/$f" || fail "the engine file $f must be cloned byte for byte"
+  done
+  [ -x "$home/data/bun" ] || fail "a cloned engine binary must keep its execute bit"
+  assert_absent "$home/data/data.sqlite3" "a login database must never be cloned into a task"
+  assert_absent "$home/data/feed.json" "Kiro's own state files are not engine"
+  assert_absent "$home/data/run" "the run directory is runtime state, not engine"
+  out=$(cat "$log")
+  assert_contains "$out" "--reflink=always" "every clone must demand copy-on-write, never a full copy"
+  [ "$(grep -n 'bun$' "$log" | head -1 | cut -d: -f1)" -lt "$(grep -n 'bun.sha256$' "$log" | head -1 | cut -d: -f1)" ] \
+    || fail "a payload must land before its .sha256 file"
+  pass "fm_kiro_seed_engine: clones the engine files and nothing else, each payload before its hash"
+}
+
+test_kiro_engine_seed_is_all_or_nothing_and_needs_a_complete_source() {
+  local w src home log
+  w="$TMP_ROOT/engine-seed-refused"; src="$w/src"; home="$w/kiro-home"; log="$w/cp.log"
+  mkdir -p "$home"
+  make_engine_source "$src"
+  : > "$log"
+  make_clone_cp "$w/bin" "$log" fail-node
+  if PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src"; then
+    fail "a filesystem that cannot clone one engine file must refuse the whole seed"
+  fi
+  [ -z "$(find "$home/data" -mindepth 1 2>/dev/null | head -1)" ] \
+    || fail "a refused seed must leave no half-cloned engine behind: $(find "$home/data" -mindepth 1)"
+  rm -f "$src/tui.js"
+  make_clone_cp "$w/bin" "$log" ok
+  if PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src"; then
+    fail "a source with no tui.js is not an extracted engine and must be refused"
+  fi
+  [ -z "$(find "$home/data" -mindepth 1 2>/dev/null | head -1)" ] || fail "an incomplete source must clone nothing"
+  pass "fm_kiro_seed_engine: all or nothing, and only from a complete extracted engine"
+}
+
+test_kiro_engine_seed_never_overwrites_or_removes_an_engine_already_in_the_data_directory() {
+  local w src home log
+  w="$TMP_ROOT/engine-seed-existing"; src="$w/src"; home="$w/kiro-home"; log="$w/cp.log"
+  mkdir -p "$home/data/kas/3.6.2-abc"
+  make_engine_source "$src"
+  : > "$log"
+  # An engine Kiro extracted itself (a relaunch finds one): the payloads differ
+  # from the source and the kas directory already exists.
+  printf 'own-bun\n' > "$home/data/bun"
+  printf 'own-kas\n' > "$home/data/kas/3.6.2-abc/kas"
+  make_clone_cp "$w/bin" "$log" ok
+  PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src" \
+    || fail "seeding a data directory that already holds part of an engine must succeed"
+  [ "$(cat "$home/data/bun")" = own-bun ] || fail "an existing engine file must not be cloned over"
+  [ "$(cat "$home/data/kas/3.6.2-abc/kas")" = own-kas ] || fail "an existing kas payload must not be replaced"
+  assert_absent "$home/data/kas/kas" "cloning onto an existing kas directory must not nest a second one inside it"
+  assert_present "$home/data/node" "an engine file the data directory lacks must still be cloned"
+  PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src" \
+    || fail "seeding twice must succeed"
+  assert_absent "$home/data/kas/kas" "a second seed must not nest kas either"
+  # A clone that fails halfway removes what this call created and keeps what was there.
+  make_clone_cp "$w/bin" "$log" fail-node
+  rm -f "$home/data/node" "$home/data/node.sha256" "$home/data/tui.js" "$home/data/tui.js.sha256" "$home/data/bun.sha256"
+  if PATH="$w/bin:$BASE_PATH" bash -c '. "$0/bin/fm-kiro-lib.sh"; fm_kiro_seed_engine "$1" "$2"' "$ROOT" "$home" "$src"; then
+    fail "a clone failure must still refuse the seed"
+  fi
+  [ "$(cat "$home/data/bun")" = own-bun ] || fail "a failed seed must not delete an engine that was already there"
+  [ "$(cat "$home/data/kas/3.6.2-abc/kas")" = own-kas ] || fail "a failed seed must not delete an existing kas payload"
+  assert_absent "$home/data/bun.sha256" "a failed seed must remove the items it created"
+  pass "fm_kiro_seed_engine: leaves an engine already in the data directory alone, on success and on failure"
+}
+
+test_kiro_spawn_seeds_the_engine_only_when_the_home_opts_in() {
+  local id rec out kh
+  id="kiro-engine-z14-$$"
+  rec=$(make_kiro_spawn_case engine-optin "$id")
+  read_kiro_spawn_record "$rec"
+  make_engine_source "$HOME_DIR/.local/share/kiro-cli"
+  make_clone_cp "$FAKEBIN_DIR" "$CASE_DIR/cp.log" ok
+  kh="$HOME_DIR/state/$id.kiro-home"
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" --model auto)
+  assert_absent "$kh/data/bun" "a home that did not opt in must not clone anything"
+  if grep -q '/kiro-cli/' "$CASE_DIR/cp.log" 2>/dev/null; then fail "a home that did not opt in must not run the engine clone"; fi
+
+  id="kiro-engine-z15-$$"
+  rec=$(make_kiro_spawn_case engine-optin2 "$id")
+  read_kiro_spawn_record "$rec"
+  make_engine_source "$HOME_DIR/.local/share/kiro-cli"
+  make_clone_cp "$FAKEBIN_DIR" "$CASE_DIR/cp.log" ok
+  : > "$HOME_DIR/config/kiro-engine-reflink"
+  kh="$HOME_DIR/state/$id.kiro-home"
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" --model auto)
+  assert_present "$kh/data/bun" "an opted-in home must clone the shared engine into the task's data directory"
+  assert_present "$kh/data/tui.js.sha256" "the hash files must come with the engine"
+  assert_absent "$kh/data/data.sqlite3" "the shared login database must never reach a task"
+  assert_not_contains "$out" "could not be seeded" "a successful clone must not warn"
+
+  id="kiro-engine-z16-$$"
+  rec=$(make_kiro_spawn_case engine-optin3 "$id")
+  read_kiro_spawn_record "$rec"
+  : > "$HOME_DIR/config/kiro-engine-reflink"
+  kh="$HOME_DIR/state/$id.kiro-home"
+  out=$(run_kiro_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" --model auto)
+  assert_contains "$out" "config/kiro-engine-reflink is set but $id's Kiro data directory could not be seeded" \
+    "an opted-in home with no engine to share must say so once and carry on"
+  assert_present "$kh" "a failed seed must never stop the launch"
+  pass "fm-spawn: a Kiro task is seeded with the shared engine only when the home opts in, and a failed seed never blocks the launch"
+}
+
 test_kiro_teardown_does_not_treat_the_pointer_as_unlanded_work() {
   # The .fm-kiro-turnend pointer is an untracked firstmate file; teardown must
   # exclude it from the dirty check so it is not mistaken for unlanded work.
@@ -2142,5 +2296,9 @@ test_kiro_account_pool_refuses_when_spent_or_shared_with_the_ordinary_login
 test_kiro_account_pool_serves_only_ships_and_scouts
 test_kiro_secondmate_account_override
 test_kiro_primary_launcher_uses_the_account_pin
+test_kiro_engine_seed_clones_only_the_engine_and_each_payload_before_its_hash
+test_kiro_engine_seed_is_all_or_nothing_and_needs_a_complete_source
+test_kiro_engine_seed_never_overwrites_or_removes_an_engine_already_in_the_data_directory
+test_kiro_spawn_seeds_the_engine_only_when_the_home_opts_in
 test_kiro_teardown_removes_every_artifact
 test_kiro_teardown_does_not_treat_the_pointer_as_unlanded_work
