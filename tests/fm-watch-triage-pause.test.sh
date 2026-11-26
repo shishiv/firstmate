@@ -1395,6 +1395,51 @@ test_paused_until_near_future_is_quiet_before_the_cadence() {
   pass "a declared wait naming a near-future until time stays quiet until that time"
 }
 
+# The triage log keeps a pause's absorb line once, not once per poll: the same
+# held item used to fill 95 percent of the log with one line every poll, so the log
+# kept hours of history instead of days. A pause that changes detail logs again.
+test_an_unchanged_pause_logs_one_absorb_line_not_one_per_poll() {
+  local dir state key lines i
+  dir=$(paused_until_fixture pause-log-once "$(( $(date +%s) + 120 ))" 60); state="$dir/state"
+  key=$(printf '%s' test:fm-until | tr '.:/' '___')
+  until_watch "$dir" 240
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    wait_poll_cycle "$state" "$UNTIL_PID" \
+      || { reap "$UNTIL_PID"; fail "the watcher stopped while absorbing a held pause: $(cat "$dir/watch.out")"; }
+  done
+  reap "$UNTIL_PID"
+  lines=$(grep -cF 'absorbed stale (paused until' "$state/.watch-triage.log")
+  [ "$lines" = 1 ] || fail "ten identical polls must leave one absorb line, got $lines: $(cat "$state/.watch-triage.log")"
+  [ "$(cat "$state/.paused-$key")" = 'paused until a declared time' ] \
+    || fail "the pause marker must record the detail the line was written for"
+
+  # A watcher restart inside the same pause adds nothing either. A successor arm
+  # keeps to the poll loop instead of re-announcing the previous round's downtime.
+  FM_WATCH_HANDLING_SUCCESSOR=1 until_watch "$dir" 240
+  for i in 1 2 3; do
+    wait_poll_cycle "$state" "$UNTIL_PID" \
+      || { reap "$UNTIL_PID"; fail "the restarted watcher stopped: $(cat "$dir/watch.out")"; }
+  done
+  reap "$UNTIL_PID"
+  lines=$(grep -cF 'absorbed stale (paused until' "$state/.watch-triage.log")
+  [ "$lines" = 1 ] || fail "a restart inside the same pause must not log it again, got $lines"
+
+  # The wait is replaced by one with no declared time: another detail, logged once.
+  printf 'paused: waiting on the release\n' > "$state/until.status"
+  printf '%s' "$(seen_sig "$state/until.status")" > "$state/.seen-until_status"
+  FM_WATCH_HANDLING_SUCCESSOR=1 until_watch "$dir" 240
+  for i in 1 2 3 4 5; do
+    wait_poll_cycle "$state" "$UNTIL_PID" \
+      || { reap "$UNTIL_PID"; fail "the watcher stopped on the replacement wait: $(cat "$dir/watch.out")"; }
+  done
+  reap "$UNTIL_PID"
+  lines=$(grep -cF 'absorbed stale (paused, awaiting external' "$state/.watch-triage.log")
+  [ "$lines" = 1 ] || fail "a pause that changed detail must log its new detail once, got $lines"
+  [ "$(grep -c 'absorbed stale' "$state/.watch-triage.log")" = 2 ] \
+    || fail "the log must hold one line per detail, got: $(cat "$state/.watch-triage.log")"
+  pass "a held pause logs one absorb line per detail instead of one per poll"
+}
+
 test_paused_until_wrong_year_is_bounded_by_the_cadence() {
   local dir state
   dir=$(paused_until_fixture until-wrong-year "$(( $(date +%s) + 31536000 ))" 300); state="$dir/state"
@@ -1567,6 +1612,7 @@ fm_test_run \
   test_afk_one_shot_never_hands_off_captain_held_under_away_record \
   test_captain_held_rechecked_under_a_quiet_record \
   test_paused_until_near_future_is_quiet_before_the_cadence \
+  test_an_unchanged_pause_logs_one_absorb_line_not_one_per_poll \
   test_paused_until_wrong_year_is_bounded_by_the_cadence \
   test_paused_until_that_passed_is_rechecked_before_the_cadence \
   test_paused_bg_job_without_until_stays_silent_after_the_job_ends \

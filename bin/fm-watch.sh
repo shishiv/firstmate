@@ -2601,11 +2601,25 @@ busy_stream_snapshot_current() {  # <task> <observed snapshot>
 # captain themself for a verified hold. Only the captain-held verb takes the second
 # wording; a caller that reached the bounded cadence off pause tracking alone, with
 # no declaring verb left on the log, keeps the external-wait wording it always had.
+# Log one `absorbed stale` line per pause detail, not one per poll. The key's
+# `.paused-<key>` marker, which handle_paused_stale keeps for as long as the pause
+# lasts and which only its existence is read for elsewhere, holds the detail the
+# last line was written for: a pause that stays as it is logs once, and a pause
+# that becomes another (declared time reached, a hold taking over) logs again.
+# Clearing the pause removes the marker, so the next pause logs from the start.
+# The age in the line is not part of the detail, because it grows every poll.
+pause_absorb_log() {  # <window-key> <detail> <line>
+  local marker="$STATE/.paused-$1"
+  [ "$(cat "$marker" 2>/dev/null || true)" != "$2" ] || return 0
+  triage_log "$3"
+  printf '%s' "$2" > "$marker"
+}
+
 handle_paused_stale() {  # <window> <task> <hash>
   local win=$1 task=$2 h=$3 key statusf mtime age detail reason declaration last until now min_age
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
-  : > "$STATE/.paused-$key"
+  [ -e "$STATE/.paused-$key" ] || : > "$STATE/.paused-$key"
   wedge_episode_end "$key"
   clear_write_tracking "$key"
   statusf="$STATE/$task.status"
@@ -2618,14 +2632,16 @@ handle_paused_stale() {  # <window> <task> <hash>
   declaration="declared:$(fm_wake_signal_sig "$statusf" || true)"
   if status_is_captain_held "$last"; then
     if away_record_present; then
-      triage_log "absorbed stale (captain-held, never rechecked while the away-posture record exists): $win"
+      pause_absorb_log "$key" "captain-held, never rechecked while away" \
+        "absorbed stale (captain-held, never rechecked while the away-posture record exists): $win"
       return 0
     fi
     detail="captain-held, awaiting the captain"
     reason="captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
   elif until=$(status_paused_until "$last"); then
     if [ "$now" -lt "$until" ] && [ "$age" -lt "$PAUSE_RESURFACE_SECS" ]; then
-      triage_log "absorbed stale (paused until $(( until - now ))s from now, declared time not reached): $win"
+      pause_absorb_log "$key" "paused until a declared time" \
+        "absorbed stale (paused until $(( until - now ))s from now, declared time not reached): $win"
       return 0
     elif [ "$now" -lt "$until" ]; then
       detail="paused, declared time beyond recheck cadence"
@@ -2643,7 +2659,7 @@ handle_paused_stale() {  # <window> <task> <hash>
     reason="paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
   fi
   resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)" "$declaration" "$min_age"
-  triage_log "absorbed stale ($detail, age ${age}s): $win"
+  pause_absorb_log "$key" "$detail" "absorbed stale ($detail, age ${age}s): $win"
 }
 
 # Apply the busy-pane completed-turn bound to a window whose bound has already
