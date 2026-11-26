@@ -58,6 +58,10 @@
 #              Refused on t3code before anything is sent: T3's `/mcp` tools
 #              have no session stop (bin/fm-control-lib.sh
 #              fm_control_backend_exit_supported); interrupt ends its turn.
+#              Exiting a secondmate parks it (bin/fm-secondmate-parked-lib.sh
+#              owns the marker): neither the session-start sweep nor the
+#              watcher relaunches it until work is sent to it. A failed exit
+#              does not leave it parked.
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME worktree - and the same endpoint whenever that endpoint
 #              still exists - on the same or a newly chosen
@@ -207,6 +211,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-omp-profile-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
 . "$SCRIPT_DIR/fm-exclude-tools-lib.sh"
+# shellcheck source=bin/fm-secondmate-parked-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-parked-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -224,9 +230,15 @@ CONTROL_LOCK=
 CONTROL_LOCK_HELD=0
 RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
+PARK_ACTIVE=0
 
 control_cleanup() {
   local status=$?
+  # An exit that did not complete may have left the agent running, and a parked
+  # mate is never relaunched, so the park does not outlive a failed exit.
+  if [ "$PARK_ACTIVE" = 1 ] && [ "$status" -ne 0 ]; then
+    fm_secondmate_unpark "$ID" || true
+  fi
   if [ "$RELAUNCH_ACTIVE" = 1 ] \
      && declare -F relaunch_rollback >/dev/null 2>&1; then
     relaunch_rollback || true
@@ -1294,6 +1306,12 @@ case "$VERB" in
     echo "interrupt-delivered $ID harness=$HARNESS backend=$BACKEND verified=$proof"
     ;;
   exit)
+    # The park goes first: once the agent stops, a liveness tick that read it
+    # before the marker landed would relaunch the mate that was just stopped.
+    if [ "$KIND" = secondmate ]; then
+      fm_secondmate_park "$ID" || die "could not park secondmate $ID"
+      PARK_ACTIVE=1
+    fi
     result=$(do_exit)
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;

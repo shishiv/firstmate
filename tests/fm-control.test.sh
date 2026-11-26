@@ -1258,6 +1258,46 @@ test_secondmate_control_command_carries_no_marker() {
   pass "fm-control: a lifecycle command to a secondmate is unmarked and opens no reply expectation"
 }
 
+test_exiting_a_secondmate_parks_it_and_a_ship_is_never_parked() {
+  local dir out rc
+  dir=$(new_case park-ship)
+  add_task "$dir" shipper claude ship
+  alive_as "$dir" claude
+  out=$(run_control "$dir" shipper exit); rc=$?
+  expect_code 0 "$rc" "exiting a ship's agent should succeed"$'\n'"$out"
+  [ ! -e "$dir/home/state/.secondmate-parked-shipper" ] || fail "a ship must never be parked"
+  dir=$(new_case park)
+  add_task "$dir" domain claude secondmate
+  printf '%s\n' domain > "$dir/wt-domain/.fm-secondmate-home"
+  alive_as "$dir" claude
+  out=$(run_control "$dir" domain exit); rc=$?
+  expect_code 0 "$rc" "exiting a secondmate's agent should succeed"$'\n'"$out"
+  [ -s "$dir/home/state/.secondmate-parked-domain" ] \
+    || fail "a secondmate stopped on purpose must be parked"
+  alive_as "$dir" zsh
+  printf '%s\n' fm-domain > "$dir/fake/windows"
+  out=$(run_control "$dir" domain exit); rc=$?
+  expect_code 0 "$rc" "exiting an already-stopped secondmate stays idempotent"$'\n'"$out"
+  [ -s "$dir/home/state/.secondmate-parked-domain" ] \
+    || fail "an already-stopped secondmate stays parked"
+  pass "fm-control exit: a secondmate is parked by its exit and a ship never is"
+}
+
+test_a_failed_secondmate_exit_does_not_leave_it_parked() {
+  local dir out rc
+  dir=$(new_case park-fail)
+  add_task "$dir" domain claude secondmate
+  printf '%s\n' domain > "$dir/wt-domain/.fm-secondmate-home"
+  alive_as "$dir" claude
+  out=$(env FM_FAKE_NEVER_DIES=1 PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" \
+    FM_FAKE_DIR="$dir/fake" FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 \
+    "$CONTROL" domain exit 2>&1); rc=$?
+  expect_code 1 "$rc" "a secondmate that ignores its exit command should fail closed"
+  [ ! -e "$dir/home/state/.secondmate-parked-domain" ] \
+    || fail "an exit that did not stop the agent must not leave the mate parked"
+  pass "fm-control exit: a secondmate whose exit failed is not left parked"
+}
+
 test_fm_send_still_marks_the_same_secondmate_task() {
   local dir log out rc
   dir=$(new_case sm-send)
@@ -1364,3 +1404,5 @@ test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker
 test_fm_send_still_marks_the_same_secondmate_task
+test_exiting_a_secondmate_parks_it_and_a_ship_is_never_parked
+test_a_failed_secondmate_exit_does_not_leave_it_parked

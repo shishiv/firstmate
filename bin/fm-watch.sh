@@ -1204,10 +1204,11 @@ EOF
 # cadence each registered mate's recorded endpoint is probed once; only a
 # recovery-grade `dead` or `missing` verdict relaunches, every relaunch
 # (success or failure) becomes exactly one durable `check` wake row, and every
-# other verdict lands only in the triage log. The tick finishes every mate's
-# bounded recovery before it wakes once on the first outcome; the drain
-# surfaces every queued row. A mate that keeps
-# dying is parked after SECONDMATE_LIVENESS_MAX_ATTEMPTS ledgered attempts
+# other verdict lands only in the triage log, except a parked mate (stopped on
+# purpose, bin/fm-secondmate-parked-lib.sh), which stays silent. The tick
+# finishes every mate's bounded recovery before it wakes once on the first
+# outcome; the drain surfaces every queued row. A mate that keeps
+# dying is bound after SECONDMATE_LIVENESS_MAX_ATTEMPTS ledgered attempts
 # inside SECONDMATE_LIVENESS_WINDOW_SECS: the bound marker wakes once, further
 # probes stay silent, and a later live probe ledgers a `rearmed` row and clears
 # the marker so a manually recovered mate rejoins the guarantee with a full
@@ -1268,6 +1269,7 @@ secondmate_liveness_tick() {
       skipped)
         triage_log "secondmate $id liveness: $FM_SM_LIVE_REASON"
         ;;
+      parked) ;;
     esac
     if [ -n "$reason" ]; then
       queued=$(fm_wake_queued_keys check)

@@ -52,6 +52,8 @@
 # ordinary record by the worker's acknowledgement move into handled/.
 # bin/fm-task-inbox-lib.sh owns the record format, doorbell line, and retry and
 # escalation policy for ordinary and fire-and-forget records.
+# Work sent to a parked secondmate un-parks it (bin/fm-secondmate-parked-lib.sh
+# owns the contract); FM_SEND_KEEP_PARKED=1 marks a re-read nudge, which does not.
 # On pane backends, the composer pre-check before the ring is ADVISORY only: when
 # the composer visibly holds pending text the ring is skipped with a notice and
 # the watcher re-rings an ordinary record later; no composer verdict is
@@ -282,6 +284,8 @@ fi
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# shellcheck source=bin/fm-secondmate-parked-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-parked-lib.sh"
 # shellcheck source=bin/fm-relay-ledger-lib.sh
 . "$SCRIPT_DIR/fm-relay-ledger-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
@@ -1148,6 +1152,15 @@ else
       exit 1
     fi
     fm_lock_release "$INBOX_META_LOCK"
+    # Work sent to a parked secondmate wakes it: the record is durable, so the
+    # parked marker goes and the watcher is asked for a liveness tick, which
+    # relaunches the mate through the same guarded path as any dead one.
+    # A re-read nudge is not work and keeps the mate parked.
+    UNPARKED_NOW=0
+    if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ "${FM_SEND_KEEP_PARKED:-0}" != 1 ] \
+      && fm_secondmate_is_parked "$INBOX_TASK_ID"; then
+      fm_secondmate_unpark "$INBOX_TASK_ID" && fm_secondmate_liveness_tick_now && UNPARKED_NOW=1
+    fi
     # Enqueue IS durable delivery to the task's record: mark the pending
     # expectation delivered now, without resolving it - only a correlated
     # parent report acknowledges the request.
@@ -1202,7 +1215,13 @@ else
     1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and $ring_retry" >&2 ;;
     5) echo "fm-send: doorbell not typed because the worker is busy and its next tool call delivers the steer in-turn; the steer is durably recorded at $INBOX_RECORD and the watcher rings it if the turn ends first" >&2 ;;
     2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and $ring_retry" >&2 ;;
-    3) echo "fm-send: doorbell not typed because the agent in $T has exited; the steer is durably recorded at $INBOX_RECORD for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane" >&2 ;;
+    3)
+      if [ "$UNPARKED_NOW" = 1 ]; then
+        echo "fm-send: secondmate $INBOX_TASK_ID was parked and is no longer; the steer is durably recorded at $INBOX_RECORD, and the watcher relaunches the mate within one poll and rings it then" >&2
+      else
+        echo "fm-send: doorbell not typed because the agent in $T has exited; the steer is durably recorded at $INBOX_RECORD for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane" >&2
+      fi
+      ;;
     4) echo "fm-send: doorbell not typed because $(fm_backend_foreign_endpoint_reason "$T" "$INBOX_TASK_ID"); the steer is durably recorded at $INBOX_RECORD for recovery" >&2 ;;
     esac
     exit 0

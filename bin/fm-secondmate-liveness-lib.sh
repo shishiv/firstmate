@@ -27,6 +27,11 @@
 # live one - and an unreachable remote host is never evidence of death, so a
 # remote route is never replaced by a local endpoint.
 #
+# A local mate stopped on purpose is parked (bin/fm-secondmate-parked-lib.sh
+# owns the marker): its `dead` or `missing` reading is `parked` rather than
+# `relaunchable`, for the session-start sweep and the watcher tick alike,
+# because both drive this one probe.
+#
 # Replacement relaunch goes through `bin/fm-spawn.sh <id> --secondmate` with
 # FM_SPAWN_NO_GUARD=1, the same guarded path every recovery uses. That path
 # re-resolves placement from the task's own metadata and registry route, so a
@@ -64,6 +69,8 @@ FM_SM_LIVE_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$FM_SM_LIVE_LIB_DIR/fm-remote-readiness-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$FM_SM_LIVE_LIB_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-secondmate-parked-lib.sh
+. "$FM_SM_LIVE_LIB_DIR/fm-secondmate-parked-lib.sh"
 
 # Per-task probe+kill+relaunch serialization. A busy lock means another
 # supervisor (the other sweep, or a racing tick) is mid-episode on this mate;
@@ -121,7 +128,7 @@ fm_secondmate_liveness_recent_attempts() {  # <id> <window-secs>
 #
 # Read-only probe of one registered secondmate's recorded endpoint. Populates:
 #
-#   FM_SM_LIVE_STATUS  silent | alive | relaunchable | skipped
+#   FM_SM_LIVE_STATUS  silent | alive | relaunchable | parked | skipped
 #   FM_SM_LIVE_STATE   the raw classifier/state word
 #   FM_SM_LIVE_KILL    1 when relaunch must first kill a confirmed-dead local
 #                      endpoint (its shell husk occupies the name)
@@ -132,7 +139,7 @@ fm_secondmate_liveness_recent_attempts() {  # <id> <window-secs>
 #   FM_SM_LIVE_CAUSE   relaunch cause phrase, on relaunchable
 #   FM_SM_LIVE_WHERE   backend=<b> or host=<h>, on relaunchable
 #   FM_SM_LIVE_REASON  exact skip suffix, on skipped
-#   FM_SM_LIVE_LINE    verbose already-live line body, on alive
+#   FM_SM_LIVE_LINE    verbose line body, on alive or parked
 #
 # `silent` means the meta records no endpoint at all - that shape is owned by
 # secondmate-provisioning recovery, not liveness.
@@ -225,6 +232,17 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
   agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
+  if fm_secondmate_is_parked "$id"; then
+    case "$agent_state" in
+      alive) fm_secondmate_unpark "$id" ;;
+      dead|missing)
+        FM_SM_LIVE_STATE=$agent_state
+        FM_SM_LIVE_STATUS=parked
+        FM_SM_LIVE_LINE="secondmate $id parked (stopped on purpose; work sent to it relaunches it)"
+        return 0
+        ;;
+    esac
+  fi
   # A dead or missing reading licenses a relaunch only for a harness whose
   # mechanics the control plane verifies for a secondmate; the same predicate
   # decides fm-control.sh relaunch and bin/fm-secondmate-restart-lib.sh.

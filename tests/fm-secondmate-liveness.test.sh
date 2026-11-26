@@ -756,6 +756,87 @@ test_sweep_noop_with_no_secondmate_meta() {
   pass "sweep: a silent no-op with no kind=secondmate meta present (a secondmate home's own natural scoping)"
 }
 
+# --- parked secondmates --------------------------------------------------------
+# A secondmate stopped on purpose carries state/.secondmate-parked-<id>
+# (bin/fm-secondmate-parked-lib.sh): both the session-start sweep and the
+# watcher tick, which drive the one probe, leave its dead agent down, and a live
+# agent clears the marker.
+
+test_sweep_leaves_a_parked_secondmate_down() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-parked)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  date +%s > "$w/home/state/.secondmate-parked-sm1"
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
+  assert_not_contains "$out" "SECONDMATE_LIVENESS" "a parked secondmate should be handled silently"
+  [ ! -s "$log" ] || fail "a parked secondmate must never be killed or relaunched: $(cat "$log")"
+  [ ! -e "$w/home/state/.secondmate-relaunch-sm1" ] || fail "a parked secondmate must record no relaunch attempt"
+  [ -e "$w/home/state/.secondmate-parked-sm1" ] || fail "the sweep must leave the parked marker in place"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" FM_BOOTSTRAP_VERBOSE_FACTS=1)
+  assert_contains "$out" "BOOTSTRAP_INFO: secondmate sm1 parked" \
+    "verbose diagnostics should identify the parked outcome"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log")
+  [ ! -s "$log" ] || fail "a parked secondmate whose endpoint is gone must not be relaunched either: $(cat "$log")"
+  pass "sweep: a parked secondmate stays down, silently, with its marker kept"
+}
+
+test_sweep_clears_the_park_of_a_live_secondmate() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-parked-live)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  date +%s > "$w/home/state/.secondmate-parked-sm1"
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" claude "$log")
+  assert_not_contains "$out" "SECONDMATE_LIVENESS" "a live secondmate should be handled silently"
+  [ ! -e "$w/home/state/.secondmate-parked-sm1" ] \
+    || fail "a live agent means the mate is wanted again, so its park must clear"
+
+  : > "$log"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
+  assert_contains "$(cat "$log")" "new-window" \
+    "once the park cleared, a later dead reading relaunches the mate again"
+  pass "sweep: a live agent clears a stale park and the mate rejoins the liveness guarantee"
+}
+
+test_poll_probe_reads_a_parked_mate_as_parked() {
+  local w fb tmuxfb out
+  w=$(new_world probe-parked)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  : > "$w/calls.log"
+  probe_local() {  # <pane-cmd> -> "<status>|<state>"
+    # shellcheck disable=SC2016 # positional params expand in the child shell.
+    env PATH="$tmuxfb:$fb:$BASE_PATH" TMUX='' FM_BACKEND=tmux STATE="$w/home/state" FM_HOME="$w/home" \
+      FM_TEST_PANE_CMD="$1" FM_TMUX_CALL_LOG="$w/calls.log" \
+      bash -c '
+        . "$0/bin/fm-secondmate-liveness-lib.sh"
+        fm_secondmate_liveness_probe "$1" sm1 poll
+        printf "%s|%s\n" "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_STATE"
+      ' "$ROOT" "$w/home/state/sm1.meta"
+  }
+  out=$(probe_local zsh)
+  [ "$out" = 'relaunchable|dead' ] || fail "an unparked dead mate must read relaunchable, got: $out"
+  date +%s > "$w/home/state/.secondmate-parked-sm1"
+  out=$(probe_local zsh)
+  [ "$out" = 'parked|dead' ] || fail "a parked dead mate must read parked, got: $out"
+  out=$(probe_local missing)
+  [ "$out" = 'parked|missing' ] || fail "a parked mate with no endpoint must read parked, got: $out"
+  out=$(probe_local node)
+  [ "$out" = 'skipped|ambiguous' ] || fail "an inconclusive reading of a parked mate must stay skipped, got: $out"
+  [ -e "$w/home/state/.secondmate-parked-sm1" ] || fail "an inconclusive reading must keep the park"
+  out=$(probe_local claude)
+  [ "$out" = 'alive|alive' ] || fail "a live parked mate must read alive, got: $out"
+  [ ! -e "$w/home/state/.secondmate-parked-sm1" ] || fail "the live reading must clear the park"
+  pass "poll probe: a parked mate reads parked while dead or gone and rejoins when its agent is live"
+}
+
 # --- library level: the watcher's poll-mode remote probe ---------------------
 # bin/fm-secondmate-liveness-lib.sh's `poll` mode is the read-only probe the
 # watcher tick runs per cadence: exactly one remote `state` call, `dead` and
@@ -881,4 +962,7 @@ test_sweep_refuses_relaunch_on_ledger_errors
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
 
+test_sweep_leaves_a_parked_secondmate_down
+test_sweep_clears_the_park_of_a_live_secondmate
+test_poll_probe_reads_a_parked_mate_as_parked
 echo "# all fm-secondmate-liveness tests passed"
