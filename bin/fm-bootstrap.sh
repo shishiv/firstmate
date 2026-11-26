@@ -22,6 +22,8 @@
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
+#                 "BOOTSTRAP_INFO: worker <id> relaunched after the restart (its terminal held only a shell)",
+#                 "WORKER_BOOT: worker <id>: relaunch failed: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "HERDR_SERVER_CGROUP: the default Herdr server (pid <pid>) runs in <cgroup>, under app.slice, ...",
 #                 "HERDR_AGENT_RESUME: Herdr <version> resumes agents after a server restart because <config.toml> does not set [session] resume_agents_on_restore = false; ...",
@@ -67,6 +69,13 @@
 #          failed names whether the endpoint was missing or agent-less.
 #          Already-live and successfully relaunched secondmates are silent
 #          unless FM_BOOTSTRAP_VERBOSE_FACTS=1 requests BOOTSTRAP_INFO facts.
+#          The ship and scout half is the worker boot sweep: a local worker
+#          whose terminal reads dead after a restart and whose current state is
+#          work or a machine wait is relaunched once per boot through
+#          bin/fm-control.sh, and that relaunch is always reported with a
+#          BOOTSTRAP_INFO fact, because the digest was composed before it;
+#          bin/fm-worker-boot-lib.sh owns the decision and its ledger.
+#          WORKER_BOOT reports a relaunch that failed.
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
@@ -123,9 +132,10 @@
 #          The `code-root <file>` variant is a detect-only local check that runs
 #          even in a read-only session; detect_code_root_backlog_fork owns what
 #          it reports.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
 #          (backlog_record_reconcile, secondmate_sync,
-#          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,
+#          secondmate_liveness_sweep, worker_boot_relaunch_sweep,
+#          secondmate_handoff_resume, x_mode_setup,
 #          fleet_sync) while still
 #          printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
@@ -134,7 +144,7 @@
 #          the fleet lock, so a second concurrent session never race-mutates
 #          secondmate homes, pending handoff outboxes and receiver wakes,
 #          X-mode artifacts, project clones, or repair instructions.
-#          Unset/0 (the default) runs all six sweeps - this flag is purely
+#          Unset/0 (the default) runs all seven sweeps - this flag is purely
 #          additive.
 #          Set FM_BOOTSTRAP_NETWORK to split this run by whether a step talks to
 #          the network, so a session start can print its digest from local reads
@@ -143,7 +153,8 @@
 #                 step. Unrecognized values fall back here on purpose: a typo
 #                 must never silently skip a safety sweep.
 #            skip - every LOCAL step, and none of the network ones. Skips
-#                 `gh auth status`, secondmate_liveness_sweep, secondmate_sync,
+#                 `gh auth status`, secondmate_liveness_sweep,
+#                 worker_boot_relaunch_sweep, secondmate_sync,
 #                 secondmate_handoff_resume, and fleet_sync.
 #            only - ONLY those network steps and nothing else. No tool detection,
 #                 no version floors, no tangle check, no backlog
@@ -234,6 +245,10 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # from identical evidence through an identical path.
 # shellcheck source=/dev/null # Analyzed separately as a canonical lint root.
 . "$SCRIPT_DIR/fm-secondmate-liveness-lib.sh"
+# The ship and scout half of the same guarantee: relaunch the workers a restart
+# left with only a shell, once per boot (bin/fm-worker-boot-lib.sh owns the rules).
+# shellcheck source=/dev/null # Analyzed separately as a canonical lint root.
+. "$SCRIPT_DIR/fm-worker-boot-lib.sh"
 # fm-timing-lib.sh is inert unless FM_TIMING_LOG names a file, which only the
 # deferred network stage sets, so an ordinary bootstrap run records nothing.
 # shellcheck source=bin/fm-timing-lib.sh disable=SC1091
@@ -855,6 +870,41 @@ secondmate_liveness_one() {  # <meta> <id>
   esac
   fm_secondmate_liveness_unlock "$id"
   return 0
+}
+
+# Session-start relaunch of the ships and scouts a restart left with only a
+# shell. The decision, the once-per-boot ledger, and the control-plane relaunch
+# live in bin/fm-worker-boot-lib.sh; this sweep keeps the reporting. Each
+# relaunch takes seconds to a minute, so the workers are relaunched concurrently
+# and their output is replayed in order.
+worker_boot_relaunch_sweep() {
+  [ -d "$STATE" ] || return 0
+  local meta id parallel=0
+  if bootstrap_parallel_begin; then
+    parallel=1
+  fi
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    id=$(basename "$meta" .meta)
+    if [ "$parallel" -eq 1 ]; then
+      bootstrap_parallel_spawn worker_boot_relaunch_one "$meta" "$id"
+    else
+      worker_boot_relaunch_one "$meta" "$id"
+    fi
+  done
+  [ "$parallel" -eq 0 ] || bootstrap_parallel_finish
+  return 0
+}
+
+worker_boot_relaunch_one() {  # <meta> <id>
+  local meta=$1 id=$2 out
+  fm_worker_boot_probe "$meta" "$id"
+  [ "$FM_WB_VERDICT" = relaunch ] || return 0
+  if out=$(fm_worker_boot_relaunch "$id"); then
+    echo "BOOTSTRAP_INFO: worker $id relaunched after the restart (its terminal held only a shell)"
+  else
+    echo "WORKER_BOOT: worker $id: relaunch failed: $(first_line "$out")"
+  fi
 }
 
 secondmate_handoff_resume() {
@@ -1731,6 +1781,23 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
       fm_timing_record phase fleet-sync "$__fm_timing_stamp"
     fi
   fi
+  worker_sweep_pid=
+  worker_sweep_out=
+  if network_phase && network_sweep_authorized 'dead-worker relaunch'; then
+    worker_sweep_out=$(mktemp "${TMPDIR:-/tmp}/fm-bootstrap-workers.XXXXXX") || worker_sweep_out=
+    if [ -n "$worker_sweep_out" ]; then
+      (
+        __fm_timing_stamp=$(fm_timing_now_ms)
+        worker_boot_relaunch_sweep
+        fm_timing_record phase worker-boot "$__fm_timing_stamp"
+      ) >"$worker_sweep_out" 2>&1 &
+      worker_sweep_pid=$!
+    else
+      __fm_timing_stamp=$(fm_timing_now_ms)
+      worker_boot_relaunch_sweep
+      fm_timing_record phase worker-boot "$__fm_timing_stamp"
+    fi
+  fi
   if network_phase; then
     if network_sweep_authorized 'dead-secondmate relaunch'; then
       __fm_timing_stamp=$(fm_timing_now_ms)
@@ -1761,6 +1828,11 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
     && [ -d "$DATA" ] && [ -x "$SCRIPT_DIR/fm-pr-health.sh" ]; then
     "$SCRIPT_DIR/fm-pr-health.sh" arm >/dev/null \
       || echo "MISSING: the PR health monitor could not be armed; owned PRs are not watched"
+  fi
+  if [ -n "$worker_sweep_pid" ]; then
+    wait "$worker_sweep_pid" || true
+    cat "$worker_sweep_out"
+    rm -f "$worker_sweep_out"
   fi
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true

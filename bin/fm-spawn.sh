@@ -2474,7 +2474,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # endpoint was DESTROYED" with "the endpoint is UNREACHABLE from here right
   # now", and an unreachable endpoint can still hold the live agent this
   # relaunch would duplicate. So absence is PROVEN before it may rebind, never
-  # inferred from a failed read - and only HERDR and REX can prove it:
+  # inferred from a failed read - and only HERDR, REX, and HC can prove it:
   #   herdr - the recorded session's server is started, and the recorded pane is
   #           RE-READ through that session's own socket. `dead` means the pane
   #           survived the restart and is adopted after all; `alive` means the
@@ -2486,6 +2486,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
   #           `unreadable` is rechecked too, because a stopped Rex server
   #           reads as unreachable to a read that never starts it
   #           (fm_control_absence_recheck_applies owns that rule).
+  #   hc    - a terminal address is never reused and every read is scoped to
+  #           the recorded session, so hc's own not-found, or a terminal whose
+  #           program ended, proves the terminal cannot host the agent again.
   #   tmux  - REFUSES, always. A task record carries no socket identity for its
   #           endpoint, and a server-wide inventory describes only the server
   #           this process addresses, so no read available here can tell "gone"
@@ -4923,6 +4926,23 @@ if [ "$RELAUNCH" -eq 1 ]; then
     # An adopted hc terminal keeps the Herdr.app labels it was born with, so
     # the placement rule is applied to it again (bin/backends/hc.sh).
     [ "$BACKEND" != hc ] || fm_backend_hc_place "$T" "$W" "$PROJ_ABS" "$KIND"
+  elif [ "$BACKEND" = hc ]; then
+    # The recorded terminal is gone or its program ended, so there is nothing
+    # to adopt: start ONE fresh terminal for the same task, in the recorded
+    # worktree and the RECORDED hc session, placed where a fresh task of this
+    # kind opens (by its project, not by the worktree's own name). The record
+    # published below writes window= and hc_terminal= from these values, which
+    # is the whole rebind; the task id, brief, worktree, and status log are
+    # untouched. Only a proven-gone terminal reaches here
+    # (fm_control_endpoint_absence_verdict).
+    fm_backend_hc_cli "$HC_SES" server status --json >/dev/null 2>&1 || {
+      echo "error: 'hc server status' failed for session '$HC_SES'; cannot re-create $W" >&2
+      exit 1
+    }
+    HC_TERMINAL=$(fm_backend_hc_create_task "$HC_SES" "$W" "$WT" "$KIND" "$PROJ_ABS") || exit 1
+    T="$HC_SES:$HC_TERMINAL"
+    WT_TARGET=$T
+    SES=$HC_SES
   elif [ "$BACKEND" = rex ]; then
     # The recorded endpoint is authoritatively gone, so there is nothing to
     # adopt: create ONE fresh endpoint for the same task, opened directly in the

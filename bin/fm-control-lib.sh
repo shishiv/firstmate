@@ -479,6 +479,9 @@ fm_control_absence_recheck_applies() {  # <backend> <raw-state>
 #     on the verified server, while an unreachable server reads `unreadable`.
 #     The proof re-reads the thread, but exit and relaunch refuse before it:
 #     V2 has no session stop and a thread cannot host a replacement.
+#   hc CAN prove it. Its terminal addresses are never reused, a read is scoped
+#     to the recorded session, and a terminal whose program ended can never host
+#     the agent again, so a not-found or finished terminal is gone.
 #   tmux CANNOT. `list-windows -a` describes only the server the CURRENT
 #     process addresses (its TMUX_TMPDIR/socket), and a task's record does not
 #     carry the endpoint's socket identity - so a different but running server
@@ -528,7 +531,11 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target> [meta]
       esac
       ;;
     hc)
-      printf 'unproven\tan hc terminal that reads missing has ended or was removed, and this plane does not recreate one in its place; tear the task down and spawn it again'
+      # hc reads `missing` only on its own structured not-found, or for a
+      # terminal whose program ended (fm_backend_hc_agent_state): neither can
+      # host the agent again, and every read is scoped to the session the
+      # record names, so the reading is the proof.
+      printf 'gone\t'
       ;;
     *)
       printf 'unproven\tbackend %s has no recovery-grade classifier, so absence cannot be proven on it at all' "'$backend'"

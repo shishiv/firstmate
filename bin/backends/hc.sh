@@ -222,7 +222,10 @@ fm_backend_hc_placement() {  # <session> <cwd> [kind]
 # same address, which agent_state reads as dead, so relaunch can adopt it.
 # [kind] is the task kind, which decides its space (see header). A secondmate's
 # <cwd> is its own home, and its labels are still this home's.
-fm_backend_hc_create_task() {  # <session> <window-label> <cwd> [kind]
+# [placement-dir] names the directory the space is derived from when the
+# terminal opens somewhere else: a relaunch that re-creates a task's terminal
+# opens it in the task's worktree and places it by the project.
+fm_backend_hc_create_task() {  # <session> <window-label> <cwd> [kind] [placement-dir]
   local session=$1 label=$2 cwd=$3 kind=${4:-} home scoped dup out address space space_name home_path
   home=$(fm_backend_hometag)
   scoped=$(fm_backend_hc_scoped_label "$label")
@@ -234,7 +237,7 @@ fm_backend_hc_create_task() {  # <session> <window-label> <cwd> [kind]
     return 1
   fi
   IFS=$'\t' read -r space space_name <<EOF
-$(fm_backend_hc_placement "$session" "$cwd" "$kind")
+$(fm_backend_hc_placement "$session" "${5:-$cwd}" "$kind")
 EOF
   out=$(fm_backend_hc_cli "$session" run --bg --json --keep --no-parent --outlive-parent --no-notify \
     --cwd "$cwd" \

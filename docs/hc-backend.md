@@ -109,7 +109,7 @@ The away-mode daemon still supports only tmux and Herdr 1 supervisor panes and r
 - hc reports one foreground process per terminal.
   When that process is a launcher, the adapter also reads the rest of its process group from `ps`, which works only for terminals on the local machine.
 - Right after a terminal starts, `hc get` can report no foreground process yet, and agent state reads `unreadable` until the shell is up.
-- `bin/fm-control.sh` accepts the hc agent state as proof for `exit` and `relaunch`; a relaunch adopts a terminal whose agent ended and applies the placement rule to it, and refuses one that reads missing, because this plane does not recreate an hc terminal.
+- `bin/fm-control.sh` accepts the hc agent state as proof for `exit` and `relaunch`; a relaunch adopts a terminal whose agent ended and applies the placement rule to it, and starts one fresh terminal in the recorded session, in the task's worktree and placed by its project, when the recorded one reads missing (hc's own not-found, or a program that ended) and rebinds the record to it.
 - A worker inherits `HC_SESSION`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, and `HC_SCOPE` from its terminal, and the `config/launch-env-allowlist` floor keeps them; a Kiro scout launched by `bin/fm-spawn.sh` reported its native status to herdr-core, and other harnesses are not verified.
 - hc has no event stream this adapter consumes; supervision polls like tmux.
 
