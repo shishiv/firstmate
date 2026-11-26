@@ -68,13 +68,14 @@
 #              harness/model/effort - so switching harness is one ordinary use
 #              of this verb. When the recorded endpoint is instead proven gone -
 #              a Herdr pane or workspace destroyed in churn, or a Rex block or
-#              session gone with its server - the launch owner re-creates one in
-#              that worktree, in the herdr session the record names (Rex: the
-#              recorded session while it survives, otherwise the ordinary Rex
+#              session gone with its server, or an hc terminal that reads
+#              not-found or finished - the launch owner re-creates one in
+#              that worktree, in the herdr or hc session the record names (Rex:
+#              the recorded session while it survives, otherwise the ordinary Rex
 #              placement), and the task's record rebinds to it; that is how a task
 #              whose terminal was destroyed is reclaimed by the home that owns
 #              it, rather than being stranded with a parked approval nobody can
-#              answer. Reclaim is HERDR- and REX-ONLY for the reason `exit` gives above:
+#              answer. Reclaim is HERDR-, REX-, and HC-ONLY for the reason `exit` gives above:
 #              a tmux `missing` cannot be proven absent from a task record, so
 #              it refuses.
 #              An explicit `default` model or effort clears that
