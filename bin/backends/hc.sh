@@ -46,7 +46,9 @@
 # set, overrides both. A secondmate's identity labels stay this home's, because
 # this home owns the task record and checks them on every later call.
 # A terminal keeps the labels it was born with, so fm_backend_hc_place applies
-# the same rule again to the terminal a relaunch adopts.
+# the same rule again to the terminal a relaunch adopts. Herdr.app does not move
+# a tab it already shows when its labels change, so that tab changes space the
+# next time the app starts.
 # Names: the app names an unnamed space after its first terminal's folder and
 # an unnamed tab by its position, and a space's name goes with it when its last
 # tab closes. On the `default` session, the one Herdr.app shows, create_task
@@ -251,6 +253,10 @@ EOF
 # and only when they differ; the identity labels are never touched. A terminal
 # that is not this task's live one is left alone. Best effort, like naming: a
 # warning says why a terminal kept its place, and the relaunch goes on.
+# Herdr.app places a tab when it first shows the terminal and does not move it
+# when its labels change (docs/verification/runtime-backends.md), so on the
+# `default` session a relabeled tab stays in its space until the app next
+# starts and reads the labels again; its name is fixed now.
 fm_backend_hc_place() {  # <target> <window-label> <cwd> [kind]
   local target=$1 label=$2 cwd=$3 kind=${4:-} scoped space space_name json
   fm_backend_hc_target_ready "$target" "$label" \
@@ -260,13 +266,18 @@ fm_backend_hc_place() {  # <target> <window-label> <cwd> [kind]
 $(fm_backend_hc_placement "$FM_BACKEND_HC_SESSION" "$cwd" "$kind")
 EOF
   json=$(fm_backend_hc_get "$target" || true)
-  if ! printf '%s' "$json" | jq -e --arg s "$space" --arg t "$scoped" \
+  if printf '%s' "$json" | jq -e --arg s "$space" --arg t "$scoped" \
     '.labels["herdr.space"] == $s and .labels["herdr.tab"] == $t' >/dev/null 2>&1; then
-    fm_backend_hc_cli "$FM_BACKEND_HC_SESSION" label --json "$FM_BACKEND_HC_ADDRESS" \
-      "herdr.space=$space" "herdr.tab=$scoped" >/dev/null 2>&1 \
-      || { echo "warning: hc did not set the Herdr.app labels of $target, so it keeps its place" >&2; return 0; }
+    [ "$FM_BACKEND_HC_SESSION" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "$space_name"
+    return 0
   fi
-  [ "$FM_BACKEND_HC_SESSION" != default ] || fm_backend_hc_app_name "$space" "$scoped" "${label#fm-}" "$space_name"
+  fm_backend_hc_cli "$FM_BACKEND_HC_SESSION" label --json "$FM_BACKEND_HC_ADDRESS" \
+    "herdr.space=$space" "herdr.tab=$scoped" >/dev/null 2>&1 \
+    || { echo "warning: hc did not set the Herdr.app labels of $target, so it keeps its place" >&2; return 0; }
+  [ "$FM_BACKEND_HC_SESSION" = default ] && command -v herdr-app >/dev/null 2>&1 || return 0
+  herdr-app 'do' tab.rename "$(jq -nc --arg id "$scoped" --arg name "${label#fm-}" '{id: $id, name: $name}')" >/dev/null 2>&1 \
+    || echo "warning: Herdr.app did not rename tab $scoped to ${label#fm-}" >&2
+  echo "note: $label's labels now name Herdr.app space $space; the app moves the tab there when it next starts" >&2
 }
 
 # fm_backend_hc_home_name: what Herdr.app calls <home>'s space.

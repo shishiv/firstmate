@@ -58,7 +58,10 @@ Its own crew are workers like any other, so they open their project spaces.
 A terminal keeps the labels it was born with, so a relaunch that adopts a terminal applies the same rule to it again.
 It sets `herdr.space` and `herdr.tab` with `hc label` only when they differ, and never touches the identity labels, so a relaunch of a task that is already in place changes nothing.
 A terminal that is not the task's live one is left where it is.
-Terminals that are open when this rule changes are not moved; each one moves at its next relaunch, or at the next spawn of its task.
+Herdr.app places a tab when it first shows a terminal and does not move it when the labels change ([verification](verification/runtime-backends.md#a-label-change-on-a-shown-tab)), so a relabeled tab stays in its old space until the app starts again and reads the labels.
+The relaunch renames that tab at once and prints a note saying so.
+A spawn is placed from its first moment, and a secondmate whose agent died is respawned in a new terminal, so only a relaunch that adopts a terminal waits for the app.
+Terminals that are open when this rule changes are not moved.
 
 On the `default` session, the one Herdr.app shows, the spawn or relaunch then waits up to three seconds for the app to show the tab and names the tab after the task (`<id>`) and the space with `herdr-app do tab.rename` and `space.rename`: a project space after its project, any other space after this home's folder name.
 A renamed space keeps its name while it exists; a space closes with its last task, and the next spawn names it again.

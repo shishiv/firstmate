@@ -301,18 +301,35 @@ test_place_moves_an_adopted_terminal_to_the_rule_and_then_leaves_it() {
   pass "hc: place applies the rule to an adopted terminal once and then leaves it alone"
 }
 
-test_place_names_the_adopted_tab_and_space_in_the_app() {
-  local tag
+# Herdr.app keeps a shown tab where it is when its labels change, so a
+# relabeled tab is only renamed; a tab already in place gets the full naming.
+test_place_names_a_relabeled_tab_and_says_the_app_moves_it_at_its_next_start() {
+  local tag out
   setup_case place-names
   tag=$(hometag_of)
   write_terminal "$D" t4 live fm-a1 "$tag" zsh /bin/zsh
   jq '.labels["herdr.space"] = "fm-old"' "$D/t4.json" > "$D/t4.tmp" && mv "$D/t4.tmp" "$D/t4.json"
+  out=$(hc_shell 'fm_backend_hc_place default:t4 fm-a1 /projects/proj' 2>&1) || fail "place must succeed"
+  assert_equals "$(app_calls)" "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-a1","name":"a1"}' \
+    "a relabeled tab is renamed at once and no space is renamed or waited for"
+  assert_contains "$out" "moves the tab there when it next starts" "the lag until the app next starts is reported"
+  assert_equals "$(jq -r '.labels["herdr.space"]' "$D/t4.json")" fm-p-proj "the labels name the project's space"
+  pass "hc: place renames a relabeled tab and says the app moves it at its next start"
+}
+
+test_place_names_a_tab_that_is_already_in_place_in_its_space() {
+  local tag
+  setup_case place-in-place
+  tag=$(hometag_of)
+  write_terminal "$D" t4 live fm-a1 "$tag" zsh /bin/zsh
+  jq --arg t "$tag-fm-a1" '.labels["herdr.space"] = "fm-p-proj" | .labels["herdr.tab"] = $t' "$D/t4.json" > "$D/t4.tmp" && mv "$D/t4.tmp" "$D/t4.json"
   app_ls_with fm-p-proj "$tag-fm-a1"
   hc_shell 'fm_backend_hc_place default:t4 fm-a1 /projects/proj' >/dev/null 2>&1 || fail "place must succeed"
   assert_equals "$(app_calls)" \
     "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-a1","name":"a1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"fm-p-proj","name":"proj"}' \
-    "the adopted tab and its project space are named like a new task's"
-  pass "hc: place names an adopted tab and its project space in Herdr.app"
+    "a tab already in its space is named after the task and the space after the project"
+  assert_not_contains "$(cat "$D/log")" $'\x1flabel\x1f' "a tab already in place is not relabeled"
+  pass "hc: place names a tab that is already in its project's space"
 }
 
 test_place_puts_an_adopted_secondmate_in_the_bridge() {
@@ -748,7 +765,8 @@ test_project_space_id_is_a_valid_label_value
 test_a_reopened_project_space_is_named_again_on_every_spawn
 test_secondmate_opens_in_the_primarys_space_and_its_crew_in_their_projects
 test_place_moves_an_adopted_terminal_to_the_rule_and_then_leaves_it
-test_place_names_the_adopted_tab_and_space_in_the_app
+test_place_names_a_relabeled_tab_and_says_the_app_moves_it_at_its_next_start
+test_place_names_a_tab_that_is_already_in_place_in_its_space
 test_place_puts_an_adopted_secondmate_in_the_bridge
 test_place_never_touches_a_terminal_that_is_not_the_tasks_own
 test_place_that_cannot_label_warns_and_does_not_fail

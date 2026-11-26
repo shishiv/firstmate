@@ -4018,6 +4018,9 @@ Not verified here: a ship spawn, a relaunch, and a doorbell rung into a Kiro pri
 
 ### Named tabs in one space per home
 
+Superseded on 2026-11-26: a crewmate or scout now opens the space of its project and a secondmate the primary's space, so the per-home space below is only the fallback of a secondmate with no primary space (`docs/hc-backend.md`).
+The measurements are of the rule as it was on the date given.
+
 Measured on 2026-11-01 with `hc 0.1.16` and `herdr-app 0.1.11` on Linux (7.2.8, GNU bash 5.3.20), with the Herdr.app window attached to the `default` core.
 A lab home `firstmate-lab` had a stand-in primary: an hc terminal in its own app space, started in a folder the app named `lab`, published as `backend=hc target=default:<t>` in the lab's `state/.primary-endpoint`.
 Scouts ran through `bin/fm-spawn.sh <id> <lab>/projects/demo --scout --backend hc --harness "<root>/agents/claude/claude --fake"` with a stand-in agent, and ended through `bin/fm-teardown.sh`.
@@ -4047,6 +4050,32 @@ With the endpoint removed, tasks went to the per-home space:
 The primary's tab kept its own name `1` throughout.
 `herdr-app check share/herdr-app/mods/firstmate` passed, and the installed mod, opened with `herdr-app do mod.open --name firstmate`, listed the lab's two workers under `firstmate-lab` apart from the main home's, with `Needs decision` and `PR ready` appearing after lines were appended to their status records.
 A mod copied into `mods/` while the app runs is not docked until the next start; `mod.open` showed it at once.
+
+### A label change on a shown tab
+
+Measured on 2026-11-26 with `hc 0.1.22` and `herdr-app 0.1.18` on Linux, with the Herdr.app window attached to the `default` core.
+Each probe used one empty test terminal started in `/tmp` through the adapter under a lab home named `teste-colocacao-origem`, and closed it at the end.
+Before and after each probe, `hc ls --json --all` and `herdr-app ls` were reduced to their terminals and tabs, and the two reductions were identical.
+
+Probe 1 started the terminal with `FM_HC_SPACE=fm-teste-colocacao-origem fm_backend_hc_create_task default fm-teste-colocacao /tmp`, then ran `fm_backend_hc_place default:<terminal> fm-teste-colocacao /tmp/teste-colocacao`, whose rule names the space `fm-p-teste-colocacao`.
+
+| Step | Result |
+| --- | --- |
+| `herdr-app ls` after the create | The tab is in the space `teste-colocacao-origem [fm-teste-colocacao-origem]`. |
+| `hc get` after the place | `herdr.space=fm-p-teste-colocacao` and `herdr.tab=firstmate-a0f3d4c6-fm-teste-colocacao`. |
+| `herdr-app ls`, polled for 10 s after the place | The tab stays in `fm-teste-colocacao-origem`; no space `fm-p-teste-colocacao` appears. The naming wait printed `Herdr.app did not show tab firstmate-a0f3d4c6-fm-teste-colocacao in space fm-p-teste-colocacao`. |
+| A second place right after | The tab stayed in the same space. |
+
+Probe 2 gave a new test terminal the same labels, then ran `herdr-app do terminal.park '{"terminal":"<terminal>"}'` and, when the tab was gone, `herdr-app do terminal.keep '{"terminal":"<terminal>"}'`.
+
+| Step | Result |
+| --- | --- |
+| `terminal.park` | Answered `{"pending": true, ...}`; 3 s later `herdr-app ls` showed no tab for the terminal, and `hc get` showed `keep: false` and `labels: {}`: the identity labels `firstmate.task` and `firstmate.home` were gone with the two Herdr labels. |
+| `terminal.keep` | Answered with a pane and a tab id. `hc get` then showed `herdr.space` set to the space in focus on the screen (`firstmate-portfolio`) and `herdr.tab` set to a new id; the tab was named after the terminal address (`t26t`), not after the task. |
+
+So the app reads `herdr.space` and `herdr.tab` when it first shows a terminal and ignores a later change, and `terminal.park` followed by `terminal.keep` is not a way to move a tab: it drops the identity labels and files the tab in the focused space.
+`herdr-app commands` lists `tab.move` only for a position inside a space.
+Not measured: what the app does with a changed label when it next starts; the 2026-11-25 reboot returned a terminal with the labels it was born with, and the app showed it in the space they named.
 
 ### A Kiro secondmate on hc
 
