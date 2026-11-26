@@ -43,17 +43,26 @@ The terminal carries these labels:
 | `firstmate.task` | `fm-<id>` | Task identity checked before input or close. |
 | `firstmate.home` | `<hometag>` from `bin/fm-backend-hometag-lib.sh` | Keeps two homes with the same task id apart. |
 | `firstmate.home-path` | The absolute home directory | Lets the Herdr.app mod below read the task's `state/` records. |
-| `herdr.space` | `FM_HC_SPACE`, else the primary's own space, else `fm-<hometag>`; a secondmate's own home's space | Groups a home's tasks in one Herdr.app space. |
+| `herdr.space` | `FM_HC_SPACE`, else for a crewmate or scout `fm-p-<project>`, else for a secondmate the primary's own space, else `fm-<hometag>` | Groups a project's workers in one Herdr.app space, and the supervisors in another. |
 | `herdr.tab` | `<hometag>-fm-<id>` | One Herdr.app tab per task. |
 
-The primary's own space is the `herdr.space` label of the live hc terminal that `state/.primary-endpoint` names on the same session, so a Kiro primary running in Herdr.app gets its workers as tabs beside its own.
-A primary with no such terminal or label, or one in another core or app, gets one space per home, `fm-<hometag>`.
-A secondmate is a different home, so its terminal opens that home's own space, `fm-<secondmate hometag>`, whatever `FM_HC_SPACE` or the primary's space say; the secondmate's own workers then join it as tabs beside it, unless `FM_HC_SPACE` is set in the secondmate's own environment.
-Its identity labels stay those of the home that launched it, which owns its record.
+A crewmate or scout opens the space of its project, whichever home launched it.
+`<project>` is the folder name of the project directory the task starts in, so every worker of a project sits together, and a space with no worker left closes.
+A secondmate is a supervisor, so its terminal opens the primary's own space, where the supervisors sit.
+The primary's own space is the `herdr.space` label of the live hc terminal that `state/.primary-endpoint` names on the same session, so a Kiro primary running in Herdr.app gets its secondmates as tabs beside its own.
+A primary with no such terminal or label, or one in another core or app, gets one space per home, `fm-<hometag>`, for its secondmates.
+`FM_HC_SPACE` overrides all of this and puts every task of the environment that sets it in one space.
+A secondmate's identity labels stay those of the home that launched it, which owns its record.
+Its own crew are workers like any other, so they open their project spaces.
 
-On the `default` session, the one Herdr.app shows, the spawn then waits up to three seconds for the app to show the new tab and names the tab after the task (`<id>`) and the space after its home with `herdr-app do tab.rename` and `space.rename`: a secondmate home by its id, any other home by its folder name.
-A renamed space keeps its name while it exists; a per-home space closes with its last task, and the next spawn names it again.
-Only the new tab and its space are renamed: no other tab, terminal, or space is moved, renamed, or closed, and closing a task never closes the primary's tab.
+A terminal keeps the labels it was born with, so a relaunch that adopts a terminal applies the same rule to it again.
+It sets `herdr.space` and `herdr.tab` with `hc label` only when they differ, and never touches the identity labels, so a relaunch of a task that is already in place changes nothing.
+A terminal that is not the task's live one is left where it is.
+Terminals that are open when this rule changes are not moved; each one moves at its next relaunch, or at the next spawn of its task.
+
+On the `default` session, the one Herdr.app shows, the spawn or relaunch then waits up to three seconds for the app to show the tab and names the tab after the task (`<id>`) and the space with `herdr-app do tab.rename` and `space.rename`: a project space after its project, any other space after this home's folder name.
+A renamed space keeps its name while it exists; a space closes with its last task, and the next spawn names it again.
+Only the task's tab and its space are renamed: no other tab, terminal, or space is moved, renamed, or closed, and closing a task never closes the primary's tab.
 Naming is best effort: with no app, or no tab in time, the task starts with the app's own names and the spawn prints a warning ([verification](verification/runtime-backends.md#hc)).
 
 ```text
@@ -97,7 +106,7 @@ The away-mode daemon still supports only tmux and Herdr 1 supervisor panes and r
 - hc reports one foreground process per terminal.
   When that process is a launcher, the adapter also reads the rest of its process group from `ps`, which works only for terminals on the local machine.
 - Right after a terminal starts, `hc get` can report no foreground process yet, and agent state reads `unreadable` until the shell is up.
-- `bin/fm-control.sh` accepts the hc agent state as proof for `exit` and `relaunch`; a relaunch adopts a terminal whose agent ended, and refuses one that reads missing, because this plane does not recreate an hc terminal.
+- `bin/fm-control.sh` accepts the hc agent state as proof for `exit` and `relaunch`; a relaunch adopts a terminal whose agent ended and applies the placement rule to it, and refuses one that reads missing, because this plane does not recreate an hc terminal.
 - A worker inherits `HC_SESSION`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, and `HC_SCOPE` from its terminal, and the `config/launch-env-allowlist` floor keeps them; a Kiro scout launched by `bin/fm-spawn.sh` reported its native status to herdr-core, and other harnesses are not verified.
 - hc has no event stream this adapter consumes; supervision polls like tmux.
 

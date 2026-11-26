@@ -13,8 +13,10 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-hc-tests)
 
 # The stub answers `get` from <dir>/<address>.json (exit from <address>.exit,
 # 3 = not_found when no file exists), `ls` from <dir>/ls.json, `run` with
-# <dir>/run.json, and removes <address>.json on `rm` unless <dir>/rm-sticks
-# exists. Every call is logged with its HC_SESSION and HC_SOCKET.
+# <dir>/run.json, removes <address>.json on `rm` unless <dir>/rm-sticks
+# exists, and writes the labels of `label` into <address>.json unless
+# <dir>/label-fails exists. Every call is logged with its HC_SESSION and
+# HC_SOCKET.
 make_hc_fakebin() {  # <dir> -> echoes fakebin dir
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -41,6 +43,16 @@ case "$cmd" in
     cat "$D/$last.json"
     ;;
   rm) [ -e "$D/rm-sticks" ] || rm -f "$D/$last.json"; printf '{}\n' ;;
+  label)
+    [ ! -e "$D/label-fails" ] || exit 1
+    shift; [ "${1:-}" != --json ] || shift
+    addr=$1; shift
+    for kv in "$@"; do
+      jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.labels[$k] = $v' "$D/$addr.json" > "$D/$addr.tmp" \
+        && mv "$D/$addr.tmp" "$D/$addr.json"
+    done
+    printf '{}\n'
+    ;;
   read) if [ -f "$D/$last.screen" ]; then cat "$D/$last.screen"; else printf 'screen of %s\n' "$last"; fi ;;
   *) printf '{}\n' ;;
 esac
@@ -131,7 +143,7 @@ test_create_task_is_independent_labeled_and_refuses_duplicates() {
   tag=$(hometag_of)
   out=$(grep $'\x1frun\x1f' "$D/log")
   for want in HC_SESSION=fmtest --keep --no-parent --outlive-parent --no-notify $'--cwd\x1f/proj' \
-    "firstmate.task=fm-a1" "firstmate.home=$tag" "firstmate.home-path=$(cd "$HOMEDIR" && pwd -P)" "herdr.space=fm-$tag" "herdr.tab=$tag-fm-a1"; do
+    "firstmate.task=fm-a1" "firstmate.home=$tag" "firstmate.home-path=$(cd "$HOMEDIR" && pwd -P)" "herdr.space=fm-p-proj" "herdr.tab=$tag-fm-a1"; do
     assert_contains "$out" "$want" "hc run must carry $want"
   done
   [ ! -e "$D/app.log" ] || fail "a task on a session Herdr.app does not show must not call the app"
@@ -158,48 +170,75 @@ primary_endpoint() {
 
 app_calls() { cut -d $'\x1f' -f1-3 "$D/app.log" 2>/dev/null | grep -v '^ls' || true; }
 
-test_task_opens_as_a_named_tab_in_the_primarys_space() {
+# A crewmate or scout opens the space of its project, whichever space the
+# primary sits in, and the app names the tab after the task and the space after
+# the project.
+test_worker_opens_as_a_named_tab_in_its_projects_space() {
   local tag out
-  setup_case primary-space
+  setup_case project-space
   tag=$(hometag_of)
   primary_endpoint default:t1
   jq -n '{address: "t1", state: "live", labels: {"herdr.space": "sp9ba4", "herdr.tab": "tbprimary"}}' > "$D/t1.json"
   printf '{"address":"t9"}\n' > "$D/run.json"
-  app_ls_with sp9ba4 tbprimary "$tag-fm-a1"
+  app_ls_with fm-p-proj "$tag-fm-a1"
   echo 2 > "$D/app-late"
-  out=$(hc_shell 'fm_backend_hc_create_task default fm-a1 /proj' 2>&1)
+  out=$(hc_shell 'fm_backend_hc_create_task default fm-a1 /projects/proj' 2>&1)
   assert_equals "$out" t9 "create_task prints only the new address"
-  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=sp9ba4" "the task must join the primary's own space"
+  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=fm-p-proj" "the task must open its project's space"
+  assert_not_contains "$(grep $'\x1frun\x1f' "$D/log")" "sp9ba4" "the primary's space must not take a worker"
   assert_equals "$(app_calls)" \
-    "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-a1","name":"a1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"sp9ba4","name":"home"}' \
-    "once the app shows the tab, only the new tab and its space are renamed, after the task and the home"
+    "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-a1","name":"a1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"fm-p-proj","name":"proj"}' \
+    "once the app shows the tab, only the new tab and its space are renamed, after the task and the project"
   assert_not_contains "$(cat "$D/app.log")" tbprimary "the primary's own tab must never be touched"
-  pass "hc: a task opens as a tab named after it in the primary's space, named after the home"
+  pass "hc: a worker opens as a tab named after it in its project's space, named after the project"
 }
 
-test_without_a_primary_space_the_home_space_is_named_again_on_every_spawn() {
-  local tag
-  setup_case home-space
-  tag=$(hometag_of)
-  primary_endpoint default:t1
-  jq -n '{address: "t1", state: "live", labels: {}}' > "$D/t1.json"
+test_workers_of_one_project_share_a_space_from_every_home_and_whatever_the_primary_answers() {
+  local mate mate_tag
+  setup_case project-shared
+  mate="$D/mate"
+  mkdir -p "$mate/state"
+  mate_tag=$(HOMEDIR=$mate hometag_of)
   printf '{"address":"t9"}\n' > "$D/run.json"
-  app_ls_with "fm-$tag" "$tag-fm-a1"
-  hc_shell 'fm_backend_hc_create_task default fm-a1 /proj' >/dev/null 2>&1 || fail "create_task must succeed"
-  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=fm-$tag" "an unlabeled primary falls back to the home's own space"
+  hc_shell 'fm_backend_hc_create_task fmtest fm-a1 /projects/proj' >/dev/null 2>&1 || fail "create_task must succeed"
+  jq -n '{address: "t1", state: "live", labels: {"herdr.space": "sp9ba4"}}' > "$D/t1.json"
+  primary_endpoint fmtest:t1
+  hc_shell 'fm_backend_hc_create_task fmtest fm-a2 /projects/proj' >/dev/null 2>&1 || fail "create_task must succeed"
+  HOMEDIR=$mate hc_shell 'fm_backend_hc_create_task fmtest fm-c1 /elsewhere/proj' >/dev/null 2>&1 || fail "create_task must succeed"
+  assert_equals "$(grep $'\x1frun\x1f' "$D/log" | grep -c 'herdr.space=fm-p-proj')" 3 \
+    "the same project's workers share its space from any home, with or without a primary space"
+  assert_contains "$(grep $'\x1frun\x1f' "$D/log" | tail -1)" "firstmate.home=$mate_tag" "each worker keeps its own home's identity labels"
+  pass "hc: workers of one project share its space from every home"
+}
+
+test_project_space_id_is_a_valid_label_value() {
+  setup_case project-name
+  printf '{"address":"t9"}\n' > "$D/run.json"
+  hc_shell 'fm_backend_hc_create_task fmtest fm-a1 "/projects/my proj"' >/dev/null 2>&1 || fail "create_task must succeed"
+  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=fm-p-my-proj" "a project folder with a space still gets a plain space id"
+  pass "hc: a project space id is made of plain label characters"
+}
+
+test_a_reopened_project_space_is_named_again_on_every_spawn() {
+  local tag
+  setup_case project-space-again
+  tag=$(hometag_of)
+  printf '{"address":"t9"}\n' > "$D/run.json"
+  app_ls_with fm-p-proj "$tag-fm-a1"
+  hc_shell 'fm_backend_hc_create_task default fm-a1 /projects/proj' >/dev/null 2>&1 || fail "create_task must succeed"
   # The last task ended and its space closed; the next one names it again.
   : > "$D/app.log"
-  app_ls_with "fm-$tag" "$tag-fm-a2"
-  hc_shell 'fm_backend_hc_create_task default fm-a2 /proj' >/dev/null 2>&1 || fail "create_task must succeed"
-  assert_contains "$(app_calls)" "space.rename"$'\x1f''{"id":"fm-'"$tag"'","name":"home"}' "a reopened home space gets the home's name back"
+  app_ls_with fm-p-proj "$tag-fm-a2"
+  hc_shell 'fm_backend_hc_create_task default fm-a2 /projects/proj' >/dev/null 2>&1 || fail "create_task must succeed"
+  assert_contains "$(app_calls)" "space.rename"$'\x1f''{"id":"fm-p-proj","name":"proj"}' "a reopened project space gets the project's name back"
   assert_contains "$(app_calls)" '{"id":"'"$tag"'-fm-a2","name":"a2"}' "the new task's tab is named after it"
-  pass "hc: without a primary space the home's own space is named after the home on every spawn"
+  pass "hc: a project space is named after the project on every spawn"
 }
 
-# A secondmate is a different home: its terminal opens that home's own space
-# rather than the parent's, under the parent's identity labels, and the
-# secondmate's own crew then land in the same space.
-test_secondmate_opens_its_own_space_which_its_crew_join() {
+# A secondmate is a supervisor: it opens a tab in the primary's own space, the
+# bridge, under this home's identity labels. Its crew, started from its own
+# home, open their project spaces like any other worker.
+test_secondmate_opens_in_the_primarys_space_and_its_crew_in_their_projects() {
   local tag mate mate_tag run
   setup_case secondmate-space
   tag=$(hometag_of)
@@ -210,38 +249,120 @@ test_secondmate_opens_its_own_space_which_its_crew_join() {
   primary_endpoint default:t1
   jq -n '{address: "t1", state: "live", labels: {"herdr.space": "sp9ba4", "herdr.tab": "tbprimary"}}' > "$D/t1.json"
   printf '{"address":"t2"}\n' > "$D/run.json"
-  app_ls_with "fm-$mate_tag" "$tag-fm-sm1"
-  FM_HC_SPACE=elsewhere hc_shell 'fm_backend_hc_create_task default fm-sm1 "'"$mate"'" "'"$mate"'"' >/dev/null 2>&1 \
+  app_ls_with sp9ba4 "$tag-fm-sm1"
+  hc_shell 'fm_backend_hc_create_task default fm-sm1 "'"$mate"'" secondmate' >/dev/null 2>&1 \
     || fail "secondmate create_task must succeed"
   run=$(grep $'\x1frun\x1f' "$D/log")
   for want in $'--cwd\x1f'"$mate" "firstmate.task=fm-sm1" "firstmate.home=$tag" "firstmate.home-path=$(cd "$HOMEDIR" && pwd -P)" \
-    "herdr.space=fm-$mate_tag" "herdr.tab=$tag-fm-sm1"; do
+    "herdr.space=sp9ba4" "herdr.tab=$tag-fm-sm1"; do
     assert_contains "$run" "$want" "a secondmate's hc run must carry $want"
   done
-  assert_not_contains "$run" "herdr.space=sp9ba4" "a secondmate must not join the parent's space"
-  assert_not_contains "$run" "herdr.space=elsewhere" "the parent's FM_HC_SPACE must not move a secondmate"
   assert_equals "$(app_calls)" \
-    "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-sm1","name":"sm1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"fm-'"$mate_tag"'","name":"sm1"}' \
-    "the secondmate's tab and its space are both named after the secondmate"
+    "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-sm1","name":"sm1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"sp9ba4","name":"home"}' \
+    "the secondmate's tab is named after it and the bridge after the launching home"
+  assert_not_contains "$(cat "$D/app.log")" tbprimary "the primary's own tab must never be touched"
   : > "$D/log"
-  : > "$D/app.log"
-  jq -n --arg s "fm-$mate_tag" '{address: "t2", state: "live", labels: {"herdr.space": $s}}' > "$D/t2.json"
-  printf 'schema=fm-primary-endpoint.v1\nharness=kiro-cli\nbackend=hc\ntarget=default:t2\n' > "$mate/state/.primary-endpoint"
   printf '{"address":"t3"}\n' > "$D/run.json"
-  app_ls_with "fm-$mate_tag" "$mate_tag-fm-c1"
-  HOMEDIR=$mate hc_shell 'fm_backend_hc_create_task default fm-c1 /proj' >/dev/null 2>&1 || fail "crew create_task must succeed"
+  FM_HC_SPACE=elsewhere hc_shell 'fm_backend_hc_create_task fmtest fm-sm2 "'"$mate"'" secondmate' >/dev/null 2>&1 \
+    || fail "secondmate create_task must succeed"
+  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=elsewhere" "FM_HC_SPACE pins a secondmate too"
+  : > "$D/log"
+  rm -f "$HOMEDIR/state/.primary-endpoint"
+  hc_shell 'fm_backend_hc_create_task fmtest fm-sm3 "'"$mate"'" secondmate' >/dev/null 2>&1 \
+    || fail "secondmate create_task must succeed"
+  assert_contains "$(grep $'\x1frun\x1f' "$D/log")" "herdr.space=fm-$tag" "with no primary space the bridge is the home's own space"
+  : > "$D/log"
+  printf '{"address":"t4"}\n' > "$D/run.json"
+  HOMEDIR=$mate hc_shell 'fm_backend_hc_create_task fmtest fm-c1 /projects/proj' >/dev/null 2>&1 || fail "crew create_task must succeed"
   run=$(grep $'\x1frun\x1f' "$D/log")
-  assert_contains "$run" "herdr.space=fm-$mate_tag" "the secondmate's crew must join its space"
+  assert_contains "$run" "herdr.space=fm-p-proj" "the secondmate's crew open their project's space"
   assert_contains "$run" "firstmate.home=$mate_tag" "the secondmate's crew carry the secondmate's own labels"
-  assert_contains "$(app_calls)" "space.rename"$'\x1f''{"id":"fm-'"$mate_tag"'","name":"sm1"}' "the crew keep the secondmate's space name"
-  pass "hc: a secondmate opens its own space under this home's labels, and its crew join that space"
+  pass "hc: a secondmate opens a tab in the primary's space, and its crew open their project spaces"
+}
+
+# A relaunch adopts the terminal whose agent ended; the terminal keeps the
+# labels it was born with, so the rule is applied to it again.
+test_place_moves_an_adopted_terminal_to_the_rule_and_then_leaves_it() {
+  local tag out
+  setup_case place
+  tag=$(hometag_of)
+  write_terminal "$D" t4 live fm-a1 "$tag" zsh /bin/zsh
+  jq '.labels["herdr.space"] = "fm-old" | .labels["herdr.tab"] = "old-tab"' "$D/t4.json" > "$D/t4.tmp" && mv "$D/t4.tmp" "$D/t4.json"
+  hc_shell 'fm_backend_hc_place fmtest:t4 fm-a1 /projects/proj' || fail "place must succeed"
+  out=$(jq -c '.labels' "$D/t4.json")
+  assert_equals "$out" \
+    '{"firstmate.task":"fm-a1","firstmate.home":"'"$tag"'","herdr.space":"fm-p-proj","herdr.tab":"'"$tag"'-fm-a1"}' \
+    "the adopted terminal ends with the rule's space and tab and its identity labels untouched"
+  : > "$D/log"
+  hc_shell 'fm_backend_hc_place fmtest:t4 fm-a1 /projects/proj' || fail "a second place must succeed"
+  assert_not_contains "$(cat "$D/log")" $'\x1flabel\x1f' "a terminal already in place is not relabeled"
+  assert_equals "$out" "$(jq -c '.labels' "$D/t4.json")" "placing twice ends where placing once did"
+  [ ! -e "$D/app.log" ] || fail "a session Herdr.app does not show must not call the app"
+  pass "hc: place applies the rule to an adopted terminal once and then leaves it alone"
+}
+
+test_place_names_the_adopted_tab_and_space_in_the_app() {
+  local tag
+  setup_case place-names
+  tag=$(hometag_of)
+  write_terminal "$D" t4 live fm-a1 "$tag" zsh /bin/zsh
+  jq '.labels["herdr.space"] = "fm-old"' "$D/t4.json" > "$D/t4.tmp" && mv "$D/t4.tmp" "$D/t4.json"
+  app_ls_with fm-p-proj "$tag-fm-a1"
+  hc_shell 'fm_backend_hc_place default:t4 fm-a1 /projects/proj' >/dev/null 2>&1 || fail "place must succeed"
+  assert_equals "$(app_calls)" \
+    "do"$'\x1f'"tab.rename"$'\x1f''{"id":"'"$tag"'-fm-a1","name":"a1"}'$'\n'"do"$'\x1f'"space.rename"$'\x1f''{"id":"fm-p-proj","name":"proj"}' \
+    "the adopted tab and its project space are named like a new task's"
+  pass "hc: place names an adopted tab and its project space in Herdr.app"
+}
+
+test_place_puts_an_adopted_secondmate_in_the_bridge() {
+  local tag mate
+  setup_case place-secondmate
+  tag=$(hometag_of)
+  mate="$D/mate"
+  mkdir -p "$mate"
+  primary_endpoint fmtest:t1
+  jq -n '{address: "t1", state: "live", labels: {"herdr.space": "sp9ba4"}}' > "$D/t1.json"
+  write_terminal "$D" t4 live fm-sm1 "$tag" zsh /bin/zsh
+  jq '.labels["herdr.space"] = "fm-2ndmate-old"' "$D/t4.json" > "$D/t4.tmp" && mv "$D/t4.tmp" "$D/t4.json"
+  hc_shell 'fm_backend_hc_place fmtest:t4 fm-sm1 "'"$mate"'" secondmate' || fail "place must succeed"
+  assert_equals "$(jq -r '.labels["herdr.space"]' "$D/t4.json")" sp9ba4 "an adopted secondmate moves to the primary's space"
+  pass "hc: place moves an adopted secondmate into the primary's space"
+}
+
+test_place_never_touches_a_terminal_that_is_not_the_tasks_own() {
+  local tag out
+  setup_case place-foreign
+  tag=$(hometag_of)
+  write_terminal "$D" t3 live fm-other "$tag" zsh /bin/zsh
+  write_terminal "$D" t4 live fm-a1 other-home zsh /bin/zsh
+  write_terminal "$D" t5 finished fm-a1 "$tag" "" ""
+  for t in t3 t4 t5 t6; do
+    out=$(hc_shell 'fm_backend_hc_place fmtest:'"$t"' fm-a1 /projects/proj' 2>&1) || fail "place must not fail the relaunch for $t"
+    assert_contains "$out" "keeps its place" "a terminal that is not the task's live one is reported and left"
+  done
+  assert_not_contains "$(cat "$D/log")" $'\x1flabel\x1f' "no label may reach another task's, another home's, a finished or an absent terminal"
+  pass "hc: place leaves another task's, another home's, a finished and an absent terminal alone"
+}
+
+test_place_that_cannot_label_warns_and_does_not_fail() {
+  local tag out
+  setup_case place-label-fails
+  tag=$(hometag_of)
+  write_terminal "$D" t4 live fm-a1 "$tag" zsh /bin/zsh
+  touch "$D/label-fails"
+  out=$(hc_shell 'fm_backend_hc_place default:t4 fm-a1 /projects/proj' 2>&1) || fail "a refused label must not fail the relaunch"
+  assert_contains "$out" "keeps its place" "a refused label is reported"
+  assert_equals "$(app_calls)" "" "nothing is renamed for a terminal that was not moved"
+  pass "hc: place warns and goes on when hc refuses the labels"
 }
 
 # fm-spawn.sh end to end against the stub: a --secondmate spawn on hc is
-# accepted, opens the secondmate home's space under this home's labels, and
-# stages a launch that runs in the secondmate home.
-test_secondmate_spawn_lands_in_its_home_on_hc() {
-  local id="hcsm$$" mate mate_abs tag mate_tag out rc=0 run meta launch staged
+# accepted, opens a tab in the primary's space (here the home's own space, for
+# lack of a primary) under this home's labels, and stages a launch that runs in
+# the secondmate home.
+test_secondmate_spawn_lands_in_the_bridge_on_hc() {
+  local id="hcsm$$" mate mate_abs tag out rc=0 run meta launch staged
   setup_case spawn-secondmate
   mate="$D/mate"
   mkdir -p "$mate/bin" "$mate/data" "$HOMEDIR/state" "$HOMEDIR/data" "$HOMEDIR/config"
@@ -255,7 +376,6 @@ test_secondmate_spawn_lands_in_its_home_on_hc() {
   printf '#!/bin/sh\nexit 0\n' > "$FB/treehouse"
   chmod +x "$FB/treehouse"
   tag=$(FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT bash -c '. "'"$FM_TEST_ROOT"'/bin/fm-backend.sh"; fm_backend_source hc; fm_backend_hometag')
-  mate_tag=$(HOMEDIR=$mate hometag_of)
   printf '{"address":"t9"}\n' > "$D/run.json"
   jq -n --arg t "fm-$id" --arg h "$tag" '{address: "t9", state: "live", labels: {"firstmate.task": $t, "firstmate.home": $h}, cwd: "/start"}' > "$D/t9.json"
   out=$(FAKE_HC_DIR=$D PATH="$FB:$PATH" FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT HC_SESSION=fmtest \
@@ -268,14 +388,53 @@ test_secondmate_spawn_lands_in_its_home_on_hc() {
   expect_code 0 "$rc" "a --secondmate spawn on hc must succeed"$'\n'"$out"
   assert_equals yes "$staged" "the staged launch must run in the secondmate home"
   run=$(grep $'\x1frun\x1f' "$D/log")
-  for want in $'--cwd\x1f'"$mate_abs" "firstmate.task=fm-$id" "firstmate.home=$tag" "herdr.space=fm-$mate_tag"; do
+  for want in $'--cwd\x1f'"$mate_abs" "firstmate.task=fm-$id" "firstmate.home=$tag" "herdr.space=fm-$tag"; do
     assert_contains "$run" "$want" "the secondmate's hc run must carry $want"
   done
   meta="$HOMEDIR/state/$id.meta"
   for want in kind=secondmate backend=hc hc_session=fmtest hc_terminal=t9 "home=$mate_abs"; do
     assert_contains "$(cat "$meta")" "$want" "the secondmate's record must carry $want"
   done
-  pass "hc: fm-spawn --secondmate opens the secondmate home's space and launches it there"
+  pass "hc: fm-spawn --secondmate opens a tab in the bridge space and launches it in its home"
+}
+
+# fm-spawn.sh --relaunch end to end against the stub: the terminal a relaunch
+# adopts comes out in the space of its project, which is where the task would
+# open today, whatever space it was born in.
+test_relaunch_that_adopts_a_terminal_places_it_in_its_project_space() {
+  local id="hcrl$$" proj wt tag out rc=0
+  setup_case relaunch-place
+  proj="$D/projects/proj"
+  wt="$D/wt"
+  fm_git_worktree "$proj" "$wt" "task-$id"
+  mkdir -p "$HOMEDIR/state" "$HOMEDIR/data/$id" "$HOMEDIR/config"
+  printf '# Task\n## Captain'"'"'s intent\nRelaunch placement.\n\n## Firstmate spec\nKeep the task.\n' > "$HOMEDIR/data/$id/brief.md"
+  tag=$(FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT bash -c '. "'"$FM_TEST_ROOT"'/bin/fm-backend.sh"; fm_backend_source hc; fm_backend_hometag')
+  {
+    echo "window=fmtest:t9"
+    echo "endpoint_task_id=$id"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=scout"
+    echo "mode=scout"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-$id"
+    echo "backend=hc"
+    echo "hc_session=fmtest"
+    echo "hc_terminal=t9"
+  } > "$HOMEDIR/state/$id.meta"
+  write_terminal "$D" t9 live "fm-$id" "$tag" zsh /bin/zsh
+  jq --arg wt "$wt" '.labels["herdr.space"] = "fm-old" | .labels["herdr.tab"] = "old-tab" | .foreground.cwd = $wt' "$D/t9.json" > "$D/t9.tmp" \
+    && mv "$D/t9.tmp" "$D/t9.json"
+  out=$(FAKE_HC_DIR=$D PATH="$FB:$PATH" FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT HC_SESSION=fmtest \
+    FM_SPAWN_NO_GUARD=1 "$FM_TEST_ROOT/bin/fm-spawn.sh" "$id" --relaunch --harness "sh -c 'sleep 60'" 2>&1) || rc=$?
+  rm -rf "/tmp/fm-$id" "/tmp/fm-$id+"*
+  expect_code 0 "$rc" "a relaunch that adopts an hc terminal must succeed"$'\n'"$out"
+  assert_equals "$(jq -c '.labels | [.["herdr.space"], .["herdr.tab"]]' "$D/t9.json")" \
+    '["fm-p-proj","'"$tag"'-fm-'"$id"'"]' "the adopted terminal must come out in its project's space"
+  assert_not_contains "$(cat "$D/log")" $'\x1frun\x1f' "a relaunch adopts the terminal and must not start another"
+  pass "hc: fm-spawn --relaunch applies the placement rule to the terminal it adopts"
 }
 
 test_naming_is_best_effort_and_never_blocks_the_task() {
@@ -583,10 +742,18 @@ test_control_can_prove_an_hc_agent_stopped() {
 
 test_hc_is_spawn_capable_and_its_marker_alone_never_selects_it
 test_create_task_is_independent_labeled_and_refuses_duplicates
-test_task_opens_as_a_named_tab_in_the_primarys_space
-test_without_a_primary_space_the_home_space_is_named_again_on_every_spawn
-test_secondmate_opens_its_own_space_which_its_crew_join
-test_secondmate_spawn_lands_in_its_home_on_hc
+test_worker_opens_as_a_named_tab_in_its_projects_space
+test_workers_of_one_project_share_a_space_from_every_home_and_whatever_the_primary_answers
+test_project_space_id_is_a_valid_label_value
+test_a_reopened_project_space_is_named_again_on_every_spawn
+test_secondmate_opens_in_the_primarys_space_and_its_crew_in_their_projects
+test_place_moves_an_adopted_terminal_to_the_rule_and_then_leaves_it
+test_place_names_the_adopted_tab_and_space_in_the_app
+test_place_puts_an_adopted_secondmate_in_the_bridge
+test_place_never_touches_a_terminal_that_is_not_the_tasks_own
+test_place_that_cannot_label_warns_and_does_not_fail
+test_secondmate_spawn_lands_in_the_bridge_on_hc
+test_relaunch_that_adopts_a_terminal_places_it_in_its_project_space
 test_naming_is_best_effort_and_never_blocks_the_task
 test_control_interrupt_delivers_the_harness_keys
 test_foreign_or_unlabeled_terminal_gets_no_input_and_no_close
