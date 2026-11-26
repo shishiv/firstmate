@@ -88,5 +88,9 @@ fm_primary_launch_publish() {
     printf 'root=%s\n' "$root"
     printf 'home=%s\n' "$home"
     printf 'written=%s\n' "$(date +%s)"
-  } > "$tmp" && mv -f "$tmp" "$path" || { rm -f "$tmp"; return 1; }
+  } > "$tmp"
+  if ! mv -f "$tmp" "$path"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }

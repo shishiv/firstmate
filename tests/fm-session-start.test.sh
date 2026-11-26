@@ -1226,6 +1226,7 @@ EOF
 
 test_primary_launch_command_round_trips_the_launch_argv() {
   local w holder_pid command wordcount record
+  local -a words
   w="$TMP_ROOT/primary-launch-argv"
   mkdir -p "$w/state"
   # A process whose argv has a space and a quote in it.
@@ -1233,10 +1234,10 @@ test_primary_launch_command_round_trips_the_launch_argv() {
   holder_pid=$!
   printf '%s\n' "$holder_pid" > "$w/state/.lock"
   command=$(bash -c '. "$0/bin/fm-primary-launch-lib.sh"; fm_primary_launch_command "$1"' "$ROOT" "$holder_pid")
-  eval "set -- $command"
-  wordcount=$#
+  eval "words=($command)"
+  wordcount=${#words[@]}
   [ "$wordcount" = 5 ] || fail "the record must keep every argv word, got $wordcount from: $command"
-  assert_equals "$1|$2|$3|$4|$5" "bash|-c|sleep 300; :|two words|it's" "the quoted line must round-trip to the exact argv"
+  assert_equals "${words[0]}|${words[1]}|${words[2]}|${words[3]}|${words[4]}" "bash|-c|sleep 300; :|two words|it's" "the quoted line must round-trip to the exact argv"
   FM_SUPERVISOR_BACKEND=hc FM_SUPERVISOR_TARGET=default:t5 \
     bash -c '. "$0/bin/fm-primary-launch-lib.sh"; fm_primary_launch_publish "$1" /root /home pi' "$ROOT" "$w/state" \
     || fail "a live lock pid with a discoverable terminal must publish"
