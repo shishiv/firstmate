@@ -43,7 +43,7 @@ FM_WORKER_BOOT_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=bin/fm-meta-lib.sh
 . "$FM_WORKER_BOOT_LIB_DIR/fm-meta-lib.sh"
 
-FM_WORKER_BOOT_NOTE='The machine restarted and your terminal came back holding only a shell, so this is a replacement agent in the same local copy. Your instructions, the copy with every uncommitted change, and your status log are exactly as you left them. Read the last lines of your status log and `git status`, then carry on from where you stopped. Do not start the task over.'
+FM_WORKER_BOOT_NOTE='The machine restarted and your terminal came back holding only a shell, so this is a replacement agent in the same local copy. Your instructions, the copy with every uncommitted change, and your status log are exactly as you left them. Read the last lines of your status log and run git status, then carry on from where you stopped. Do not start the task over.'
 
 fm_worker_boot_ledger_path() {  # <id>
   case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
