@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), its [Kiro account pool](#kiro-account-pool-configkiro-account-pool), the [supervisor's account on Pi](#the-supervisors-account-on-pi), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), [worker memory scope](#worker-memory-scope-configworker-memory-high), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
+| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account-configkiro-account), its [Kiro account pool](#kiro-account-pool-configkiro-account-pool), its [Kiro engine reuse](#kiro-engine-reuse-configkiro-engine-reflink), the [supervisor's account on Pi](#the-supervisors-account-on-pi), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), [worker memory scope](#worker-memory-scope-configworker-memory-high), and [Kiro worker oracle](#kiro-worker-oracle-configkiro-oracle) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [record export](#record-export-configrecord-export-root), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [warm-cache compaction](#warm-cache-compaction-configwarm-compact), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1548,6 +1548,15 @@ XDG_DATA_HOME="$root" kiro-cli whoami
 Each home that should spend that account then names the root in its own `config/kiro-account`, for example `/home/me/.local/share-kiro-<account>`.
 Several homes can each hold a different account this way, and a home without the file keeps the ordinary login.
 A new entry later added to `~/.local/share` needs its link added to each root.
+
+### Kiro engine reuse (config/kiro-engine-reflink)
+
+Kiro extracts its engine into the `KIRO_DATA_DIR` it is given, about 430 MB of `bun`, `node`, `tui.js`, and the `kas` payload, and each ship and scout is given its own under `state/<id>.kiro-home/data`, so every task and relaunch re-extracts it.
+When `config/kiro-engine-reflink` exists, `bin/fm-spawn.sh` first clones that engine from the ordinary login's `~/.local/share/kiro-cli` into the task's data directory with copy-on-write, `.sha256` files included, so the blocks are shared instead of repeated.
+`FM_KIRO_ENGINE_SOURCE` names another source directory.
+A source that is absent, or a filesystem that cannot clone (anything but btrfs, XFS with reflink, and APFS), seeds nothing and prints one warning; Kiro then extracts as it always did.
+Cloning does not change what `du` reports, since it counts shared blocks once per file; read the saving with `btrfs filesystem du -s --human-readable state/<id>.kiro-home/data`, whose `Exclusive` column is the new disk use.
+Whether Kiro skips its own extraction when the hashes already match is Kiro's decision and is not assumed: compare the `Exclusive` figure of one task spawned with the file against one spawned without it, and delete the file if they match, since Kiro then writes over the clones.
 
 ### Kiro account pool (config/kiro-account-pool)
 

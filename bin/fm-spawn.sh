@@ -7657,6 +7657,11 @@ kiro-cli)
       exclude_path "$(fm_kiro_v3_oracle_relpath "$ID")"
     fi
   fi
+  # An opted-in home shares the ordinary login's extracted engine with every
+  # task's own KIRO_DATA_DIR (bin/fm-kiro-lib.sh's fm_kiro_seed_engine owns it).
+  if [ -e "$CONFIG/kiro-engine-reflink" ] && ! fm_kiro_seed_engine "$KIRO_HOME_DIR"; then
+    echo "warning: config/kiro-engine-reflink is set but $ID's Kiro data directory could not be seeded with the shared engine (no source, or this filesystem cannot clone); Kiro extracts its own as before" >&2
+  fi
   printf '%s\n' "$KIRO_TURNEND_TOKEN" >"$STATE_REAL/$ID.kiro-turnend-token"
   exclude_path '.fm-kiro-turnend'
   LAUNCH=${LAUNCH//__KIROTASK__/"$(fm_shell_quote "$ID")"}
