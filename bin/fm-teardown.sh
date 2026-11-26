@@ -4352,7 +4352,8 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
   "$STATE/$ID.polytoken-busy.sh" "$STATE/$ID.kirocrew-slot" \
   "$STATE/.$ID.branch-outcome-index" "$STATE/$ID.unclosed-relay" \
   "$STATE/.secondmate-relaunch-$ID" "$STATE/.secondmate-relaunch-bound-$ID" \
-  "$STATE/.secondmate-parked-$ID"
+  "$STATE/.secondmate-parked-$ID" \
+  "$STATE/.worker-boot-relaunch-$ID"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.

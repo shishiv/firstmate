@@ -352,7 +352,7 @@ family_for_basename() {
     fm-backlog-atomicity.test.sh|\
     fm-bootstrap.test.sh|fm-bootstrap-network-parallel.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
     fm-prior-sessions.test.sh|fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
-    fm-tangle-guard.test.sh|fm-update.test.sh)
+    fm-tangle-guard.test.sh|fm-update.test.sh|fm-worker-boot.test.sh)
       printf '%s\n' session-bootstrap
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|\
@@ -966,6 +966,7 @@ tests/fm-watch-wedge-cap-live.test.sh 74
 tests/fm-watcher-lock.test.sh 72022
 tests/fm-worker-account-live-e2e.test.sh 3179
 tests/fm-worker-account.test.sh 37445
+tests/fm-worker-boot.test.sh 20000
 tests/fm-worker-memory-scope.test.sh 300
 tests/fm-worker-shell-live-e2e.test.sh 50
 tests/fm-backlog-pruner.test.sh 3306
@@ -1642,7 +1643,7 @@ families_for_changed_path() {
       ;;
     bin/fm-session-start.sh|bin/fm-fleet-sync.sh|\
     bin/fm-sessionstart-nudge.sh|bin/fm-startup-network.sh|bin/fm-tangle*|bin/fm-update.sh|\
-    bin/fm-gate-refuse*|bin/fm-lock*)
+    bin/fm-gate-refuse*|bin/fm-lock*|bin/fm-worker-boot*)
       printf '%s\n' session-bootstrap
       ;;
     bin/fm-bootstrap.sh)
