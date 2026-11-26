@@ -30,6 +30,9 @@
 #                       mutating step runs.
 #   1b. home role    - the resolved firstmate-repository role line
 #                      (bin/fm-role.sh report), purely local, no network.
+#                      A locked, non-secondmate start also records how this
+#                      primary was launched in state/.primary-launch
+#                      (bin/fm-primary-launch-lib.sh).
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
 #                       diagnostics always run. Bootstrap's seven MUTATING sweeps
@@ -367,6 +370,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-primary-launch-lib.sh
+. "$SCRIPT_DIR/fm-primary-launch-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-public-followup-lib.sh
@@ -737,6 +742,11 @@ if [ "$READ_ONLY" -eq 0 ]; then
   # session-start result. A context re-emit is not another session start.
   if [ "$REEMIT" -eq 0 ]; then
     "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
+    # The lock holder of a primary home records how it was launched, for
+    # whatever restarts it after a reboot (bin/fm-primary-launch-lib.sh owns
+    # the record). Best effort for the same reason; a secondmate is no primary.
+    [ -f "$FM_HOME/.fm-secondmate-home" ] \
+      || fm_primary_launch_publish "$STATE" "$FM_ROOT" "$FM_HOME" "$PRIMARY_HARNESS" || true
   fi
   # Every network call and the potentially slow inactive-outcome startup scan
   # are launched HERE, detached and bounded, so they run concurrently with the

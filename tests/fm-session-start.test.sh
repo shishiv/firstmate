@@ -1156,6 +1156,103 @@ SH
   pass "session start: configured and auto-detected Herdr homes never require tmux"
 }
 
+# --- the primary's launch record ---------------------------------------------
+# The one session that holds the fleet lock records how it was launched in
+# state/.primary-launch (bin/fm-primary-launch-lib.sh owns the record), so
+# whatever restarts the primary after a reboot knows its harness, terminal, and
+# command whatever the harness is.
+
+test_session_start_records_how_the_primary_was_launched() {
+  local rec root home fakebin out record
+  rec=$(new_world primary-launch)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  out=$(FM_SUPERVISOR_BACKEND=hc FM_SUPERVISOR_TARGET=default:t1vk FM_FAKE_HARNESS_PID=$$ \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "SESSION START - $home" "the real session start did not run"
+  record="$home/state/.primary-launch"
+  assert_present "$record" "a locked session start must record how the primary was launched"
+  assert_grep 'schema=fm-primary-launch.v1' "$record" "the record names its schema"
+  assert_grep 'harness=claude' "$record" "the record names the primary's harness"
+  assert_grep 'backend=hc' "$record" "the record names the primary's backend"
+  assert_grep 'target=default:t1vk' "$record" "the record names the primary's terminal"
+  assert_grep "pid=$$" "$record" "the record names the lock holder's pid"
+  assert_grep "home=$home" "$record" "the record names the home"
+  assert_grep "root=$root" "$record" "the record names the code root"
+  assert_grep "command='" "$record" "the record carries the launch command as quoted words"
+  [ "$(grep -c '' "$record")" = 9 ] || fail "the record is exactly nine lines: $(cat "$record")"
+  [ "$(find "$home/state" -maxdepth 1 -name '.primary-launch.*' | wc -l)" = 0 ] \
+    || fail "the atomic write must leave no temporary file behind"
+  pass "session start: the lock holder records its harness, terminal, and launch command"
+}
+
+test_session_start_leaves_the_launch_record_alone_when_it_is_not_the_primary() {
+  local rec root home fakebin holder_pid before
+  rec=$(new_world primary-launch-readonly)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'schema=fm-primary-launch.v1\nharness=pi\nbackend=hc\ntarget=default:t1vk\n' > "$home/state/.primary-launch"
+  before=$(cksum < "$home/state/.primary-launch")
+  # Another live session holds the lock, so this one is read-only.
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+  FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=other:0 \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >/dev/null 2>&1 || true
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  [ "$(cksum < "$home/state/.primary-launch")" = "$before" ] \
+    || fail "a read-only session must never overwrite the real primary's launch record"
+
+  # A secondmate home is not a primary and records nothing.
+  rec=$(new_world primary-launch-secondmate)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'design\n' > "$home/.fm-secondmate-home"
+  FM_SUPERVISOR_BACKEND=hc FM_SUPERVISOR_TARGET=default:t9 FM_FAKE_HARNESS_PID=$$ \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >/dev/null 2>&1 || true
+  assert_absent "$home/state/.primary-launch" "a secondmate home must not record a primary launch"
+  pass "session start: a read-only session and a secondmate home never write the launch record"
+}
+
+test_primary_launch_command_round_trips_the_launch_argv() {
+  local w holder_pid command wordcount record
+  w="$TMP_ROOT/primary-launch-argv"
+  mkdir -p "$w/state"
+  # A process whose argv has a space and a quote in it.
+  bash -c 'sleep 300; :' 'two words' "it's" &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$w/state/.lock"
+  command=$(bash -c '. "$0/bin/fm-primary-launch-lib.sh"; fm_primary_launch_command "$1"' "$ROOT" "$holder_pid")
+  eval "set -- $command"
+  wordcount=$#
+  [ "$wordcount" = 5 ] || fail "the record must keep every argv word, got $wordcount from: $command"
+  assert_equals "$1|$2|$3|$4|$5" "bash|-c|sleep 300; :|two words|it's" "the quoted line must round-trip to the exact argv"
+  FM_SUPERVISOR_BACKEND=hc FM_SUPERVISOR_TARGET=default:t5 \
+    bash -c '. "$0/bin/fm-primary-launch-lib.sh"; fm_primary_launch_publish "$1" /root /home pi' "$ROOT" "$w/state" \
+    || fail "a live lock pid with a discoverable terminal must publish"
+  record="$w/state/.primary-launch"
+  assert_grep 'harness=pi' "$record" "the record names the harness it was given"
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  cp "$record" "$w/before"
+  if FM_SUPERVISOR_BACKEND=hc FM_SUPERVISOR_TARGET=default:t5 \
+    bash -c '. "$0/bin/fm-primary-launch-lib.sh"; fm_primary_launch_publish "$1" /root /home pi' "$ROOT" "$w/state"; then
+    fail "a lock pid that is no longer a live process must not publish"
+  fi
+  cmp -s "$w/before" "$record" || fail "a refused publish must leave the earlier record untouched"
+  pass "primary launch record: the command round-trips its argv, and a dead lock pid publishes nothing"
+}
+
 # --- status tail bounding -----------------------------------------------------
 
 test_status_tail_bounding() {
@@ -3185,5 +3282,8 @@ test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh
 test_agents_baseline_requires_sha256_and_successful_completion
 test_reemit_keeps_repair_ownership_with_the_lock_holder
+test_primary_launch_command_round_trips_the_launch_argv
+test_session_start_records_how_the_primary_was_launched
+test_session_start_leaves_the_launch_record_alone_when_it_is_not_the_primary
 
 echo "# fm-session-start.test.sh: all assertions passed"
