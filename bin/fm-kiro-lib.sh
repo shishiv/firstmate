@@ -530,20 +530,27 @@ fm_kiro_build_task_home() {  # <kiro-home> <v2-agent-name-or-empty> <turn-end-pa
 # Kiro finds it empty and returns 1 without writing anything, so a launch is
 # never slowed by a full copy that would save nothing. Each payload lands before
 # its .sha256, so a hash file never names a file that is not there yet.
+FM_KIRO_ENGINE_ITEMS='bun bun.sha256 node node.sha256 tui.js tui.js.sha256 kas'
+
 fm_kiro_seed_engine() {
   local home=$1 src=${2:-${FM_KIRO_ENGINE_SOURCE:-${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli}} data item
   data="$home/data"
   [ -d "$src" ] && [ -d "$home" ] || return 1
   [ -f "$src/bun" ] && [ -f "$src/node" ] && [ -f "$src/tui.js" ] || return 1
   mkdir -p "$data" || return 1
-  for item in bun bun.sha256 node node.sha256 tui.js tui.js.sha256 kas; do
+  for item in $FM_KIRO_ENGINE_ITEMS; do
     [ -e "$src/$item" ] || continue
     if ! fm_kiro_clone "$src/$item" "$data/$item"; then
-      for item in bun bun.sha256 node node.sha256 tui.js tui.js.sha256 kas; do
-        rm -rf -- "${data:?}/$item"
-      done
+      fm_kiro_unseed_engine "$data"
       return 1
     fi
+  done
+}
+
+fm_kiro_unseed_engine() {  # <kiro-data-dir>
+  local item
+  for item in $FM_KIRO_ENGINE_ITEMS; do
+    rm -rf -- "${1:?}/$item"
   done
 }
 
