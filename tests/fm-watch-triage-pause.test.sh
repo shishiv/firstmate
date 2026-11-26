@@ -1424,13 +1424,16 @@ test_an_unchanged_pause_logs_one_absorb_line_not_one_per_poll() {
   lines=$(grep -cF 'absorbed stale (paused until' "$state/.watch-triage.log")
   [ "$lines" = 1 ] || fail "a restart inside the same pause must not log it again, got $lines"
 
-  # The declared time passes: the pause now has another detail and logs it once.
-  printf 'paused: rate limit resets, until %s, then resuming\n' "$(iso_utc_at "$(( $(date +%s) - 30 ))")" > "$state/until.status"
+  # The wait is replaced by one with no declared time: another detail, logged once.
+  printf 'paused: waiting on the release\n' > "$state/until.status"
   printf '%s' "$(seen_sig "$state/until.status")" > "$state/.seen-until_status"
   FM_WATCH_HANDLING_SUCCESSOR=1 until_watch "$dir" 240
-  wait_for_exit "$UNTIL_PID" 100 \
-    || { reap "$UNTIL_PID"; fail "a declared time that passed was not rechecked: $(cat "$dir/watch.out")"; }
-  lines=$(grep -cF 'absorbed stale (paused, declared time reached' "$state/.watch-triage.log")
+  for i in 1 2 3 4 5; do
+    wait_poll_cycle "$state" "$UNTIL_PID" \
+      || { reap "$UNTIL_PID"; fail "the watcher stopped on the replacement wait: $(cat "$dir/watch.out")"; }
+  done
+  reap "$UNTIL_PID"
+  lines=$(grep -cF 'absorbed stale (paused, awaiting external' "$state/.watch-triage.log")
   [ "$lines" = 1 ] || fail "a pause that changed detail must log its new detail once, got $lines"
   [ "$(grep -c 'absorbed stale' "$state/.watch-triage.log")" = 2 ] \
     || fail "the log must hold one line per detail, got: $(cat "$state/.watch-triage.log")"
