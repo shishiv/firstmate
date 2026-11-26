@@ -1413,8 +1413,9 @@ test_an_unchanged_pause_logs_one_absorb_line_not_one_per_poll() {
   [ "$(cat "$state/.paused-$key")" = 'paused until a declared time' ] \
     || fail "the pause marker must record the detail the line was written for"
 
-  # A watcher restart inside the same pause adds nothing either.
-  until_watch "$dir" 240
+  # A watcher restart inside the same pause adds nothing either. A successor arm
+  # keeps to the poll loop instead of re-announcing the previous round's downtime.
+  FM_WATCH_HANDLING_SUCCESSOR=1 until_watch "$dir" 240
   for i in 1 2 3; do
     wait_poll_cycle "$state" "$UNTIL_PID" \
       || { reap "$UNTIL_PID"; fail "the restarted watcher stopped: $(cat "$dir/watch.out")"; }
@@ -1426,7 +1427,7 @@ test_an_unchanged_pause_logs_one_absorb_line_not_one_per_poll() {
   # The declared time passes: the pause now has another detail and logs it once.
   printf 'paused: rate limit resets, until %s, then resuming\n' "$(iso_utc_at "$(( $(date +%s) - 30 ))")" > "$state/until.status"
   printf '%s' "$(seen_sig "$state/until.status")" > "$state/.seen-until_status"
-  until_watch "$dir" 240
+  FM_WATCH_HANDLING_SUCCESSOR=1 until_watch "$dir" 240
   wait_for_exit "$UNTIL_PID" 100 \
     || { reap "$UNTIL_PID"; fail "a declared time that passed was not rechecked: $(cat "$dir/watch.out")"; }
   lines=$(grep -cF 'absorbed stale (paused, declared time reached' "$state/.watch-triage.log")
