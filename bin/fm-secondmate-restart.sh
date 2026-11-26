@@ -146,7 +146,7 @@ first_reported_line() {  # <text>
 # plainly which it was. A nudge is a partial reload and is never reported as more.
 fall_back_to_nudge() {  # <id> <reason>
   local id=$1 reason=$2 out
-  if out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+  if out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_SEND_KEEP_PARKED=1 \
     "$SCRIPT_DIR/fm-send.sh" "$id" "$FM_SECOND_MATE_NUDGE_MESSAGE" 2>&1); then
     nudged_count=$((nudged_count + 1))
     printf 'nudged: %s: %s\n' "$id" "$reason"

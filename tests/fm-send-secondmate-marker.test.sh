@@ -268,6 +268,55 @@ test_marked_send_preserves_trailing_newlines() {
   pass "fm-send: marked secondmate payload preserves trailing newline bytes in its record"
 }
 
+# Work sent to a parked secondmate wakes it, and a re-read nudge does not.
+# The wake is the parked marker going away plus an immediate liveness tick; the
+# relaunch itself belongs to the watcher's guarded path.
+test_work_for_a_parked_secondmate_unparks_it() {
+  local dir fb log home rc
+  dir="$TMP_ROOT/sm-parked-work"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home sm-parked-work)
+  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+  date +%s > "$home/state/.secondmate-parked-domain"
+  : > "$home/state/.secondmate-liveness-tick"
+  run_send "$fb" "$home" "$log" "domain" "audit the build"; rc=$?
+  expect_code 0 "$rc" "send to a parked secondmate should still deliver"
+  [ -f "$home/state/domain.inbox/001.msg" ] || fail "the steer must be recorded durably before anything else"
+  [ ! -e "$home/state/.secondmate-parked-domain" ] || fail "work sent to a parked secondmate must unpark it"
+  [ ! -e "$home/state/.secondmate-liveness-tick" ] || fail "the watcher must be asked for an immediate liveness tick"
+  pass "fm-send: work for a parked secondmate unparks it and requests a liveness tick"
+}
+
+test_nudge_keeps_a_parked_secondmate_parked() {
+  local dir fb log home rc
+  dir="$TMP_ROOT/sm-parked-nudge"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home sm-parked-nudge)
+  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+  date +%s > "$home/state/.secondmate-parked-domain"
+  : > "$home/state/.secondmate-liveness-tick"
+  (export FM_SEND_KEEP_PARKED=1; run_send "$fb" "$home" "$log" "domain" "re-read your AGENTS.md"); rc=$?
+  expect_code 0 "$rc" "a nudge to a parked secondmate should still be recorded"
+  [ -f "$home/state/domain.inbox/001.msg" ] || fail "the nudge must be recorded for the mate's next start"
+  [ -e "$home/state/.secondmate-parked-domain" ] || fail "a re-read nudge is not work and must keep the mate parked"
+  [ -e "$home/state/.secondmate-liveness-tick" ] || fail "a nudge must not request a liveness tick"
+  pass "fm-send: a re-read nudge keeps a parked secondmate parked"
+}
+
+test_steer_to_a_crewmate_leaves_a_stray_parked_marker_alone() {
+  local dir fb log home rc
+  dir="$TMP_ROOT/crew-parked"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home crew-parked)
+  fm_write_secondmate_meta "$home/state/build.meta" "$home" "sess:fm-build"
+  sed -i 's/^kind=secondmate$/kind=ship/' "$home/state/build.meta"
+  date +%s > "$home/state/.secondmate-parked-build"
+  run_send "$fb" "$home" "$log" "build" "run the tests"; rc=$?
+  expect_code 0 "$rc" "send to a crewmate should succeed"
+  [ -e "$home/state/.secondmate-parked-build" ] || fail "only a secondmate target may be unparked by a send"
+  pass "fm-send: only a secondmate target is ever unparked"
+}
+
 test_secondmate_target_is_marked
 test_exact_secondmate_task_id_is_marked
 test_crewmate_target_is_not_marked
@@ -276,3 +325,6 @@ test_key_path_is_not_marked
 test_marker_is_label_plus_invisible_separator
 test_marker_transformation_is_idempotent
 test_marked_send_preserves_trailing_newlines
+test_work_for_a_parked_secondmate_unparks_it
+test_nudge_keeps_a_parked_secondmate_parked
+test_steer_to_a_crewmate_leaves_a_stray_parked_marker_alone
