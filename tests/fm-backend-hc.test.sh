@@ -454,6 +454,53 @@ test_relaunch_that_adopts_a_terminal_places_it_in_its_project_space() {
   pass "hc: fm-spawn --relaunch applies the placement rule to the terminal it adopts"
 }
 
+# A restart that loses a terminal outright (not-found, or a program that ended)
+# leaves a task whose record names an address nothing answers on. The control
+# plane proves that absence and a relaunch starts ONE fresh terminal in the
+# recorded session, then republishes the record with its address.
+test_relaunch_that_finds_its_terminal_gone_starts_one_in_the_recorded_session() {
+  local id="hcgone$$" proj wt tag out rc=0 verdict runs
+  setup_case relaunch-gone
+  proj="$D/projects/proj"
+  wt="$D/wt"
+  fm_git_worktree "$proj" "$wt" "task-$id"
+  mkdir -p "$HOMEDIR/state" "$HOMEDIR/data/$id" "$HOMEDIR/config"
+  printf '# Task\n## Captain'"'"'s intent\nReclaim.\n\n## Firstmate spec\nKeep the task.\n' > "$HOMEDIR/data/$id/brief.md"
+  tag=$(FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT bash -c '. "'"$FM_TEST_ROOT"'/bin/fm-backend.sh"; fm_backend_source hc; fm_backend_hometag')
+  {
+    echo "window=fmtest:t9"
+    echo "endpoint_task_id=$id"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=scout"
+    echo "mode=scout"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-$id"
+    echo "backend=hc"
+    echo "hc_session=fmtest"
+    echo "hc_terminal=t9"
+  } > "$HOMEDIR/state/$id.meta"
+  # t9 answers not-found (no stub file); the core starts t10 for the task.
+  printf '{"address":"t10"}\n' > "$D/run.json"
+  write_terminal "$D" t10 live "fm-$id" "$tag" zsh /bin/zsh
+  jq --arg wt "$wt" '.foreground.cwd = $wt' "$D/t10.json" > "$D/t10.tmp" && mv "$D/t10.tmp" "$D/t10.json"
+  verdict=$(hc_shell '. "'"$FM_TEST_ROOT"'/bin/fm-control-lib.sh"; fm_control_endpoint_absence_verdict hc fmtest:t9')
+  assert_equals "$verdict" "gone	" "a terminal hc answers not-found for is proven gone"
+  out=$(FAKE_HC_DIR=$D PATH="$FB:$PATH" FM_HOME=$HOMEDIR FM_ROOT_OVERRIDE=$FM_TEST_ROOT HC_SESSION=fmtest \
+    FM_SPAWN_NO_GUARD=1 "$FM_TEST_ROOT/bin/fm-spawn.sh" "$id" --relaunch --harness "sh -c 'sleep 60'" 2>&1) || rc=$?
+  rm -rf "/tmp/fm-$id" "/tmp/fm-$id+"*
+  expect_code 0 "$rc" "a relaunch whose hc terminal is gone must start a fresh one"$'\n'"$out"
+  runs=$(grep -c $'\x1frun\x1f' "$D/log")
+  assert_equals "$runs" 1 "exactly one terminal is started for the task"
+  assert_contains "$(cat "$D/log")" $'\x1f--cwd\x1f'"$wt" "the terminal opens in the task's recorded worktree"
+  assert_contains "$(cat "$D/log")" $'\x1fherdr.space=fm-p-proj' "the terminal is placed by its project, not by its worktree's name"
+  assert_grep 'hc_terminal=t10' "$HOMEDIR/state/$id.meta" "the record must name the new terminal"
+  assert_grep 'window=fmtest:t10' "$HOMEDIR/state/$id.meta" "the record's endpoint must follow the new terminal"
+  assert_grep 'hc_session=fmtest' "$HOMEDIR/state/$id.meta" "the task stays in its recorded hc session"
+  pass "hc: a relaunch whose terminal is gone starts one fresh terminal in the recorded session and rebinds the record"
+}
+
 test_naming_is_best_effort_and_never_blocks_the_task() {
   local out
   setup_case app-down
@@ -772,6 +819,7 @@ test_place_never_touches_a_terminal_that_is_not_the_tasks_own
 test_place_that_cannot_label_warns_and_does_not_fail
 test_secondmate_spawn_lands_in_the_bridge_on_hc
 test_relaunch_that_adopts_a_terminal_places_it_in_its_project_space
+test_relaunch_that_finds_its_terminal_gone_starts_one_in_the_recorded_session
 test_naming_is_best_effort_and_never_blocks_the_task
 test_control_interrupt_delivers_the_harness_keys
 test_foreign_or_unlabeled_terminal_gets_no_input_and_no_close

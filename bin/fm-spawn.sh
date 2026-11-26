@@ -4923,6 +4923,23 @@ if [ "$RELAUNCH" -eq 1 ]; then
     # An adopted hc terminal keeps the Herdr.app labels it was born with, so
     # the placement rule is applied to it again (bin/backends/hc.sh).
     [ "$BACKEND" != hc ] || fm_backend_hc_place "$T" "$W" "$PROJ_ABS" "$KIND"
+  elif [ "$BACKEND" = hc ]; then
+    # The recorded terminal is gone or its program ended, so there is nothing
+    # to adopt: start ONE fresh terminal for the same task, in the recorded
+    # worktree and the RECORDED hc session, placed where a fresh task of this
+    # kind opens (by its project, not by the worktree's own name). The record
+    # published below writes window= and hc_terminal= from these values, which
+    # is the whole rebind; the task id, brief, worktree, and status log are
+    # untouched. Only a proven-gone terminal reaches here
+    # (fm_control_endpoint_absence_verdict).
+    fm_backend_hc_cli "$HC_SES" server status --json >/dev/null 2>&1 || {
+      echo "error: 'hc server status' failed for session '$HC_SES'; cannot re-create $W" >&2
+      exit 1
+    }
+    HC_TERMINAL=$(fm_backend_hc_create_task "$HC_SES" "$W" "$WT" "$KIND" "$PROJ_ABS") || exit 1
+    T="$HC_SES:$HC_TERMINAL"
+    WT_TARGET=$T
+    SES=$HC_SES
   elif [ "$BACKEND" = rex ]; then
     # The recorded endpoint is authoritatively gone, so there is nothing to
     # adopt: create ONE fresh endpoint for the same task, opened directly in the
